@@ -1,0 +1,19 @@
+# ==========================================
+# Core Dependencies
+# ==========================================
+
+# Web Server
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+
+# PDF Processing
+pypdf2
+
+# LLM APIs
+google-genai  # Gemini 2.5 Pro SDK
+
+# Utilities
+python-dotenv
+pydantic
