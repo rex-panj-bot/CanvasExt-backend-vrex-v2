@@ -158,8 +158,8 @@ Always cite specific pages when making factual claims from the documents. Use th
             # Add current message
             parts = []
 
-            # ONLY attach files if this is a new upload or first message in session
-            if need_upload or len(conversation_history) == 0:
+            # Always attach files when documents are selected (Gemini requires file references on every call)
+            if uploaded_files:
                 # Attach PDF file URIs
                 for file_info in uploaded_files:
                     parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
