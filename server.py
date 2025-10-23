@@ -443,7 +443,15 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             syllabus_id = message_data.get("syllabus_id")
             chat_session_id = message_data.get("session_id")  # For saving chat history
 
-            print(f"💬 Query: {user_message[:100]}... ({len(selected_docs)} docs selected)")
+            print(f"\n{'='*80}")
+            print(f"📥 WebSocket received message:")
+            print(f"   User message: {user_message[:100]}...")
+            print(f"   History length: {len(conversation_history)}")
+            print(f"   Selected docs count: {len(selected_docs)}")
+            print(f"   Selected docs: {selected_docs[:3] if len(selected_docs) > 3 else selected_docs}...")
+            print(f"   Syllabus ID: {syllabus_id}")
+            print(f"   Session ID: {chat_session_id}")
+            print(f"{'='*80}")
 
             # Process with Root Agent and stream response
             chunk_count = 0

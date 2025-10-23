@@ -61,9 +61,16 @@ class RootAgent:
             Response chunks
         """
         try:
+            print(f"\n{'='*80}")
+            print(f"🔍 DEBUG: Starting query processing")
+            print(f"   Course ID: {course_id}")
+            print(f"   Session ID: {session_id}")
+            print(f"   Conversation history length: {len(conversation_history)}")
+
             # Step 1: Get all available documents
             catalog = self.document_manager.get_material_catalog(course_id)
             all_materials = catalog.get("materials", [])
+            print(f"   📂 Total materials in catalog: {len(all_materials)}")
 
             if not all_materials:
                 yield "No course materials found. Please upload PDFs first."
@@ -72,8 +79,21 @@ class RootAgent:
             # Step 2: Filter based on selection
             materials_to_use = []
 
+            print(f"   📋 Selected docs from client: {selected_docs}")
+            print(f"   📋 Number of selected docs: {len(selected_docs) if selected_docs else 0}")
+
             if selected_docs:
+                # Debug: Show all material IDs available
+                available_ids = [m["id"] for m in all_materials]
+                print(f"   🔑 Available material IDs: {available_ids[:5]}..." if len(available_ids) > 5 else f"   🔑 Available material IDs: {available_ids}")
+
                 materials_to_use = [m for m in all_materials if m["id"] in selected_docs]
+                print(f"   ✅ Matched {len(materials_to_use)} materials from selection")
+
+                if len(materials_to_use) < len(selected_docs):
+                    print(f"   ⚠️  WARNING: {len(selected_docs) - len(materials_to_use)} selected docs not found in catalog!")
+                    missing = set(selected_docs) - set(m["id"] for m in materials_to_use)
+                    print(f"   ⚠️  Missing IDs: {list(missing)[:3]}...")
 
                 # Always include syllabus if provided and not already selected
                 if syllabus_id and syllabus_id not in selected_docs:
@@ -82,18 +102,27 @@ class RootAgent:
                         materials_to_use.append(syllabus)
                         print(f"   ⭐ Including syllabus: {syllabus['name']}")
             else:
+                print(f"   ⚠️  No docs selected - using ALL materials")
                 materials_to_use = all_materials
 
             if not materials_to_use:
+                print(f"   ❌ No materials to use after filtering!")
                 yield "No documents selected. Please select at least one document."
                 return
 
-            print(f"   📚 Processing {len(materials_to_use)} PDF files")
+            print(f"   📚 Final materials to use: {len(materials_to_use)} PDF files")
+            print(f"   📚 Material names: {[m['name'][:30] for m in materials_to_use[:3]]}...")
 
             # Step 3: Check if files already uploaded in this session
             selected_doc_ids = set([m["id"] for m in materials_to_use])
             session_cache = self.session_uploads.get(session_id, {})
             cached_doc_ids = session_cache.get("doc_ids", set())
+
+            print(f"   🔍 Session check:")
+            print(f"      Session ID: {session_id}")
+            print(f"      Selected doc IDs: {list(selected_doc_ids)[:3]}...")
+            print(f"      Cached doc IDs: {list(cached_doc_ids)[:3] if cached_doc_ids else 'None'}...")
+            print(f"      IDs match: {cached_doc_ids == selected_doc_ids}")
 
             need_upload = False
             uploaded_files = []
@@ -102,22 +131,27 @@ class RootAgent:
                 # Same files already uploaded in this session - reuse
                 print(f"   ✅ Reusing {len(materials_to_use)} files from session cache")
                 uploaded_files = session_cache.get("file_info", [])
+                print(f"   ✅ Retrieved {len(uploaded_files)} file URIs from cache")
             else:
                 # Need to upload (new session or different file selection)
                 need_upload = True
                 print(f"   📤 Uploading {len(materials_to_use)} PDFs to Gemini...")
 
                 file_paths = [mat["path"] for mat in materials_to_use]
+                print(f"   📂 File paths to upload: {file_paths[:2]}...")
                 upload_result = await self.file_upload_manager.upload_multiple_pdfs_async(file_paths)
 
                 if not upload_result.get('success'):
-                    yield f"❌ Error uploading files: {upload_result.get('error', 'Unknown error')}"
+                    error_msg = upload_result.get('error', 'Unknown error')
+                    print(f"   ❌ Upload failed: {error_msg}")
+                    yield f"❌ Error uploading files: {error_msg}"
                     return
 
                 uploaded_files = upload_result.get('files', [])
                 total_mb = upload_result['total_bytes'] / (1024 * 1024)
 
                 print(f"   ✅ Uploaded {len(uploaded_files)} PDFs (~{total_mb:.1f}MB)")
+                print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2]]}")
 
                 # Cache for this session
                 if session_id:
@@ -125,6 +159,7 @@ class RootAgent:
                         "doc_ids": selected_doc_ids,
                         "file_info": uploaded_files
                     }
+                    print(f"   💾 Cached {len(uploaded_files)} files for session")
 
                 # Yield upload status to user
                 yield f"📤 Loaded {len(uploaded_files)} PDFs (~{total_mb:.1f}MB)\n\n"
@@ -159,16 +194,26 @@ Always cite specific pages when making factual claims from the documents. Use th
             parts = []
 
             # Always attach files when documents are selected (Gemini requires file references on every call)
+            print(f"   📎 Attaching files to API call:")
+            print(f"      uploaded_files count: {len(uploaded_files)}")
             if uploaded_files:
                 # Attach PDF file URIs
                 for file_info in uploaded_files:
                     parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
+                print(f"      ✅ Attached {len(uploaded_files)} file URIs to message")
+                print(f"      Sample URIs: {[f['uri'][:60] + '...' for f in uploaded_files[:2]]}")
+            else:
+                print(f"      ⚠️  WARNING: No uploaded_files to attach!")
 
             # Add user question
             parts.append(types.Part(text=user_message))
             contents.append(types.Content(role="user", parts=parts))
 
-            print(f"   🤖 Calling Gemini ({len(uploaded_files)} PDFs, {len(conversation_history)} history msgs)...")
+            print(f"   📨 Message parts: {len(parts)} parts total (files + text)")
+            print(f"   🤖 Calling Gemini API now...")
+            print(f"      Model: {self.model_id}")
+            print(f"      Contents length: {len(contents)}")
+            print(f"      History messages: {len(conversation_history)}")
 
             # Step 6: Stream response from Gemini
             response_stream = await self.client.aio.models.generate_content_stream(
