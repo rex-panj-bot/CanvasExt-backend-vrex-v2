@@ -21,6 +21,7 @@ load_dotenv()
 # Import our modules
 from utils.document_manager import DocumentManager
 from agents.root_agent import RootAgent
+from utils.chat_storage import ChatStorage
 
 app = FastAPI(title="AI Study Assistant Backend")
 
@@ -36,6 +37,7 @@ app.add_middleware(
 # Global instances
 root_agent = None
 document_manager = None
+chat_storage = None
 
 # Store active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
@@ -48,7 +50,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
-    global root_agent, document_manager
+    global root_agent, document_manager, chat_storage
 
     print("🚀 Starting AI Study Assistant Backend...")
 
@@ -62,6 +64,10 @@ async def startup_event():
         google_api_key=os.getenv("GOOGLE_API_KEY")
     )
     print(f"✅ Root Agent initialized")
+
+    # Initialize Chat Storage
+    chat_storage = ChatStorage(db_path="./data/chats.db")
+    print(f"✅ Chat Storage initialized")
 
     print("🎉 Backend ready!")
 
@@ -155,6 +161,191 @@ async def upload_pdfs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ========== CHAT HISTORY ENDPOINTS ==========
+
+@app.get("/chats/{course_id}")
+async def get_recent_chats(course_id: str, limit: int = 20):
+    """
+    Get recent chat sessions for a course
+
+    Args:
+        course_id: Course identifier
+        limit: Maximum number of sessions to return (default 20)
+
+    Returns:
+        JSON with:
+        - success: bool
+        - chats: List[Dict] with session info (id, title, timestamps, message count)
+    """
+    try:
+        chats = chat_storage.get_recent_chats(course_id, limit)
+        return {
+            "success": True,
+            "chats": chats
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/chats/{course_id}/{session_id}")
+async def get_chat_session(course_id: str, session_id: str):
+    """
+    Load a specific chat session
+
+    Args:
+        course_id: Course identifier (for validation)
+        session_id: Session identifier
+
+    Returns:
+        JSON with:
+        - success: bool
+        - session: Dict with session info and full message history
+    """
+    try:
+        session = chat_storage.get_chat_session(session_id)
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+
+        # Validate course_id matches
+        if session.get('course_id') != course_id:
+            raise HTTPException(status_code=403, detail="Course ID mismatch")
+
+        return {
+            "success": True,
+            "session": session
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.post("/chats/{course_id}")
+async def save_chat_session(course_id: str, session_data: dict):
+    """
+    Save a chat session
+
+    Args:
+        course_id: Course identifier
+        session_data: Dict containing:
+            - session_id: str
+            - messages: List[Dict] with role and content
+            - title: str (optional)
+
+    Returns:
+        JSON with success status
+    """
+    try:
+        session_id = session_data.get('session_id')
+        messages = session_data.get('messages', [])
+        title = session_data.get('title')
+
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+
+        success = chat_storage.save_chat_session(
+            session_id=session_id,
+            course_id=course_id,
+            messages=messages,
+            title=title
+        )
+
+        return {
+            "success": success,
+            "message": "Chat saved successfully" if success else "Failed to save chat"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.delete("/chats/{course_id}/{session_id}")
+async def delete_chat_session(course_id: str, session_id: str):
+    """
+    Delete a chat session
+
+    Args:
+        course_id: Course identifier (for validation)
+        session_id: Session identifier
+
+    Returns:
+        JSON with success status
+    """
+    try:
+        # Verify session exists and belongs to this course
+        session = chat_storage.get_chat_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+
+        if session.get('course_id') != course_id:
+            raise HTTPException(status_code=403, detail="Course ID mismatch")
+
+        success = chat_storage.delete_chat_session(session_id)
+
+        return {
+            "success": success,
+            "message": "Chat deleted successfully" if success else "Failed to delete chat"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.patch("/chats/{course_id}/{session_id}/title")
+async def update_chat_title(course_id: str, session_id: str, data: dict):
+    """
+    Update the title of a chat session
+
+    Args:
+        course_id: Course identifier (for validation)
+        session_id: Session identifier
+        data: Dict containing:
+            - title: str (new title)
+
+    Returns:
+        JSON with success status
+    """
+    try:
+        # Verify session exists and belongs to this course
+        session = chat_storage.get_chat_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+
+        if session.get('course_id') != course_id:
+            raise HTTPException(status_code=403, detail="Course ID mismatch")
+
+        title = data.get('title')
+        if not title:
+            raise HTTPException(status_code=400, detail="title is required")
+
+        success = chat_storage.update_chat_title(session_id, title)
+
+        return {
+            "success": success,
+            "message": "Title updated successfully" if success else "Failed to update title"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 @app.websocket("/ws/chat/{course_id}")
@@ -178,7 +369,8 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             "message": "user question",
             "history": [{"role": "user/model", "content": "..."}],
             "selected_docs": ["doc_id1", ...],  // Optional
-            "syllabus_id": "doc_id"  // Optional
+            "syllabus_id": "doc_id",  // Optional
+            "session_id": "unique_session_id"  // Optional, for chat history saving
         }
 
     Response Format (Server → Client):
@@ -202,11 +394,13 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             conversation_history = message_data.get("history", [])
             selected_docs = message_data.get("selected_docs", [])
             syllabus_id = message_data.get("syllabus_id")
+            chat_session_id = message_data.get("session_id")  # For saving chat history
 
             print(f"💬 Query: {user_message[:100]}... ({len(selected_docs)} docs selected)")
 
             # Process with Root Agent and stream response
             chunk_count = 0
+            assistant_response = ""
             async for chunk in root_agent.process_query_stream(
                 course_id=course_id,
                 user_message=user_message,
@@ -216,6 +410,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 session_id=connection_id
             ):
                 chunk_count += 1
+                assistant_response += chunk
                 await websocket.send_json({
                     "type": "chunk",
                     "content": chunk
@@ -226,6 +421,25 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             await websocket.send_json({
                 "type": "done"
             })
+
+            # Auto-save chat history if session_id provided
+            if chat_session_id and user_message and assistant_response:
+                try:
+                    # Build updated conversation history
+                    updated_history = conversation_history + [
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": assistant_response}
+                    ]
+
+                    # Save to database
+                    chat_storage.save_chat_session(
+                        session_id=chat_session_id,
+                        course_id=course_id,
+                        messages=updated_history
+                    )
+                    print(f"💾 Chat session saved: {chat_session_id}")
+                except Exception as e:
+                    print(f"⚠️  Failed to save chat session: {e}")
 
     except WebSocketDisconnect:
         print(f"🔌 WebSocket disconnected: {connection_id}")
