@@ -199,29 +199,64 @@ async def upload_pdfs(
     Performance: ~1-2 seconds for 25 PDFs
     """
     try:
+        print(f"\n{'='*80}")
+        print(f"📤 UPLOAD REQUEST:")
+        print(f"   Course ID: {course_id}")
+        print(f"   Number of files: {len(files)}")
+        print(f"   File names: {[f.filename for f in files][:3]}...")
+        print(f"   Storage manager available: {storage_manager is not None}")
+        print(f"{'='*80}")
+
         # Process all files in parallel for 10-20x faster upload
         print(f"📤 Uploading {len(files)} files in parallel...")
         upload_tasks = [_process_single_upload(course_id, file) for file in files]
-        results = await asyncio.gather(*upload_tasks)
+        results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+        # Handle exceptions in results
+        processed_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"❌ Exception for file {files[i].filename}: {result}")
+                import traceback
+                traceback.print_exception(type(result), result, result.__traceback__)
+                processed_results.append({
+                    "filename": files[i].filename,
+                    "status": "failed",
+                    "error": str(result)
+                })
+            else:
+                processed_results.append(result)
 
         # Count successes and failures
-        successful = [r for r in results if r["status"] == "uploaded"]
-        failed = [r for r in results if r["status"] == "failed"]
+        successful = [r for r in processed_results if r["status"] == "uploaded"]
+        failed = [r for r in processed_results if r["status"] == "failed"]
+
+        print(f"✅ Upload results: {len(successful)} succeeded, {len(failed)} failed")
+        if failed:
+            print(f"❌ Failed files: {[f['filename'] for f in failed]}")
+            for f in failed:
+                print(f"   - {f['filename']}: {f.get('error', 'Unknown error')}")
 
         # Incrementally add new files to catalog (much faster than full rescan)
         if document_manager and successful:
+            print(f"📚 Adding {len(successful)} files to catalog...")
             new_paths = [r["path"] for r in successful]
             document_manager.add_files_to_catalog(new_paths)
+            print(f"✅ Catalog updated")
 
         return {
             "success": True,
             "message": f"Uploaded {len(successful)}/{len(files)} PDFs successfully",
-            "files": results,
+            "files": processed_results,
             "uploaded_count": len(successful),
             "failed_count": len(failed)
         }
 
     except Exception as e:
+        print(f"❌ CRITICAL ERROR in upload_pdfs endpoint:")
+        print(f"   Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
