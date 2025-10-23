@@ -57,8 +57,9 @@ Click on your deployed service, then go to **"Variables"** tab:
 ```bash
 GOOGLE_API_KEY=<your-gemini-api-key-from-.env>
 HOST=0.0.0.0
-PORT=${{PORT}}
 ```
+
+**⚠️ Important**: DO NOT manually set the `PORT` variable. Railway provides it automatically.
 
 #### Optional (for Cloud Storage):
 
@@ -202,7 +203,7 @@ git push
 
 Common issues:
 - Missing `GOOGLE_API_KEY` → Add in Variables tab
-- Port binding issue → Make sure `PORT=${{PORT}}` is set
+- Port binding issue → Remove any manual `PORT` variable (Railway sets it automatically)
 
 ### "GCS not configured" Warning
 

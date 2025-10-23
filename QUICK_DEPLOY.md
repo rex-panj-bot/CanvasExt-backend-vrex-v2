@@ -31,8 +31,9 @@ In Railway dashboard → **Variables** tab:
 ```bash
 GOOGLE_API_KEY=<your-gemini-api-key>
 HOST=0.0.0.0
-PORT=${{PORT}}
 ```
+
+**⚠️ DO NOT set PORT** - Railway provides it automatically!
 
 ### Optional - For GCS (if you want cloud storage):
 ```bash
