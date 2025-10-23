@@ -141,21 +141,39 @@ class DocumentManager:
                 continue
 
             course_id = parts[0]
-            original_name = parts[1].replace('.pdf', '')
+            # Remove any file extension, not just .pdf
+            import re
+            original_name = re.sub(r'\.(pdf|docx?|txt|xlsx?|pptx?|csv|md|rtf|png|jpe?g|gif|webp)$', '', parts[1], flags=re.IGNORECASE)
 
             if course_id not in self.catalog:
                 self.catalog[course_id] = []
 
-            # Check if already in catalog
-            if any(doc['id'] == filename.replace('.pdf', '') for doc in self.catalog[course_id]):
+            # Check if already in catalog (use filename without extension as ID)
+            file_id = re.sub(r'\.(pdf|docx?|txt|xlsx?|pptx?|csv|md|rtf|png|jpe?g|gif|webp)$', '', filename, flags=re.IGNORECASE)
+            if any(doc['id'] == file_id for doc in self.catalog[course_id]):
                 continue  # Skip duplicates
 
-            # Get file size
-            size_mb = pdf_path.stat().st_size / (1024 * 1024)
+            # Get file size (handle both local files and GCS blob names)
+            size_mb = 0.0
+            try:
+                if pdf_path.exists():
+                    # Local file
+                    size_mb = pdf_path.stat().st_size / (1024 * 1024)
+                elif self.storage_manager:
+                    # GCS blob - get metadata
+                    try:
+                        metadata = self.storage_manager.get_file_metadata(str(pdf_path))
+                        size_mb = metadata['size'] / (1024 * 1024)
+                    except Exception as e:
+                        print(f"⚠️  Could not get size for {pdf_path}: {e}")
+                        size_mb = 0.0
+            except Exception as e:
+                print(f"⚠️  Could not get file size for {pdf_path}: {e}")
+                size_mb = 0.0
 
             # Add to catalog (no page counting for speed)
             self.catalog[course_id].append({
-                "id": filename.replace('.pdf', ''),
+                "id": file_id,
                 "name": original_name,
                 "filename": filename,
                 "path": str(pdf_path),
