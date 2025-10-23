@@ -23,6 +23,7 @@ from utils.document_manager import DocumentManager
 from agents.root_agent import RootAgent
 from utils.chat_storage import ChatStorage
 from utils.storage_manager import StorageManager
+from utils.mime_types import get_mime_type, get_file_extension
 
 app = FastAPI(title="AI Study Assistant Backend")
 
@@ -127,6 +128,20 @@ async def root():
 async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
     """Process a single file upload (for parallel execution)"""
     try:
+        # Auto-detect MIME type
+        mime_type = get_mime_type(file.filename)
+        ext = get_file_extension(file.filename) or 'file'
+
+        if not mime_type:
+            print(f"⚠️  Skipping {file.filename} - unsupported file type")
+            return {
+                "filename": file.filename,
+                "status": "skipped",
+                "error": "Unsupported file type"
+            }
+
+        print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
+
         content = await file.read()
 
         # Upload to GCS if available, otherwise save locally
@@ -138,7 +153,8 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
                 storage_manager.upload_pdf,
                 course_id,
                 file.filename,
-                content
+                content,
+                mime_type  # Pass MIME type
             )
             return {
                 "filename": file.filename,
@@ -182,21 +198,22 @@ async def upload_pdfs(
     files: List[UploadFile] = File(...)
 ):
     """
-    Upload PDFs for a course (optimized for speed)
+    Upload files for a course (supports PDFs, documents, images, etc.)
 
     Args:
         course_id: Course identifier (used as filename prefix)
-        files: List of PDF files to upload
+        files: List of files to upload (PDF, DOCX, TXT, images, etc.)
 
     Process:
-        1. Saves all PDFs to disk in parallel (10-20x faster)
-        2. Incrementally updates document catalog
-        3. No text extraction or processing (done on-demand during queries)
+        1. Saves all files to storage in parallel (GCS or local)
+        2. Auto-detects file types and applies correct MIME types
+        3. Incrementally updates document catalog
+        4. No text extraction or processing (done on-demand during queries)
 
     Returns:
         JSON with upload results, success/failure counts
 
-    Performance: ~1-2 seconds for 25 PDFs
+    Performance: ~1-2 seconds for 25 files
     """
     try:
         print(f"\n{'='*80}")

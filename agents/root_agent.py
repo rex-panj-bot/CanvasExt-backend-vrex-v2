@@ -172,21 +172,28 @@ class RootAgent:
 
             # Step 4: Build system instruction
             file_names = [mat['name'] for mat in materials_to_use]
-            system_instruction = f"""You are an AI study assistant with access to {len(uploaded_files)} course PDF documents.
+            system_instruction = f"""You are an AI study assistant with access to {len(uploaded_files)} course documents and real-time web search.
 
-Available materials: {', '.join(file_names[:10])}{"..." if len(file_names) > 10 else ""}
+Available course materials: {', '.join(file_names[:10])}{"..." if len(file_names) > 10 else ""}
 
-Read the PDFs directly to answer questions.
+CAPABILITIES:
+1. Read uploaded documents (PDFs, Word docs, images, etc.) directly
+2. Perform Google searches for current information, news, or topics not in course materials
 
-IMPORTANT CITATION FORMAT:
-When referencing information from documents, use this exact format:
+CITATION FORMAT:
+When referencing information from course documents, use:
 [Source: DocumentName, Page X]
 
 Examples:
 - According to the lecture notes [Source: Lecture_3_Algorithms, Page 12], sorting algorithms...
 - The syllabus states [Source: CS101_Syllabus, Page 3] that exams are worth 40%.
 
-Always cite specific pages when making factual claims from the documents. Use the exact document name without .pdf extension."""
+When using web search results, the sources will be automatically cited below your response.
+
+PRIORITY: Always prioritize course materials first. Use web search only when:
+- Information is not available in course materials
+- User asks about current events or recent developments
+- User explicitly requests web information"""
 
             # Step 5: Build conversation with file references
             contents = []
@@ -221,23 +228,56 @@ Always cite specific pages when making factual claims from the documents. Use th
             print(f"      Contents length: {len(contents)}")
             print(f"      History messages: {len(conversation_history)}")
 
-            # Step 6: Stream response from Gemini
+            # Step 6: Stream response from Gemini with Google Search grounding
+            # Enable Google Search for real-time information when needed
+            config = types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.7,
+                max_output_tokens=8192,
+                tools=[types.Tool(google_search=types.GoogleSearch())],  # Enable web search
+            )
+
             response_stream = await self.client.aio.models.generate_content_stream(
                 model=self.model_id,
                 contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.7,
-                    max_output_tokens=8192,
-                )
+                config=config
             )
 
-            # Step 7: Stream response chunks
+            # Step 7: Stream response chunks with grounding metadata
             total_generated = 0
+            search_results_shown = False
+
             async for chunk in response_stream:
+                # Stream text response
                 if chunk.text:
                     yield chunk.text
                     total_generated += len(chunk.text)
+
+                # Handle grounding metadata (web search results)
+                if hasattr(chunk, 'candidates') and chunk.candidates:
+                    candidate = chunk.candidates[0]
+                    if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+                        metadata = candidate.grounding_metadata
+
+                        # Display search results if available
+                        if not search_results_shown and hasattr(metadata, 'search_entry_point'):
+                            search_entry_point = metadata.search_entry_point
+                            if hasattr(search_entry_point, 'rendered_content'):
+                                print(f"   🔍 Web search performed")
+                                search_results_shown = True
+
+                        # Extract and yield grounding chunks (web sources)
+                        if hasattr(metadata, 'grounding_chunks') and metadata.grounding_chunks:
+                            sources = []
+                            for gc in metadata.grounding_chunks:
+                                if hasattr(gc, 'web') and gc.web:
+                                    web = gc.web
+                                    if hasattr(web, 'uri') and hasattr(web, 'title'):
+                                        sources.append(f"- [{web.title}]({web.uri})")
+
+                            if sources and not search_results_shown:
+                                yield "\n\n**Web Sources:**\n" + "\n".join(sources[:5]) + "\n"
+                                print(f"   🌐 Included {len(sources)} web sources")
 
             print(f"   ✅ Complete ({total_generated} chars generated)")
 

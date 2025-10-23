@@ -1,6 +1,7 @@
 """
 Storage Manager - Google Cloud Storage Integration
-Handles PDF storage and retrieval from GCS bucket
+Handles file storage and retrieval from GCS bucket
+Supports multiple file types (PDFs, documents, images, etc.)
 """
 
 from google.cloud import storage
@@ -10,12 +11,13 @@ from pathlib import Path
 from typing import List, Optional, BinaryIO
 import logging
 from io import BytesIO
+from .mime_types import get_mime_type, get_file_extension
 
 logger = logging.getLogger(__name__)
 
 
 class StorageManager:
-    """Manages PDF storage in Google Cloud Storage"""
+    """Manages file storage in Google Cloud Storage (PDFs, documents, images, etc.)"""
 
     def __init__(self, bucket_name: str, project_id: str, credentials_path: Optional[str] = None):
         """
@@ -41,14 +43,15 @@ class StorageManager:
 
         logger.info(f"StorageManager initialized with bucket: {bucket_name}")
 
-    def upload_pdf(self, course_id: str, filename: str, file_content: bytes) -> str:
+    def upload_pdf(self, course_id: str, filename: str, file_content: bytes, content_type: Optional[str] = None) -> str:
         """
-        Upload a PDF to GCS
+        Upload a file to GCS (supports PDFs and other file types)
 
         Args:
             course_id: Course identifier
             filename: Original filename
-            file_content: PDF file content as bytes
+            file_content: File content as bytes
+            content_type: MIME type (auto-detected from filename if not provided)
 
         Returns:
             GCS blob name (path in bucket)
@@ -58,17 +61,26 @@ class StorageManager:
             blob_name = f"{course_id}/{filename}"
             blob = self.bucket.blob(blob_name)
 
+            # Auto-detect MIME type if not provided
+            if not content_type:
+                content_type = get_mime_type(filename)
+                if not content_type:
+                    # Default to binary if unknown
+                    content_type = 'application/octet-stream'
+                    logger.warning(f"Unknown file type for {filename}, using {content_type}")
+
             # Upload with metadata
             blob.upload_from_string(
                 file_content,
-                content_type='application/pdf',
+                content_type=content_type,
                 timeout=300  # 5 minute timeout for large files
             )
 
             # Make publicly readable (optional - remove if you want private)
             # blob.make_public()
 
-            logger.info(f"✅ Uploaded {blob_name} ({len(file_content)} bytes)")
+            ext = get_file_extension(filename) or 'file'
+            logger.info(f"✅ Uploaded {blob_name} ({len(file_content)} bytes, {ext.upper()}, {content_type})")
             return blob_name
 
         except Exception as e:
@@ -120,13 +132,14 @@ class StorageManager:
             logger.error(f"Failed to download {blob_name} to file: {e}")
             raise
 
-    def list_files(self, course_id: Optional[str] = None, prefix: Optional[str] = None) -> List[str]:
+    def list_files(self, course_id: Optional[str] = None, prefix: Optional[str] = None, file_extension: Optional[str] = None) -> List[str]:
         """
-        List all PDFs in bucket, optionally filtered by course
+        List all files in bucket, optionally filtered by course and file type
 
         Args:
             course_id: Filter by course ID (optional)
             prefix: Custom prefix to filter by (optional, overrides course_id)
+            file_extension: Filter by file extension (e.g., 'pdf', 'docx') - if None, returns all files
 
         Returns:
             List of blob names
@@ -136,9 +149,15 @@ class StorageManager:
             search_prefix = prefix if prefix else (f"{course_id}/" if course_id else None)
 
             blobs = self.client.list_blobs(self.bucket_name, prefix=search_prefix)
-            blob_names = [blob.name for blob in blobs if blob.name.endswith('.pdf')]
 
-            logger.info(f"Found {len(blob_names)} PDFs" + (f" for course {course_id}" if course_id else ""))
+            # Filter by extension if specified
+            if file_extension:
+                blob_names = [blob.name for blob in blobs if blob.name.endswith(f'.{file_extension}')]
+                logger.info(f"Found {len(blob_names)} {file_extension.upper()} files" + (f" for course {course_id}" if course_id else ""))
+            else:
+                blob_names = [blob.name for blob in blobs]
+                logger.info(f"Found {len(blob_names)} files" + (f" for course {course_id}" if course_id else ""))
+
             return blob_names
 
         except Exception as e:

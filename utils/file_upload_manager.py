@@ -1,6 +1,6 @@
 """
 File Upload Manager for Gemini File API
-Handles direct PDF uploads to Gemini without text extraction
+Handles file uploads to Gemini (PDFs, documents, images, etc.)
 """
 
 from google import genai
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Optional, List
 import time
 import asyncio
+from .mime_types import get_mime_type, get_file_extension, is_supported_by_gemini
 
 
 class FileUploadManager:
@@ -27,17 +28,32 @@ class FileUploadManager:
         # Cache: {file_path: {uri, upload_time, file_object}}
         self._file_cache = {}
 
-    def upload_pdf(self, file_path: str, display_name: Optional[str] = None) -> Dict:
+    def upload_pdf(self, file_path: str, display_name: Optional[str] = None, mime_type: Optional[str] = None) -> Dict:
         """
-        Upload a PDF file to Gemini File API
+        Upload a file to Gemini File API (supports PDFs, documents, images, etc.)
 
         Args:
-            file_path: Path to PDF file (local path or GCS blob name)
+            file_path: Path to file (local path or GCS blob name)
             display_name: Optional display name for the file
+            mime_type: Optional MIME type (auto-detected from filename if not provided)
 
         Returns:
             Dict with file object and metadata
         """
+        # Extract filename for logging
+        filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
+
+        # Auto-detect MIME type if not provided
+        if not mime_type:
+            mime_type = get_mime_type(filename)
+            if not mime_type:
+                return {"error": f"Unsupported file type for {filename}"}
+
+        # Check if file type is supported by Gemini
+        if not is_supported_by_gemini(filename):
+            ext = get_file_extension(filename)
+            print(f"⚠️  Warning: {ext.upper()} files may have limited Gemini support")
+
         # Check cache first
         if file_path in self._file_cache:
             cached = self._file_cache[file_path]
@@ -45,12 +61,10 @@ class FileUploadManager:
 
             # If cache still valid (under 48 hours), return cached
             if age_hours < self.cache_duration_hours:
-                filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
                 print(f"✅ Cache hit: {filename} (uploaded {age_hours:.1f}h ago)")
                 return cached
 
             # Cache expired, remove it
-            filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
             print(f"⚠️  Cache expired for {filename}, re-uploading...")
             del self._file_cache[file_path]
 
@@ -60,19 +74,19 @@ class FileUploadManager:
         try:
             if is_gcs and self.storage_manager:
                 # Download from GCS and upload to Gemini
-                filename = file_path.split('/')[-1]
                 print(f"📤 Downloading {filename} from GCS...")
 
-                pdf_bytes = self.storage_manager.download_pdf(file_path)
+                file_bytes = self.storage_manager.download_pdf(file_path)
 
-                print(f"📤 Uploading {filename} to Gemini File API...")
+                ext = get_file_extension(filename) or 'file'
+                print(f"📤 Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API...")
 
                 # Upload from bytes using io.BytesIO
                 import io
                 file_obj = self.client.files.upload(
-                    file=io.BytesIO(pdf_bytes),
+                    file=io.BytesIO(file_bytes),
                     config={
-                        'mime_type': 'application/pdf',
+                        'mime_type': mime_type,
                         'display_name': display_name or filename
                     }
                 )
@@ -82,13 +96,14 @@ class FileUploadManager:
                 if not path.exists():
                     return {"error": f"File not found: {file_path}"}
 
-                print(f"📤 Uploading {path.name} to Gemini File API...")
+                ext = get_file_extension(filename) or 'file'
+                print(f"📤 Uploading {path.name} ({ext.upper()}, {mime_type}) to Gemini File API...")
 
                 with open(file_path, 'rb') as f:
                     file_obj = self.client.files.upload(
                         file=f,
                         config={
-                            'mime_type': 'application/pdf',
+                            'mime_type': mime_type,
                             'display_name': display_name or path.name
                         }
                     )
@@ -100,17 +115,17 @@ class FileUploadManager:
                 'name': file_obj.name,
                 'display_name': file_obj.display_name,
                 'size_bytes': file_obj.size_bytes,
+                'mime_type': mime_type,
                 'upload_time': time.time()
             }
 
             self._file_cache[file_path] = result
-            filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
-            print(f"✅ Uploaded {filename} ({file_obj.size_bytes:,} bytes) - URI: {file_obj.uri[:60]}...")
+            ext = get_file_extension(filename) or 'file'
+            print(f"✅ Uploaded {filename} ({ext.upper()}, {file_obj.size_bytes:,} bytes) - URI: {file_obj.uri[:60]}...")
 
             return result
 
         except Exception as e:
-            filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
             error_msg = f"Failed to upload {filename}: {str(e)}"
             print(f"❌ {error_msg}")
             import traceback
@@ -126,7 +141,8 @@ class FileUploadManager:
 
     async def upload_multiple_pdfs_async(self, file_paths: List[str]) -> Dict:
         """
-        Upload multiple PDF files in parallel (async version)
+        Upload multiple files in parallel (async version)
+        Supports PDFs, documents, images, etc.
 
         Args:
             file_paths: List of file paths
@@ -173,7 +189,8 @@ class FileUploadManager:
 
     def upload_multiple_pdfs(self, file_paths: list, progress_callback=None) -> Dict:
         """
-        Upload multiple PDF files with optional progress callback (sync version)
+        Upload multiple files with optional progress callback (sync version)
+        Supports PDFs, documents, images, etc.
 
         Args:
             file_paths: List of file paths
