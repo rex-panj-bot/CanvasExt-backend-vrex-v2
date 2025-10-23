@@ -27,23 +27,34 @@ class ChatStorage:
                          If provided, uses PostgreSQL. Otherwise falls back to SQLite.
             db_path: Path to SQLite database file (used only if database_url is None)
         """
-        self.use_postgres = database_url is not None and database_url.startswith("postgresql")
+        self.use_postgres = False
+        self.engine = None
 
-        if self.use_postgres:
-            # PostgreSQL mode
-            self.database_url = database_url
-            self.engine = create_engine(
-                database_url,
-                poolclass=pool.NullPool,  # Simple pooling for serverless
-                echo=False
-            )
-            logger.info(f"ChatStorage initialized with PostgreSQL")
-        else:
-            # SQLite mode
+        # Try PostgreSQL first if database_url provided
+        if database_url and database_url.startswith("postgresql"):
+            try:
+                self.database_url = database_url
+                self.engine = create_engine(
+                    database_url,
+                    poolclass=pool.NullPool,  # Simple pooling for serverless
+                    echo=False,
+                    connect_args={"connect_timeout": 5}  # 5 second timeout
+                )
+                # Test connection
+                with self.engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                self.use_postgres = True
+                logger.info(f"✅ ChatStorage initialized with PostgreSQL")
+            except Exception as e:
+                logger.warning(f"⚠️  PostgreSQL connection failed ({e}), falling back to SQLite")
+                self.engine = None
+                self.use_postgres = False
+
+        # Fall back to SQLite if PostgreSQL not available
+        if not self.use_postgres:
             self.db_path = Path(db_path)
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self.engine = None
-            logger.info(f"ChatStorage initialized with SQLite at {db_path}")
+            logger.info(f"✅ ChatStorage initialized with SQLite at {db_path}")
 
         self._initialize_db()
 
