@@ -131,7 +131,15 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
 
         # Upload to GCS if available, otherwise save locally
         if storage_manager:
-            blob_name = storage_manager.upload_pdf(course_id, file.filename, content)
+            # Run synchronous GCS upload in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            blob_name = await loop.run_in_executor(
+                None,
+                storage_manager.upload_pdf,
+                course_id,
+                file.filename,
+                content
+            )
             return {
                 "filename": file.filename,
                 "status": "uploaded",
@@ -142,8 +150,13 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         else:
             # Fallback to local storage
             file_path = UPLOAD_DIR / f"{course_id}_{file.filename}"
-            with open(file_path, "wb") as f:
-                f.write(content)
+
+            # Run file write in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: open(file_path, "wb").write(content)
+            )
 
             return {
                 "filename": file.filename,
@@ -153,6 +166,9 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
                 "storage": "local"
             }
     except Exception as e:
+        print(f"❌ Upload error for {file.filename}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "filename": file.filename,
             "status": "failed",
