@@ -56,6 +56,20 @@ async def startup_event():
 
     print("🚀 Starting AI Study Assistant Backend...")
 
+    # Decode base64 GCP credentials if provided (for Railway deployment)
+    if os.getenv("GCP_SERVICE_ACCOUNT_BASE64"):
+        try:
+            import base64
+            import tempfile
+            creds_json = base64.b64decode(os.getenv("GCP_SERVICE_ACCOUNT_BASE64"))
+            temp_creds_path = "/tmp/gcp-service-account.json"
+            with open(temp_creds_path, "wb") as f:
+                f.write(creds_json)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_creds_path
+            print("✅ Decoded GCP credentials from base64")
+        except Exception as e:
+            print(f"⚠️  Failed to decode GCP credentials: {e}")
+
     # Initialize Storage Manager (GCS)
     try:
         storage_manager = StorageManager(
