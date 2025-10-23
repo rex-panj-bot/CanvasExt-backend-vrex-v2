@@ -11,22 +11,28 @@ from utils.file_upload_manager import FileUploadManager
 
 
 class RootAgent:
-    def __init__(self, document_manager, google_api_key: str):
+    def __init__(self, document_manager, google_api_key: str, storage_manager=None):
         """
         Initialize Root Agent with Gemini 2.5 Pro
 
         Args:
             document_manager: DocumentManager instance for document catalog
             google_api_key: Google API key for Gemini
+            storage_manager: Optional StorageManager for GCS file access
         """
         self.document_manager = document_manager
+        self.storage_manager = storage_manager
 
         # Initialize Gemini client
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.5-flash"
 
         # Initialize File Upload Manager
-        self.file_upload_manager = FileUploadManager(self.client, cache_duration_hours=48)
+        self.file_upload_manager = FileUploadManager(
+            self.client,
+            cache_duration_hours=48,
+            storage_manager=storage_manager
+        )
 
         # Session tracking: {session_id: {doc_ids: set(), file_uris: list()}}
         self.session_uploads = {}

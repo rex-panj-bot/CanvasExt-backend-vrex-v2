@@ -11,16 +11,18 @@ import asyncio
 
 
 class FileUploadManager:
-    def __init__(self, client: genai.Client, cache_duration_hours: int = 48):
+    def __init__(self, client: genai.Client, cache_duration_hours: int = 48, storage_manager=None):
         """
         Initialize File Upload Manager
 
         Args:
             client: Gemini client instance
             cache_duration_hours: How long to cache file URIs (default: 48 hours, max for File API)
+            storage_manager: Optional StorageManager for GCS file access
         """
         self.client = client
         self.cache_duration_hours = cache_duration_hours
+        self.storage_manager = storage_manager
 
         # Cache: {file_path: {uri, upload_time, file_object}}
         self._file_cache = {}
@@ -30,7 +32,7 @@ class FileUploadManager:
         Upload a PDF file to Gemini File API
 
         Args:
-            file_path: Path to PDF file
+            file_path: Path to PDF file (local path or GCS blob name)
             display_name: Optional display name for the file
 
         Returns:
@@ -43,29 +45,53 @@ class FileUploadManager:
 
             # If cache still valid (under 48 hours), return cached
             if age_hours < self.cache_duration_hours:
-                print(f"✅ Cache hit: {Path(file_path).name} (uploaded {age_hours:.1f}h ago)")
+                filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
+                print(f"✅ Cache hit: {filename} (uploaded {age_hours:.1f}h ago)")
                 return cached
 
             # Cache expired, remove it
-            print(f"⚠️  Cache expired for {Path(file_path).name}, re-uploading...")
+            filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
+            print(f"⚠️  Cache expired for {filename}, re-uploading...")
             del self._file_cache[file_path]
 
-        # Upload file
-        path = Path(file_path)
-        if not path.exists():
-            return {"error": f"File not found: {file_path}"}
+        # Determine if this is a GCS blob or local file
+        is_gcs = '/' in file_path and not Path(file_path).exists()
 
         try:
-            print(f"📤 Uploading {path.name} to Gemini File API...")
+            if is_gcs and self.storage_manager:
+                # Download from GCS and upload to Gemini
+                filename = file_path.split('/')[-1]
+                print(f"📤 Downloading {filename} from GCS...")
 
-            with open(file_path, 'rb') as f:
+                pdf_bytes = self.storage_manager.download_pdf(file_path)
+
+                print(f"📤 Uploading {filename} to Gemini File API...")
+
+                # Upload from bytes using io.BytesIO
+                import io
                 file_obj = self.client.files.upload(
-                    file=f,
+                    file=io.BytesIO(pdf_bytes),
                     config={
                         'mime_type': 'application/pdf',
-                        'display_name': display_name or path.name
+                        'display_name': display_name or filename
                     }
                 )
+            else:
+                # Local file upload
+                path = Path(file_path)
+                if not path.exists():
+                    return {"error": f"File not found: {file_path}"}
+
+                print(f"📤 Uploading {path.name} to Gemini File API...")
+
+                with open(file_path, 'rb') as f:
+                    file_obj = self.client.files.upload(
+                        file=f,
+                        config={
+                            'mime_type': 'application/pdf',
+                            'display_name': display_name or path.name
+                        }
+                    )
 
             # Cache the result
             result = {
@@ -78,13 +104,17 @@ class FileUploadManager:
             }
 
             self._file_cache[file_path] = result
-            print(f"✅ Uploaded {path.name} ({file_obj.size_bytes:,} bytes)")
+            filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
+            print(f"✅ Uploaded {filename} ({file_obj.size_bytes:,} bytes) - URI: {file_obj.uri[:60]}...")
 
             return result
 
         except Exception as e:
-            error_msg = f"Failed to upload {path.name}: {str(e)}"
+            filename = file_path.split('/')[-1] if '/' in file_path else Path(file_path).name
+            error_msg = f"Failed to upload {filename}: {str(e)}"
             print(f"❌ {error_msg}")
+            import traceback
+            traceback.print_exc()
             return {"error": error_msg}
 
     async def _upload_single_pdf_async(self, file_path: str) -> Dict:

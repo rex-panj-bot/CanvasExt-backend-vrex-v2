@@ -92,7 +92,8 @@ async def startup_event():
     # Initialize Root Agent with Gemini 2.5 Pro
     root_agent = RootAgent(
         document_manager=document_manager,
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        storage_manager=storage_manager
     )
     print(f"✅ Root Agent initialized")
 
