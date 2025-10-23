@@ -511,6 +511,8 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             selected_docs = message_data.get("selected_docs", [])
             syllabus_id = message_data.get("syllabus_id")
             chat_session_id = message_data.get("session_id")  # For saving chat history
+            enable_web_search = message_data.get("enable_web_search", False)  # Web search toggle
+            user_api_key = message_data.get("api_key")  # User's Gemini API key
 
             print(f"\n{'='*80}")
             print(f"📥 WebSocket received message:")
@@ -520,6 +522,8 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             print(f"   Selected docs: {selected_docs[:3] if len(selected_docs) > 3 else selected_docs}...")
             print(f"   Syllabus ID: {syllabus_id}")
             print(f"   Session ID: {chat_session_id}")
+            print(f"   Web Search: {enable_web_search}")
+            print(f"   User API Key: {'Provided' if user_api_key else 'Not provided (using default)'}")
             print(f"{'='*80}")
 
             # Process with Root Agent and stream response
@@ -531,7 +535,9 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 conversation_history=conversation_history,
                 selected_docs=selected_docs,
                 syllabus_id=syllabus_id,
-                session_id=connection_id
+                session_id=connection_id,
+                enable_web_search=enable_web_search,
+                user_api_key=user_api_key
             ):
                 chunk_count += 1
                 assistant_response += chunk

@@ -50,7 +50,9 @@ class RootAgent:
         conversation_history: List[Dict],
         selected_docs: List[str] = None,
         syllabus_id: str = None,
-        session_id: str = None
+        session_id: str = None,
+        enable_web_search: bool = False,
+        user_api_key: str = None
     ) -> AsyncGenerator[str, None]:
         """
         Process user query with streaming response
@@ -62,15 +64,24 @@ class RootAgent:
             selected_docs: List of selected document IDs to process
             syllabus_id: Optional syllabus document ID (always included)
             session_id: WebSocket session ID for tracking uploads
+            enable_web_search: Whether to enable Google Search grounding
+            user_api_key: Optional user-provided Gemini API key (overrides default)
 
         Yields:
             Response chunks
         """
         try:
+            # Use user's API key if provided, otherwise use default
+            api_client = self.client
+            if user_api_key:
+                api_client = genai.Client(api_key=user_api_key)
+                print(f"🔑 Using user-provided API key")
+
             print(f"\n{'='*80}")
             print(f"🔍 DEBUG: Starting query processing")
             print(f"   Course ID: {course_id}")
             print(f"   Session ID: {session_id}")
+            print(f"   Web Search: {'Enabled' if enable_web_search else 'Disabled'}")
             print(f"   Conversation history length: {len(conversation_history)}")
 
             # Step 1: Get all available documents
@@ -172,13 +183,18 @@ class RootAgent:
 
             # Step 4: Build system instruction
             file_names = [mat['name'] for mat in materials_to_use]
-            system_instruction = f"""You are an AI study assistant with access to {len(uploaded_files)} course documents and real-time web search.
+
+            # Build capabilities description
+            capabilities_text = "1. Read uploaded documents (PDFs, Word docs, images, etc.) directly"
+            if enable_web_search:
+                capabilities_text += "\n2. Perform Google searches for current information, news, or topics not in course materials"
+
+            system_instruction = f"""You are an AI study assistant with access to {len(uploaded_files)} course documents{"and real-time web search" if enable_web_search else ""}.
 
 Available course materials: {', '.join(file_names[:10])}{"..." if len(file_names) > 10 else ""}
 
 CAPABILITIES:
-1. Read uploaded documents (PDFs, Word docs, images, etc.) directly
-2. Perform Google searches for current information, news, or topics not in course materials
+{capabilities_text}
 
 CITATION FORMAT:
 When referencing information from course documents, use:
@@ -187,13 +203,9 @@ When referencing information from course documents, use:
 Examples:
 - According to the lecture notes [Source: Lecture_3_Algorithms, Page 12], sorting algorithms...
 - The syllabus states [Source: CS101_Syllabus, Page 3] that exams are worth 40%.
+{"When using web search results, the sources will be automatically cited below your response." if enable_web_search else ""}
 
-When using web search results, the sources will be automatically cited below your response.
-
-PRIORITY: Always prioritize course materials first. Use web search only when:
-- Information is not available in course materials
-- User asks about current events or recent developments
-- User explicitly requests web information"""
+{"PRIORITY: Always prioritize course materials first. Use web search only when information is not available in course materials or when user asks about current events." if enable_web_search else "Focus on providing accurate information from the course materials."}"""
 
             # Step 5: Build conversation with file references
             contents = []
@@ -228,16 +240,22 @@ PRIORITY: Always prioritize course materials first. Use web search only when:
             print(f"      Contents length: {len(contents)}")
             print(f"      History messages: {len(conversation_history)}")
 
-            # Step 6: Stream response from Gemini with Google Search grounding
-            # Enable Google Search for real-time information when needed
-            config = types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.7,
-                max_output_tokens=8192,
-                tools=[types.Tool(google_search=types.GoogleSearch())],  # Enable web search
-            )
+            # Step 6: Stream response from Gemini
+            # Conditionally enable Google Search based on user preference
+            config_params = {
+                "system_instruction": system_instruction,
+                "temperature": 0.7,
+                "max_output_tokens": 8192,
+            }
 
-            response_stream = await self.client.aio.models.generate_content_stream(
+            # Only add Google Search tool if enabled
+            if enable_web_search:
+                config_params["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+                print(f"   🌐 Google Search enabled for this query")
+
+            config = types.GenerateContentConfig(**config_params)
+
+            response_stream = await api_client.aio.models.generate_content_stream(
                 model=self.model_id,
                 contents=contents,
                 config=config
