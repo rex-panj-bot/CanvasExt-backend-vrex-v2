@@ -17,8 +17,16 @@ ENV/
 # Environment variables
 .env
 
+# Cloud credentials
+gcp-service-account.json
+*.json.key
+*-credentials.json
+
 # Uploaded files
 uploads/
+
+# Data directory
+data/
 
 # IDE
 .vscode/

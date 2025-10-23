@@ -14,6 +14,14 @@ pypdf2
 # LLM APIs
 google-genai  # Gemini 2.5 Pro SDK
 
+# Cloud Storage
+google-cloud-storage==2.14.0
+google-auth==2.27.0
+
+# Database
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.25
+
 # Utilities
 python-dotenv
 pydantic

@@ -22,6 +22,7 @@ load_dotenv()
 from utils.document_manager import DocumentManager
 from agents.root_agent import RootAgent
 from utils.chat_storage import ChatStorage
+from utils.storage_manager import StorageManager
 
 app = FastAPI(title="AI Study Assistant Backend")
 
@@ -38,11 +39,12 @@ app.add_middleware(
 root_agent = None
 document_manager = None
 chat_storage = None
+storage_manager = None
 
 # Store active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
 
-# PDF storage directory
+# PDF storage directory (deprecated - using GCS now, but kept for backward compatibility)
 UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
@@ -50,12 +52,27 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
-    global root_agent, document_manager, chat_storage
+    global root_agent, document_manager, chat_storage, storage_manager
 
     print("🚀 Starting AI Study Assistant Backend...")
 
+    # Initialize Storage Manager (GCS)
+    try:
+        storage_manager = StorageManager(
+            bucket_name=os.getenv("GCS_BUCKET_NAME", "canvas-extension-pdfs"),
+            project_id=os.getenv("GCS_PROJECT_ID", ""),
+            credentials_path=os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        )
+        print(f"✅ Storage Manager (GCS) initialized")
+    except Exception as e:
+        print(f"⚠️  Warning: GCS not configured ({e}), falling back to local storage")
+        storage_manager = None
+
     # Initialize Document Manager
-    document_manager = DocumentManager(upload_dir="./uploads")
+    if storage_manager:
+        document_manager = DocumentManager(storage_manager=storage_manager)
+    else:
+        document_manager = DocumentManager(upload_dir="./uploads")
     print(f"✅ Document Manager initialized")
 
     # Initialize Root Agent with Gemini 2.5 Pro
@@ -65,9 +82,14 @@ async def startup_event():
     )
     print(f"✅ Root Agent initialized")
 
-    # Initialize Chat Storage
-    chat_storage = ChatStorage(db_path="./data/chats.db")
-    print(f"✅ Chat Storage initialized")
+    # Initialize Chat Storage (PostgreSQL or SQLite fallback)
+    database_url = os.getenv("DATABASE_URL")
+    if database_url and database_url.startswith("postgresql"):
+        chat_storage = ChatStorage(database_url=database_url)
+        print(f"✅ Chat Storage (PostgreSQL) initialized")
+    else:
+        chat_storage = ChatStorage(db_path="./data/chats.db")
+        print(f"✅ Chat Storage (SQLite) initialized")
 
     print("🎉 Backend ready!")
 
@@ -90,20 +112,31 @@ async def root():
 async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
     """Process a single file upload (for parallel execution)"""
     try:
-        # Save PDF to disk
-        file_path = UPLOAD_DIR / f"{course_id}_{file.filename}"
         content = await file.read()
 
-        with open(file_path, "wb") as f:
-            f.write(content)
+        # Upload to GCS if available, otherwise save locally
+        if storage_manager:
+            blob_name = storage_manager.upload_pdf(course_id, file.filename, content)
+            return {
+                "filename": file.filename,
+                "status": "uploaded",
+                "size_bytes": len(content),
+                "path": blob_name,  # GCS blob path
+                "storage": "gcs"
+            }
+        else:
+            # Fallback to local storage
+            file_path = UPLOAD_DIR / f"{course_id}_{file.filename}"
+            with open(file_path, "wb") as f:
+                f.write(content)
 
-        # Skip page counting for faster upload (can be done later if needed)
-        return {
-            "filename": file.filename,
-            "status": "uploaded",
-            "size_bytes": len(content),
-            "path": str(file_path)
-        }
+            return {
+                "filename": file.filename,
+                "status": "uploaded",
+                "size_bytes": len(content),
+                "path": str(file_path),
+                "storage": "local"
+            }
     except Exception as e:
         return {
             "filename": file.filename,

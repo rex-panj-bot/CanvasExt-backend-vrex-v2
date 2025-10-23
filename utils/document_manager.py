@@ -9,17 +9,21 @@ from typing import List, Dict, Optional
 import json
 from PyPDF2 import PdfReader
 import re
+from io import BytesIO
 
 
 class DocumentManager:
-    def __init__(self, upload_dir: str = "./uploads"):
+    def __init__(self, storage_manager=None, upload_dir: str = "./uploads"):
         """
         Initialize Document Manager
 
         Args:
-            upload_dir: Directory where PDFs are stored
+            storage_manager: StorageManager instance for GCS (if None, uses local storage)
+            upload_dir: Directory where PDFs are stored (used only if storage_manager is None)
         """
-        self.upload_dir = Path(upload_dir)
+        self.storage_manager = storage_manager
+        self.use_gcs = storage_manager is not None
+        self.upload_dir = Path(upload_dir) if not self.use_gcs else None
 
         # Build material catalog on init
         self.catalog = self._build_catalog()
@@ -35,45 +39,87 @@ class DocumentManager:
         """
         catalog = {}
 
-        if not self.upload_dir.exists():
-            return catalog
+        if self.use_gcs:
+            # Build catalog from GCS
+            try:
+                all_blob_names = self.storage_manager.list_files()
 
-        # Group files by course_id (extracted from filename prefix)
-        for pdf_path in self.upload_dir.glob("*.pdf"):
-            filename = pdf_path.name
+                for blob_name in all_blob_names:
+                    # blob_name format: "course_id/filename.pdf"
+                    parts = blob_name.split('/')
+                    if len(parts) != 2:
+                        continue
 
-            # Extract course_id from filename (format: {course_id}_{original_name}.pdf)
-            parts = filename.split('_', 1)
-            if len(parts) < 2:
-                continue
+                    course_id = parts[0]
+                    filename = parts[1]
+                    original_name = filename.replace('.pdf', '')
 
-            course_id = parts[0]
-            original_name = parts[1].replace('.pdf', '')
+                    if course_id not in catalog:
+                        catalog[course_id] = []
 
-            if course_id not in catalog:
-                catalog[course_id] = []
+                    # Get metadata from GCS
+                    try:
+                        metadata = self.storage_manager.get_file_metadata(blob_name)
+                        size_mb = metadata['size'] / (1024 * 1024)
 
-            # Get file size
-            size_mb = pdf_path.stat().st_size / (1024 * 1024)
+                        catalog[course_id].append({
+                            "id": f"{course_id}_{original_name}",
+                            "name": original_name,
+                            "filename": filename,
+                            "path": blob_name,  # GCS blob path
+                            "size_mb": round(size_mb, 2),
+                            "num_pages": None,  # Skip page counting for GCS
+                            "type": self._infer_type(original_name),
+                            "storage": "gcs"
+                        })
+                    except Exception as e:
+                        print(f"Error getting metadata for {blob_name}: {e}")
 
-            # Try to count pages (skip in quick mode for faster catalog build)
-            num_pages = None
-            if not quick_mode:
-                try:
-                    reader = PdfReader(str(pdf_path))
-                    num_pages = len(reader.pages)
-                except:
-                    num_pages = None
+            except Exception as e:
+                print(f"Error building catalog from GCS: {e}")
+                return catalog
 
-            catalog[course_id].append({
-                "id": filename.replace('.pdf', ''),
-                "name": original_name,
-                "filename": filename,
-                "path": str(pdf_path),
-                "size_mb": round(size_mb, 2),
-                "num_pages": num_pages,
-                "type": self._infer_type(original_name)
-            })
+        else:
+            # Build catalog from local filesystem
+            if not self.upload_dir.exists():
+                return catalog
+
+            for pdf_path in self.upload_dir.glob("*.pdf"):
+                filename = pdf_path.name
+
+                # Extract course_id from filename (format: {course_id}_{original_name}.pdf)
+                parts = filename.split('_', 1)
+                if len(parts) < 2:
+                    continue
+
+                course_id = parts[0]
+                original_name = parts[1].replace('.pdf', '')
+
+                if course_id not in catalog:
+                    catalog[course_id] = []
+
+                # Get file size
+                size_mb = pdf_path.stat().st_size / (1024 * 1024)
+
+                # Try to count pages (skip in quick mode)
+                num_pages = None
+                if not quick_mode:
+                    try:
+                        reader = PdfReader(str(pdf_path))
+                        num_pages = len(reader.pages)
+                    except:
+                        num_pages = None
+
+                catalog[course_id].append({
+                    "id": filename.replace('.pdf', ''),
+                    "name": original_name,
+                    "filename": filename,
+                    "path": str(pdf_path),
+                    "size_mb": round(size_mb, 2),
+                    "num_pages": num_pages,
+                    "type": self._infer_type(original_name),
+                    "storage": "local"
+                })
 
         print(f"📚 Built catalog: {sum(len(docs) for docs in catalog.values())} documents across {len(catalog)} courses")
         return catalog
@@ -241,20 +287,28 @@ class DocumentManager:
                 "doc_id": doc_id
             }
 
-        pdf_path = Path(document['path'])
-        if not pdf_path.exists():
-            return {
-                "error": f"File not found: {pdf_path}",
-                "course_id": course_id,
-                "doc_id": doc_id
-            }
-
         # Extract text using PyPDF2
         extraction_method = "PyPDF2"
         full_text = ""
 
         try:
-            reader = PdfReader(str(pdf_path))
+            if self.use_gcs:
+                # Download PDF from GCS to memory and extract text
+                blob_name = document['path']  # GCS blob path
+                pdf_bytes = self.storage_manager.download_pdf(blob_name)
+                reader = PdfReader(BytesIO(pdf_bytes))
+            else:
+                # Read from local file
+                pdf_path = Path(document['path'])
+                if not pdf_path.exists():
+                    return {
+                        "error": f"File not found: {pdf_path}",
+                        "course_id": course_id,
+                        "doc_id": doc_id
+                    }
+                reader = PdfReader(str(pdf_path))
+
+            # Extract text from all pages
             for page_num, page in enumerate(reader.pages):
                 page_text = page.extract_text()
                 if page_text and page_text.strip():
