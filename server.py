@@ -247,12 +247,17 @@ async def upload_pdfs(
         # Count successes and failures
         successful = [r for r in processed_results if r["status"] == "uploaded"]
         failed = [r for r in processed_results if r["status"] == "failed"]
+        skipped = [r for r in processed_results if r["status"] == "skipped"]
 
-        print(f"✅ Upload results: {len(successful)} succeeded, {len(failed)} failed")
+        print(f"✅ Upload results: {len(successful)} succeeded, {len(failed)} failed, {len(skipped)} skipped")
         if failed:
             print(f"❌ Failed files: {[f['filename'] for f in failed]}")
             for f in failed:
                 print(f"   - {f['filename']}: {f.get('error', 'Unknown error')}")
+        if skipped:
+            print(f"⏭️  Skipped files: {[s['filename'] for s in skipped]}")
+            for s in skipped:
+                print(f"   - {s['filename']}: {s.get('error', 'Unknown reason')}")
 
         # Incrementally add new files to catalog (much faster than full rescan)
         if document_manager and successful:

@@ -137,9 +137,19 @@ class RootAgent:
 
             print(f"   🔍 Session check:")
             print(f"      Session ID: {session_id}")
-            print(f"      Selected doc IDs: {list(selected_doc_ids)[:3]}...")
-            print(f"      Cached doc IDs: {list(cached_doc_ids)[:3] if cached_doc_ids else 'None'}...")
+            print(f"      Selected doc IDs ({len(selected_doc_ids)}): {list(selected_doc_ids)[:3]}...")
+            print(f"      Cached doc IDs ({len(cached_doc_ids)}): {list(cached_doc_ids)[:3] if cached_doc_ids else 'None'}...")
             print(f"      IDs match: {cached_doc_ids == selected_doc_ids}")
+
+            # Verify all materials have paths
+            materials_with_paths = [m for m in materials_to_use if m.get("path")]
+            if len(materials_with_paths) < len(materials_to_use):
+                print(f"   ⚠️  WARNING: {len(materials_to_use) - len(materials_with_paths)} materials missing paths!")
+                missing_path_materials = [m for m in materials_to_use if not m.get("path")]
+                for mat in missing_path_materials[:3]:
+                    print(f"      - {mat.get('name', 'unknown')}: id={mat.get('id', 'unknown')}")
+
+            print(f"   📂 Materials to upload: {len(materials_with_paths)} with valid paths")
 
             need_upload = False
             uploaded_files = []
@@ -152,10 +162,17 @@ class RootAgent:
             else:
                 # Need to upload (new session or different file selection)
                 need_upload = True
-                print(f"   📤 Uploading {len(materials_to_use)} PDFs to Gemini...")
+                print(f"   📤 Uploading {len(materials_to_use)} files to Gemini...")
 
-                file_paths = [mat["path"] for mat in materials_to_use]
-                print(f"   📂 File paths to upload: {file_paths[:2]}...")
+                file_paths = [mat["path"] for mat in materials_to_use if mat.get("path")]
+                print(f"   📂 Files with paths: {len(file_paths)}/{len(materials_to_use)}")
+                print(f"   📂 Sample paths: {file_paths[:2]}...")
+
+                if not file_paths:
+                    print(f"   ❌ ERROR: No valid file paths found!")
+                    yield "❌ Error: No valid file paths found in materials. Please re-scan course materials.\n\n"
+                    return
+
                 upload_result = await self.file_upload_manager.upload_multiple_pdfs_async(file_paths)
 
                 if not upload_result.get('success'):
@@ -170,14 +187,25 @@ class RootAgent:
 
                 print(f"   ✅ Uploaded {len(uploaded_files)} files (~{total_mb:.1f}MB)")
                 if failed_files:
-                    print(f"   ⚠️  Skipped {len(failed_files)} unsupported files")
+                    print(f"   ⚠️  Failed to upload {len(failed_files)} files:")
+                    for failed in failed_files:
+                        print(f"      - {failed.get('path', 'unknown')}: {failed.get('error', 'unknown error')}")
                 print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2]]}")
 
                 # Inform user if no files could be uploaded
                 if len(uploaded_files) == 0:
-                    yield "⚠️ No files could be uploaded. The selected files are not supported by Gemini.\n\n"
-                    yield "**Supported formats**: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP\n\n"
-                    yield "**Unsupported formats**: PPTX, DOCX, XLSX (please convert to PDF first)\n\n"
+                    yield "⚠️ **No files could be uploaded to Gemini.**\n\n"
+                    if failed_files:
+                        yield f"**Failed uploads ({len(failed_files)} files):**\n"
+                        for failed in failed_files[:5]:  # Show first 5
+                            path = failed.get('path', 'unknown')
+                            filename = path.split('/')[-1] if '/' in path else path
+                            error = failed.get('error', 'unknown error')
+                            yield f"- {filename}: {error}\n"
+                        if len(failed_files) > 5:
+                            yield f"- ... and {len(failed_files) - 5} more\n"
+                    yield "\n**Supported formats**: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP\n"
+                    yield "**Tip**: Convert PPTX, DOCX, XLSX files to PDF for best results\n\n"
                     return
 
                 # Cache for this session
@@ -189,10 +217,19 @@ class RootAgent:
                     print(f"   💾 Cached {len(uploaded_files)} files for session")
 
                 # Yield upload status to user
-                status_msg = f"📤 Loaded {len(uploaded_files)} files (~{total_mb:.1f}MB)"
+                status_msg = f"📤 **Loaded {len(uploaded_files)} of {len(materials_to_use)} files** (~{total_mb:.1f}MB)"
                 if failed_files:
-                    status_msg += f"\n⚠️ Skipped {len(failed_files)} unsupported files (PPTX, DOCX, XLSX - please convert to PDF)"
-                yield status_msg + "\n\n"
+                    status_msg += f"\n⚠️ **{len(failed_files)} files could not be uploaded:**\n"
+                    for failed in failed_files[:3]:  # Show first 3
+                        path = failed.get('path', 'unknown')
+                        filename = path.split('/')[-1] if '/' in path else path
+                        error = failed.get('error', 'unknown error')
+                        # Show short error message
+                        short_error = error.split('.')[0] if '.' in error else error
+                        status_msg += f"  - {filename}: {short_error}\n"
+                    if len(failed_files) > 3:
+                        status_msg += f"  - ... and {len(failed_files) - 3} more\n"
+                yield status_msg + "\n"
 
             # Step 4: Build system instruction
             file_names = [mat['name'] for mat in materials_to_use]
@@ -233,15 +270,23 @@ Examples:
 
             # Always attach files when documents are selected (Gemini requires file references on every call)
             print(f"   📎 Attaching files to API call:")
-            print(f"      uploaded_files count: {len(uploaded_files)}")
+            print(f"      materials_to_use: {len(materials_to_use)} files")
+            print(f"      uploaded_files: {len(uploaded_files)} files successfully uploaded")
             if uploaded_files:
                 # Attach PDF file URIs
-                for file_info in uploaded_files:
+                for i, file_info in enumerate(uploaded_files):
                     parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
                 print(f"      ✅ Attached {len(uploaded_files)} file URIs to message")
-                print(f"      Sample URIs: {[f['uri'][:60] + '...' for f in uploaded_files[:2]]}")
+                print(f"      Sample URIs:")
+                for f in uploaded_files[:3]:
+                    display_name = f.get('display_name', 'unknown')
+                    uri = f['uri'][:60] + '...'
+                    print(f"         - {display_name}: {uri}")
+                if len(uploaded_files) > 3:
+                    print(f"         ... and {len(uploaded_files) - 3} more")
             else:
                 print(f"      ⚠️  WARNING: No uploaded_files to attach!")
+                print(f"      This means NO FILES will be sent to the LLM!")
 
             # Add user question
             parts.append(types.Part(text=user_message))

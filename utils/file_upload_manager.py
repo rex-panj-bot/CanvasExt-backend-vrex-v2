@@ -48,14 +48,11 @@ class FileUploadManager:
         if not mime_type:
             mime_type = get_mime_type(filename)
             if not mime_type:
-                return {"error": f"Unsupported file type for {filename}"}
-
-        # Check if file type is supported by Gemini File API
-        if not is_supported_by_gemini(filename):
-            ext = get_file_extension(filename)
-            print(f"⚠️  Skipping {filename}: {ext.upper()} files are not supported by Gemini File API")
-            print(f"    Supported formats: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP")
-            return {"error": f"File type not supported: {ext.upper()} files cannot be processed by Gemini. Please convert to PDF first.", "skipped": True}
+                # Try to upload anyway - let Gemini reject it if unsupported
+                ext = get_file_extension(filename)
+                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), will attempt upload anyway")
+                # Use a generic MIME type as fallback
+                mime_type = 'application/octet-stream'
 
         # Check cache first
         if file_path in self._file_cache:
@@ -91,47 +88,70 @@ class FileUploadManager:
 
             # Convert Office files to PDF if needed
             original_filename = filename
+            conversion_attempted = False
             if needs_conversion(filename):
                 ext = get_file_extension(filename)
                 print(f"🔄 Converting {filename} ({ext.upper()}) to PDF...")
-                pdf_bytes = convert_office_to_pdf(file_bytes, filename)
-                if pdf_bytes:
-                    file_bytes = pdf_bytes
-                    filename = filename.rsplit('.', 1)[0] + '.pdf'
-                    mime_type = 'application/pdf'
-                    print(f"✅ Converted {original_filename} to PDF ({len(pdf_bytes):,} bytes)")
-                else:
-                    print(f"⚠️  Conversion failed for {filename}, uploading original")
+                conversion_attempted = True
+                try:
+                    pdf_bytes = convert_office_to_pdf(file_bytes, filename)
+                    if pdf_bytes:
+                        file_bytes = pdf_bytes
+                        filename = filename.rsplit('.', 1)[0] + '.pdf'
+                        mime_type = 'application/pdf'
+                        print(f"✅ Converted {original_filename} to PDF ({len(pdf_bytes):,} bytes)")
+                    else:
+                        print(f"⚠️  Conversion failed for {filename}, will try uploading original format")
+                except Exception as conv_error:
+                    print(f"⚠️  Conversion error for {filename}: {conv_error}")
+                    print(f"    Will try uploading original format")
 
             ext = get_file_extension(filename) or 'file'
             print(f"📤 Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API...")
+            if conversion_attempted and filename.endswith('.pdf'):
+                print(f"    (Converted from {original_filename})")
 
             # Upload from bytes
             import io
-            file_obj = self.client.files.upload(
-                file=io.BytesIO(file_bytes),
-                config={
+            try:
+                file_obj = self.client.files.upload(
+                    file=io.BytesIO(file_bytes),
+                    config={
+                        'mime_type': mime_type,
+                        'display_name': display_name or original_filename
+                    }
+                )
+
+                # Cache the result
+                result = {
+                    'file': file_obj,
+                    'uri': file_obj.uri,
+                    'name': file_obj.name,
+                    'display_name': file_obj.display_name,
+                    'size_bytes': file_obj.size_bytes,
                     'mime_type': mime_type,
-                    'display_name': display_name or original_filename
+                    'upload_time': time.time()
                 }
-            )
 
-            # Cache the result
-            result = {
-                'file': file_obj,
-                'uri': file_obj.uri,
-                'name': file_obj.name,
-                'display_name': file_obj.display_name,
-                'size_bytes': file_obj.size_bytes,
-                'mime_type': mime_type,
-                'upload_time': time.time()
-            }
+                self._file_cache[file_path] = result
+                ext = get_file_extension(filename) or 'file'
+                print(f"✅ Uploaded {filename} ({ext.upper()}, {file_obj.size_bytes:,} bytes) - URI: {file_obj.uri[:60]}...")
 
-            self._file_cache[file_path] = result
-            ext = get_file_extension(filename) or 'file'
-            print(f"✅ Uploaded {filename} ({ext.upper()}, {file_obj.size_bytes:,} bytes) - URI: {file_obj.uri[:60]}...")
-
-            return result
+                return result
+            except Exception as upload_error:
+                # Gemini rejected the file - provide clear error message
+                ext = get_file_extension(filename) or 'file'
+                error_msg = str(upload_error)
+                if 'not supported' in error_msg.lower() or 'mime' in error_msg.lower():
+                    print(f"❌ Gemini rejected {filename}: {ext.upper()} format not supported by Gemini API")
+                    print(f"   Error: {error_msg}")
+                    return {
+                        "error": f"File type {ext.upper()} not supported by Gemini API. Supported: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP",
+                        "filename": filename,
+                        "rejected": True
+                    }
+                else:
+                    raise upload_error
 
         except Exception as e:
             error_msg = f"Failed to upload {filename}: {str(e)}"
