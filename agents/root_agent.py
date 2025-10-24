@@ -1,7 +1,7 @@
 """
 Root Agent - Query Processing for Study Assistant
 
-Uses Gemini 2.5 Pro with native PDF processing for optimal performance.
+Uses Gemini 2.5 Flash with native PDF processing for optimal performance.
 """
 
 from google import genai
@@ -13,7 +13,7 @@ from utils.file_upload_manager import FileUploadManager
 class RootAgent:
     def __init__(self, document_manager, google_api_key: str, storage_manager=None):
         """
-        Initialize Root Agent with Gemini 2.5 Pro
+        Initialize Root Agent with Gemini 2.5 Flash
 
         Args:
             document_manager: DocumentManager instance for document catalog

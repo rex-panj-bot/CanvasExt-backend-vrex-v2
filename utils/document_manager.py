@@ -45,14 +45,18 @@ class DocumentManager:
                 all_blob_names = self.storage_manager.list_files()
 
                 for blob_name in all_blob_names:
-                    # blob_name format: "course_id/filename.pdf"
+                    # blob_name format: "course_id/filename.ext"
                     parts = blob_name.split('/')
                     if len(parts) != 2:
                         continue
 
                     course_id = parts[0]
                     filename = parts[1]
-                    original_name = filename.replace('.pdf', '')
+
+                    # Remove extension from filename
+                    original_name = filename
+                    if '.' in filename:
+                        original_name = '.'.join(filename.split('.')[:-1])
 
                     if course_id not in catalog:
                         catalog[course_id] = []
@@ -84,42 +88,50 @@ class DocumentManager:
             if not self.upload_dir.exists():
                 return catalog
 
-            for pdf_path in self.upload_dir.glob("*.pdf"):
-                filename = pdf_path.name
+            # Supported file extensions
+            file_patterns = ['*.pdf', '*.docx', '*.doc', '*.pptx', '*.ppt', '*.xlsx', '*.xls',
+                           '*.txt', '*.md', '*.csv', '*.png', '*.jpg', '*.jpeg', '*.gif', '*.webp']
 
-                # Extract course_id from filename (format: {course_id}_{original_name}.pdf)
-                parts = filename.split('_', 1)
-                if len(parts) < 2:
-                    continue
+            for pattern in file_patterns:
+                for file_path in self.upload_dir.glob(pattern):
+                    filename = file_path.name
 
-                course_id = parts[0]
-                original_name = parts[1].replace('.pdf', '')
+                    # Extract course_id from filename (format: {course_id}_{original_name}.ext)
+                    parts = filename.split('_', 1)
+                    if len(parts) < 2:
+                        continue
 
-                if course_id not in catalog:
-                    catalog[course_id] = []
+                    course_id = parts[0]
+                    # Remove extension from original_name
+                    original_name = parts[1]
+                    if '.' in original_name:
+                        original_name = '.'.join(original_name.split('.')[:-1])
 
-                # Get file size
-                size_mb = pdf_path.stat().st_size / (1024 * 1024)
+                    if course_id not in catalog:
+                        catalog[course_id] = []
 
-                # Try to count pages (skip in quick mode)
-                num_pages = None
-                if not quick_mode:
-                    try:
-                        reader = PdfReader(str(pdf_path))
-                        num_pages = len(reader.pages)
-                    except:
-                        num_pages = None
+                    # Get file size
+                    size_mb = file_path.stat().st_size / (1024 * 1024)
 
-                catalog[course_id].append({
-                    "id": filename.replace('.pdf', ''),
-                    "name": original_name,
-                    "filename": filename,
-                    "path": str(pdf_path),
-                    "size_mb": round(size_mb, 2),
-                    "num_pages": num_pages,
-                    "type": self._infer_type(original_name),
-                    "storage": "local"
-                })
+                    # Try to count pages (only for PDFs, skip in quick mode)
+                    num_pages = None
+                    if not quick_mode and pattern == '*.pdf':
+                        try:
+                            reader = PdfReader(str(file_path))
+                            num_pages = len(reader.pages)
+                        except:
+                            num_pages = None
+
+                    catalog[course_id].append({
+                        "id": f"{course_id}_{original_name}",
+                        "name": original_name,
+                        "filename": filename,
+                        "path": str(file_path),
+                        "size_mb": round(size_mb, 2),
+                        "num_pages": num_pages,
+                        "type": self._infer_type(original_name),
+                        "storage": "local"
+                    })
 
         print(f"📚 Built catalog: {sum(len(docs) for docs in catalog.values())} documents across {len(catalog)} courses")
         return catalog

@@ -90,7 +90,7 @@ async def startup_event():
         document_manager = DocumentManager(upload_dir="./uploads")
     print(f"✅ Document Manager initialized")
 
-    # Initialize Root Agent with Gemini 2.5 Pro
+    # Initialize Root Agent with Gemini 2.5 Flash
     root_agent = RootAgent(
         document_manager=document_manager,
         google_api_key=os.getenv("GOOGLE_API_KEY"),
@@ -476,7 +476,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
     Process:
         1. Accepts WebSocket connection
         2. Receives query messages from client
-        3. Processes with RootAgent (Gemini 2.5 Pro)
+        3. Processes with RootAgent (Gemini 2.5 Flash)
         4. Streams response chunks back to client
         5. Maintains session context (file uploads cached)
 
