@@ -165,10 +165,20 @@ class RootAgent:
                     return
 
                 uploaded_files = upload_result.get('files', [])
+                failed_files = upload_result.get('failed', [])
                 total_mb = upload_result['total_bytes'] / (1024 * 1024)
 
-                print(f"   ✅ Uploaded {len(uploaded_files)} PDFs (~{total_mb:.1f}MB)")
+                print(f"   ✅ Uploaded {len(uploaded_files)} files (~{total_mb:.1f}MB)")
+                if failed_files:
+                    print(f"   ⚠️  Skipped {len(failed_files)} unsupported files")
                 print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2]]}")
+
+                # Inform user if no files could be uploaded
+                if len(uploaded_files) == 0:
+                    yield "⚠️ No files could be uploaded. The selected files are not supported by Gemini.\n\n"
+                    yield "**Supported formats**: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP\n\n"
+                    yield "**Unsupported formats**: PPTX, DOCX, XLSX (please convert to PDF first)\n\n"
+                    return
 
                 # Cache for this session
                 if session_id:
@@ -179,7 +189,10 @@ class RootAgent:
                     print(f"   💾 Cached {len(uploaded_files)} files for session")
 
                 # Yield upload status to user
-                yield f"📤 Loaded {len(uploaded_files)} PDFs (~{total_mb:.1f}MB)\n\n"
+                status_msg = f"📤 Loaded {len(uploaded_files)} files (~{total_mb:.1f}MB)"
+                if failed_files:
+                    status_msg += f"\n⚠️ Skipped {len(failed_files)} unsupported files (PPTX, DOCX, XLSX - please convert to PDF)"
+                yield status_msg + "\n\n"
 
             # Step 4: Build system instruction
             file_names = [mat['name'] for mat in materials_to_use]

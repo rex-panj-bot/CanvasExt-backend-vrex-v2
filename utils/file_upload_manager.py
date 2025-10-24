@@ -9,6 +9,7 @@ from typing import Dict, Optional, List
 import time
 import asyncio
 from .mime_types import get_mime_type, get_file_extension, is_supported_by_gemini
+from .file_converter import convert_office_to_pdf, needs_conversion
 
 
 class FileUploadManager:
@@ -49,10 +50,12 @@ class FileUploadManager:
             if not mime_type:
                 return {"error": f"Unsupported file type for {filename}"}
 
-        # Check if file type is supported by Gemini
+        # Check if file type is supported by Gemini File API
         if not is_supported_by_gemini(filename):
             ext = get_file_extension(filename)
-            print(f"⚠️  Warning: {ext.upper()} files may have limited Gemini support")
+            print(f"⚠️  Skipping {filename}: {ext.upper()} files are not supported by Gemini File API")
+            print(f"    Supported formats: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP")
+            return {"error": f"File type not supported: {ext.upper()} files cannot be processed by Gemini. Please convert to PDF first.", "skipped": True}
 
         # Check cache first
         if file_path in self._file_cache:
@@ -72,41 +75,46 @@ class FileUploadManager:
         is_gcs = '/' in file_path and not Path(file_path).exists()
 
         try:
+            # Get file bytes
+            file_bytes = None
             if is_gcs and self.storage_manager:
-                # Download from GCS and upload to Gemini
+                # Download from GCS
                 print(f"📤 Downloading {filename} from GCS...")
-
                 file_bytes = self.storage_manager.download_pdf(file_path)
-
-                ext = get_file_extension(filename) or 'file'
-                print(f"📤 Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API...")
-
-                # Upload from bytes using io.BytesIO
-                import io
-                file_obj = self.client.files.upload(
-                    file=io.BytesIO(file_bytes),
-                    config={
-                        'mime_type': mime_type,
-                        'display_name': display_name or filename
-                    }
-                )
             else:
-                # Local file upload
+                # Local file
                 path = Path(file_path)
                 if not path.exists():
                     return {"error": f"File not found: {file_path}"}
-
-                ext = get_file_extension(filename) or 'file'
-                print(f"📤 Uploading {path.name} ({ext.upper()}, {mime_type}) to Gemini File API...")
-
                 with open(file_path, 'rb') as f:
-                    file_obj = self.client.files.upload(
-                        file=f,
-                        config={
-                            'mime_type': mime_type,
-                            'display_name': display_name or path.name
-                        }
-                    )
+                    file_bytes = f.read()
+
+            # Convert Office files to PDF if needed
+            original_filename = filename
+            if needs_conversion(filename):
+                ext = get_file_extension(filename)
+                print(f"🔄 Converting {filename} ({ext.upper()}) to PDF...")
+                pdf_bytes = convert_office_to_pdf(file_bytes, filename)
+                if pdf_bytes:
+                    file_bytes = pdf_bytes
+                    filename = filename.rsplit('.', 1)[0] + '.pdf'
+                    mime_type = 'application/pdf'
+                    print(f"✅ Converted {original_filename} to PDF ({len(pdf_bytes):,} bytes)")
+                else:
+                    print(f"⚠️  Conversion failed for {filename}, uploading original")
+
+            ext = get_file_extension(filename) or 'file'
+            print(f"📤 Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API...")
+
+            # Upload from bytes
+            import io
+            file_obj = self.client.files.upload(
+                file=io.BytesIO(file_bytes),
+                config={
+                    'mime_type': mime_type,
+                    'display_name': display_name or original_filename
+                }
+            )
 
             # Cache the result
             result = {

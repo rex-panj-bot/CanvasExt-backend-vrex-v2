@@ -11,6 +11,12 @@ websockets
 # PDF Processing
 pypdf2
 
+# Office Document Processing (for conversion to PDF)
+python-pptx         # PowerPoint files
+python-docx         # Word documents
+openpyxl            # Excel spreadsheets
+reportlab           # PDF generation from text
+
 # LLM APIs
 google-genai  # Gemini 2.5 Pro SDK
 

@@ -32,7 +32,7 @@ MIME_TYPE_MAP = {
     'webp': 'image/webp',
 }
 
-# Gemini-supported file types (based on API documentation)
+# Gemini File API supported file types (verified working MIME types only)
 GEMINI_SUPPORTED = {
     # Text files - directly supported
     'txt', 'md', 'csv',
@@ -43,16 +43,19 @@ GEMINI_SUPPORTED = {
     # Images - supported for vision capabilities
     'png', 'jpg', 'jpeg', 'gif', 'webp',
 
-    # Office formats - partial support (may need conversion)
-    'docx', 'xlsx', 'pptx',
+    # Note: Office formats (docx, xlsx, pptx) are NOT supported by Gemini File API
+    # They need to be converted to PDF or extracted as text first
 }
 
-# File types that need conversion before Gemini upload
+# File types that need conversion before Gemini upload (NOT directly supported)
 NEEDS_CONVERSION = {
-    'doc',   # Convert to docx or PDF
-    'xls',   # Convert to xlsx or CSV
-    'ppt',   # Convert to pptx or PDF
-    'rtf',   # Convert to TXT or PDF
+    'doc',   # Convert to PDF
+    'docx',  # Convert to PDF
+    'xls',   # Convert to PDF or CSV
+    'xlsx',  # Convert to PDF or CSV
+    'ppt',   # Convert to PDF
+    'pptx',  # Convert to PDF
+    'rtf',   # Convert to PDF or TXT
 }
 
 def get_mime_type(filename: str) -> Optional[str]:
