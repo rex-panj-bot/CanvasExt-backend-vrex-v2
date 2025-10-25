@@ -169,7 +169,7 @@ class FileUploadManager:
 
     async def upload_multiple_pdfs_async(self, file_paths: List[str]) -> Dict:
         """
-        Upload multiple files in parallel (async version)
+        Upload multiple files in batches (async version)
         Supports PDFs, documents, images, etc.
 
         Args:
@@ -178,34 +178,42 @@ class FileUploadManager:
         Returns:
             Dict with uploaded files and stats
         """
-        print(f"📤 Uploading {len(file_paths)} files to Gemini...")
+        # Process in batches to avoid memory issues with large file sets
+        BATCH_SIZE = 5  # Smaller batch for Gemini uploads (with conversions)
+        print(f"📤 Uploading {len(file_paths)} files to Gemini in batches of {BATCH_SIZE}...")
 
-        # Upload all files in parallel
-        upload_tasks = [self._upload_single_pdf_async(fp) for fp in file_paths]
-        results = await asyncio.gather(*upload_tasks, return_exceptions=True)
-
-        # Process results
         uploaded = []
         failed = []
         total_bytes = 0
 
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                failed.append({
-                    'path': file_paths[i],
-                    'error': str(result)
-                })
-            elif 'error' in result:
-                failed.append({
-                    'path': file_paths[i],
-                    'error': result['error']
-                })
-            else:
-                uploaded.append(result)
-                total_bytes += result.get('size_bytes', 0)
+        for i in range(0, len(file_paths), BATCH_SIZE):
+            batch = file_paths[i:i + BATCH_SIZE]
+            batch_num = (i // BATCH_SIZE) + 1
+            total_batches = (len(file_paths) + BATCH_SIZE - 1) // BATCH_SIZE
+            print(f"   Batch {batch_num}/{total_batches}: Processing {len(batch)} files...")
+
+            # Upload batch in parallel
+            upload_tasks = [self._upload_single_pdf_async(fp) for fp in batch]
+            results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+            # Process batch results
+            for j, result in enumerate(results):
+                if isinstance(result, Exception):
+                    failed.append({
+                        'path': batch[j],
+                        'error': str(result)
+                    })
+                elif 'error' in result:
+                    failed.append({
+                        'path': batch[j],
+                        'error': result['error']
+                    })
+                else:
+                    uploaded.append(result)
+                    total_bytes += result.get('size_bytes', 0)
 
         # Log summary
-        print(f"✅ Parallel upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
+        print(f"✅ Batch upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
 
         if uploaded:
             # Group by file type

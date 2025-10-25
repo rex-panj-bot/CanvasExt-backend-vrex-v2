@@ -226,25 +226,34 @@ async def upload_pdfs(
         print(f"   Storage manager available: {storage_manager is not None}")
         print(f"{'='*80}")
 
-        # Process all files in parallel for 10-20x faster upload
-        print(f"📤 Uploading {len(files)} files in parallel...")
-        upload_tasks = [_process_single_upload(course_id, file) for file in files]
-        results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+        # Process files in batches to avoid memory issues
+        # With large numbers of files (90+), processing all in parallel causes OOM
+        BATCH_SIZE = 10
+        print(f"📤 Uploading {len(files)} files in batches of {BATCH_SIZE}...")
 
-        # Handle exceptions in results
         processed_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                print(f"❌ Exception for file {files[i].filename}: {result}")
-                import traceback
-                traceback.print_exception(type(result), result, result.__traceback__)
-                processed_results.append({
-                    "filename": files[i].filename,
-                    "status": "failed",
-                    "error": str(result)
-                })
-            else:
-                processed_results.append(result)
+        for i in range(0, len(files), BATCH_SIZE):
+            batch = files[i:i + BATCH_SIZE]
+            batch_num = (i // BATCH_SIZE) + 1
+            total_batches = (len(files) + BATCH_SIZE - 1) // BATCH_SIZE
+            print(f"   Processing batch {batch_num}/{total_batches} ({len(batch)} files)...")
+
+            upload_tasks = [_process_single_upload(course_id, file) for file in batch]
+            batch_results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+            # Handle exceptions in batch results
+            for j, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    print(f"❌ Exception for file {batch[j].filename}: {result}")
+                    import traceback
+                    traceback.print_exception(type(result), result, result.__traceback__)
+                    processed_results.append({
+                        "filename": batch[j].filename,
+                        "status": "failed",
+                        "error": str(result)
+                    })
+                else:
+                    processed_results.append(result)
 
         # Count successes and failures
         successful = [r for r in processed_results if r["status"] == "uploaded"]
