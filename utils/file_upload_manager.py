@@ -204,7 +204,27 @@ class FileUploadManager:
                 uploaded.append(result)
                 total_bytes += result.get('size_bytes', 0)
 
+        # Log summary
         print(f"✅ Parallel upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
+
+        if uploaded:
+            # Group by file type
+            type_counts = {}
+            for file_info in uploaded:
+                display_name = file_info.get('display_name', '')
+                ext = display_name.split('.')[-1].lower() if '.' in display_name else 'unknown'
+                type_counts[ext] = type_counts.get(ext, 0) + 1
+            print(f"📊 Uploaded file types: {type_counts}")
+            print(f"📊 Total size: {total_bytes:,} bytes ({total_bytes / (1024*1024):.1f} MB)")
+
+            # Show sample files
+            sample_files = [f.get('display_name', 'unknown') for f in uploaded[:5]]
+            print(f"📄 Sample files: {sample_files}")
+
+        if failed:
+            print(f"❌ Failed uploads:")
+            for fail in failed[:3]:  # Show first 3 failures
+                print(f"   - {fail.get('path', 'unknown')}: {fail.get('error', 'unknown error')}")
 
         return {
             'success': True,

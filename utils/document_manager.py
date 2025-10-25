@@ -66,8 +66,9 @@ class DocumentManager:
                         metadata = self.storage_manager.get_file_metadata(blob_name)
                         size_mb = metadata['size'] / (1024 * 1024)
 
+                        doc_id = f"{course_id}_{original_name}"
                         catalog[course_id].append({
-                            "id": f"{course_id}_{original_name}",
+                            "id": doc_id,
                             "name": original_name,
                             "filename": filename,
                             "path": blob_name,  # GCS blob path
@@ -76,6 +77,7 @@ class DocumentManager:
                             "type": self._infer_type(original_name),
                             "storage": "gcs"
                         })
+                        print(f"   📄 Cataloged: {filename} → ID: {doc_id}")
                     except Exception as e:
                         print(f"Error getting metadata for {blob_name}: {e}")
 
@@ -90,7 +92,7 @@ class DocumentManager:
 
             # Supported file extensions
             file_patterns = ['*.pdf', '*.docx', '*.doc', '*.pptx', '*.ppt', '*.xlsx', '*.xls',
-                           '*.txt', '*.md', '*.csv', '*.png', '*.jpg', '*.jpeg', '*.gif', '*.webp']
+                           '*.txt', '*.md', '*.csv', '*.png', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.bmp']
 
             for pattern in file_patterns:
                 for file_path in self.upload_dir.glob(pattern):
@@ -122,8 +124,9 @@ class DocumentManager:
                         except:
                             num_pages = None
 
+                    doc_id = f"{course_id}_{original_name}"
                     catalog[course_id].append({
-                        "id": f"{course_id}_{original_name}",
+                        "id": doc_id,
                         "name": original_name,
                         "filename": filename,
                         "path": str(file_path),
@@ -132,8 +135,18 @@ class DocumentManager:
                         "type": self._infer_type(original_name),
                         "storage": "local"
                     })
+                    print(f"   📄 Cataloged: {filename} → ID: {doc_id}")
 
         print(f"📚 Built catalog: {sum(len(docs) for docs in catalog.values())} documents across {len(catalog)} courses")
+
+        # Log catalog summary by file type
+        for course_id, docs in catalog.items():
+            type_counts = {}
+            for doc in docs:
+                doc_type = doc.get('type', 'unknown')
+                type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
+            print(f"   Course {course_id}: {len(docs)} files - {type_counts}")
+
         return catalog
 
     def add_files_to_catalog(self, file_paths: List[str]):
@@ -155,14 +168,17 @@ class DocumentManager:
             course_id = parts[0]
             # Remove any file extension, not just .pdf
             import re
-            original_name = re.sub(r'\.(pdf|docx?|txt|xlsx?|pptx?|csv|md|rtf|png|jpe?g|gif|webp)$', '', parts[1], flags=re.IGNORECASE)
+            original_name = re.sub(r'\.(pdf|docx?|txt|xlsx?|pptx?|csv|md|rtf|png|jpe?g|gif|webp|bmp)$', '', parts[1], flags=re.IGNORECASE)
 
             if course_id not in self.catalog:
                 self.catalog[course_id] = []
 
-            # Check if already in catalog (use filename without extension as ID)
-            file_id = re.sub(r'\.(pdf|docx?|txt|xlsx?|pptx?|csv|md|rtf|png|jpe?g|gif|webp)$', '', filename, flags=re.IGNORECASE)
-            if any(doc['id'] == file_id for doc in self.catalog[course_id]):
+            # Create document ID: course_id + original name (without extension)
+            doc_id = f"{course_id}_{original_name}"
+
+            # Check if already in catalog
+            if any(doc['id'] == doc_id for doc in self.catalog[course_id]):
+                print(f"   ⏭️  Skipping duplicate: {filename}")
                 continue  # Skip duplicates
 
             # Get file size (handle both local files and GCS blob names)
@@ -185,16 +201,18 @@ class DocumentManager:
 
             # Add to catalog (no page counting for speed)
             self.catalog[course_id].append({
-                "id": file_id,
+                "id": doc_id,
                 "name": original_name,
                 "filename": filename,
                 "path": str(pdf_path),
                 "size_mb": round(size_mb, 2),
                 "num_pages": None,  # Skip for speed
-                "type": self._infer_type(original_name)
+                "type": self._infer_type(original_name),
+                "storage": "gcs" if self.storage_manager else "local"
             })
+            print(f"   ➕ Added to catalog: {filename} → ID: {doc_id}")
 
-        print(f"➕ Added {len(file_paths)} files to catalog")
+        print(f"✅ Added {len(file_paths)} files to catalog")
 
     def _infer_type(self, name: str) -> str:
         """Infer document type from filename"""

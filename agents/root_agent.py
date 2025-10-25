@@ -102,15 +102,32 @@ class RootAgent:
             if selected_docs:
                 # Debug: Show all material IDs available
                 available_ids = [m["id"] for m in all_materials]
-                print(f"   🔑 Available material IDs: {available_ids[:5]}..." if len(available_ids) > 5 else f"   🔑 Available material IDs: {available_ids}")
+                print(f"   🔑 Available material IDs ({len(available_ids)}):")
+                for avail_id in available_ids[:10]:  # Show first 10
+                    print(f"      - {avail_id}")
+
+                print(f"\n   📋 Selected doc IDs from frontend ({len(selected_docs)}):")
+                for sel_id in selected_docs[:10]:  # Show first 10
+                    print(f"      - {sel_id}")
 
                 materials_to_use = [m for m in all_materials if m["id"] in selected_docs]
-                print(f"   ✅ Matched {len(materials_to_use)} materials from selection")
+                print(f"\n   ✅ Matched {len(materials_to_use)} materials from selection")
 
                 if len(materials_to_use) < len(selected_docs):
                     print(f"   ⚠️  WARNING: {len(selected_docs) - len(materials_to_use)} selected docs not found in catalog!")
                     missing = set(selected_docs) - set(m["id"] for m in materials_to_use)
-                    print(f"   ⚠️  Missing IDs: {list(missing)[:3]}...")
+                    print(f"   ⚠️  Missing IDs:")
+                    for miss_id in list(missing)[:10]:  # Show first 10
+                        print(f"      - {miss_id}")
+
+                    # Try to find close matches
+                    print(f"\n   🔍 Looking for close matches:")
+                    for miss_id in list(missing)[:5]:
+                        print(f"      Missing: {miss_id}")
+                        # Find IDs that contain part of this ID
+                        for avail in available_ids:
+                            if miss_id in avail or avail in miss_id or miss_id.replace(":", "").replace("/", "") in avail:
+                                print(f"        → Possible match: {avail}")
 
                 # Always include syllabus if provided and not already selected
                 if syllabus_id and syllabus_id not in selected_docs:
