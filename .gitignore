@@ -21,6 +21,7 @@ ENV/
 gcp-service-account.json
 *.json.key
 *-credentials.json
+gcp-base64.txt
 
 # Uploaded files
 uploads/

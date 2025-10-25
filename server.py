@@ -220,7 +220,9 @@ async def upload_pdfs(
         print(f"📤 UPLOAD REQUEST:")
         print(f"   Course ID: {course_id}")
         print(f"   Number of files: {len(files)}")
-        print(f"   File names: {[f.filename for f in files][:3]}...")
+        print(f"   File names received:")
+        for f in files[:10]:  # Show first 10
+            print(f"      - \"{f.filename}\"")
         print(f"   Storage manager available: {storage_manager is not None}")
         print(f"{'='*80}")
 
