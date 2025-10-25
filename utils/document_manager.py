@@ -154,21 +154,30 @@ class DocumentManager:
         Incrementally add new files to catalog without full rescan
 
         Args:
-            file_paths: List of new file paths to add
+            file_paths: List of new file paths to add (GCS blob paths or local paths)
         """
+        import re
+
         for file_path in file_paths:
-            pdf_path = Path(file_path)
-            filename = pdf_path.name
+            # Handle both GCS paths (course_id/filename.ext) and local paths (course_id_filename.ext)
+            if '/' in file_path:
+                # GCS path format: "course_id/filename.ext"
+                parts = file_path.split('/')
+                if len(parts) != 2:
+                    continue
+                course_id = parts[0]
+                filename = parts[1]
+            else:
+                # Local path format: "course_id_filename.ext"
+                pdf_path = Path(file_path)
+                filename = pdf_path.name
+                parts = filename.split('_', 1)
+                if len(parts) < 2:
+                    continue
+                course_id = parts[0]
 
-            # Extract course_id from filename
-            parts = filename.split('_', 1)
-            if len(parts) < 2:
-                continue
-
-            course_id = parts[0]
-            # Remove any file extension, not just .pdf
-            import re
-            original_name = re.sub(r'\.(pdf|docx?|txt|xlsx?|pptx?|csv|md|rtf|png|jpe?g|gif|webp|bmp)$', '', parts[1], flags=re.IGNORECASE)
+            # Remove file extension to get original name
+            original_name = re.sub(r'\.(pdf|docx?|txt|xlsx?|pptx?|csv|md|rtf|png|jpe?g|gif|webp|bmp)$', '', filename, flags=re.IGNORECASE)
 
             if course_id not in self.catalog:
                 self.catalog[course_id] = []
@@ -184,19 +193,21 @@ class DocumentManager:
             # Get file size (handle both local files and GCS blob names)
             size_mb = 0.0
             try:
-                if pdf_path.exists():
-                    # Local file
-                    size_mb = pdf_path.stat().st_size / (1024 * 1024)
-                elif self.storage_manager:
+                if '/' in file_path and self.storage_manager:
                     # GCS blob - get metadata
                     try:
-                        metadata = self.storage_manager.get_file_metadata(str(pdf_path))
+                        metadata = self.storage_manager.get_file_metadata(file_path)
                         size_mb = metadata['size'] / (1024 * 1024)
                     except Exception as e:
-                        print(f"⚠️  Could not get size for {pdf_path}: {e}")
+                        print(f"⚠️  Could not get size for {file_path}: {e}")
                         size_mb = 0.0
+                else:
+                    # Local file
+                    local_path = Path(file_path)
+                    if local_path.exists():
+                        size_mb = local_path.stat().st_size / (1024 * 1024)
             except Exception as e:
-                print(f"⚠️  Could not get file size for {pdf_path}: {e}")
+                print(f"⚠️  Could not get file size for {file_path}: {e}")
                 size_mb = 0.0
 
             # Add to catalog (no page counting for speed)
@@ -204,11 +215,11 @@ class DocumentManager:
                 "id": doc_id,
                 "name": original_name,
                 "filename": filename,
-                "path": str(pdf_path),
+                "path": file_path,  # Use original path (GCS blob path or local path)
                 "size_mb": round(size_mb, 2),
                 "num_pages": None,  # Skip for speed
                 "type": self._infer_type(original_name),
-                "storage": "gcs" if self.storage_manager else "local"
+                "storage": "gcs" if '/' in file_path else "local"
             })
             print(f"   ➕ Added to catalog: {filename} → ID: {doc_id}")
 
