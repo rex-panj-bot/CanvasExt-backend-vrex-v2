@@ -73,8 +73,17 @@ class RootAgent:
         try:
             # Use user's API key if provided, otherwise use default
             api_client = self.client
+            file_upload_manager = self.file_upload_manager
+
             if user_api_key:
                 api_client = genai.Client(api_key=user_api_key)
+                # Create new FileUploadManager with user's API key
+                # Files must be uploaded with same key used for generation
+                file_upload_manager = FileUploadManager(
+                    api_client,
+                    cache_duration_hours=48,
+                    storage_manager=self.storage_manager
+                )
                 print(f"🔑 Using user-provided API key")
 
             print(f"\n{'='*80}")
@@ -190,7 +199,7 @@ class RootAgent:
                     yield "❌ Error: No valid file paths found in materials. Please re-scan course materials.\n\n"
                     return
 
-                upload_result = await self.file_upload_manager.upload_multiple_pdfs_async(file_paths)
+                upload_result = await file_upload_manager.upload_multiple_pdfs_async(file_paths)
 
                 if not upload_result.get('success'):
                     error_msg = upload_result.get('error', 'Unknown error')
