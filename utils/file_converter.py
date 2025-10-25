@@ -53,6 +53,8 @@ def _convert_with_libreoffice(file_bytes: bytes, filename: str, ext: str) -> Opt
     """
     # Check if LibreOffice is available
     libreoffice_paths = [
+        'libreoffice',            # Nix/Railway (in PATH)
+        'soffice',                # Alternative command
         '/usr/bin/libreoffice',  # Linux
         '/usr/bin/soffice',       # Linux alternative
         '/Applications/LibreOffice.app/Contents/MacOS/soffice',  # macOS
@@ -61,12 +63,21 @@ def _convert_with_libreoffice(file_bytes: bytes, filename: str, ext: str) -> Opt
 
     soffice_path = None
     for path in libreoffice_paths:
+        # Try direct path first
         if os.path.exists(path):
             soffice_path = path
             break
+        # Try finding in PATH
+        try:
+            result = subprocess.run(['which', path], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                soffice_path = path
+                break
+        except:
+            continue
 
     if not soffice_path:
-        logger.warning("LibreOffice not found on system")
+        print("LibreOffice not found on system")
         return None
 
     # Create temp directory for conversion
