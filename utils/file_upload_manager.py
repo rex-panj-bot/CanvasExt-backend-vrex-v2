@@ -215,6 +215,13 @@ class FileUploadManager:
         # Log summary
         print(f"✅ Batch upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
 
+        # Wait for Gemini to process uploaded files
+        # Files need a few seconds to be indexed before they can be used in generation
+        if uploaded:
+            wait_time = 3  # seconds
+            print(f"⏳ Waiting {wait_time}s for Gemini to index uploaded files...")
+            await asyncio.sleep(wait_time)
+
         if uploaded:
             # Group by file type
             type_counts = {}
