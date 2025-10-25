@@ -122,6 +122,19 @@ class FileUploadManager:
                     }
                 )
 
+                # Wait for file to be in ACTIVE state
+                # Files are uploaded but not immediately available for use
+                max_wait = 10  # seconds
+                wait_interval = 0.5  # check every 500ms
+                waited = 0
+                while file_obj.state.name != 'ACTIVE' and waited < max_wait:
+                    time.sleep(wait_interval)
+                    waited += wait_interval
+                    file_obj = self.client.files.get(name=file_obj.name)
+
+                if file_obj.state.name != 'ACTIVE':
+                    print(f"⚠️  Warning: {filename} uploaded but not ACTIVE after {max_wait}s (state: {file_obj.state.name})")
+
                 # Cache the result
                 result = {
                     'file': file_obj,
@@ -214,13 +227,6 @@ class FileUploadManager:
 
         # Log summary
         print(f"✅ Batch upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
-
-        # Wait for Gemini to process uploaded files
-        # Files need a few seconds to be indexed before they can be used in generation
-        if uploaded:
-            wait_time = 3  # seconds
-            print(f"⏳ Waiting {wait_time}s for Gemini to index uploaded files...")
-            await asyncio.sleep(wait_time)
 
         if uploaded:
             # Group by file type
