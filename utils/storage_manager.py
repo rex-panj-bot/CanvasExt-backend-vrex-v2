@@ -57,8 +57,14 @@ class StorageManager:
             GCS blob name (path in bucket)
         """
         try:
+            # Sanitize filename: replace forward slashes (GCS path separator) with dashes
+            # Forward slashes in filenames cause issues with GCS blob paths
+            sanitized_filename = filename.replace('/', '-')
+            if sanitized_filename != filename:
+                print(f"   ⚠️  Sanitized filename: '{filename}' → '{sanitized_filename}'")
+
             # Create blob name: {course_id}/{filename}
-            blob_name = f"{course_id}/{filename}"
+            blob_name = f"{course_id}/{sanitized_filename}"
             blob = self.bucket.blob(blob_name)
 
             # Auto-detect MIME type if not provided
