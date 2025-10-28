@@ -500,6 +500,109 @@ async def upload_pdfs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/check_files_exist")
+async def check_files_exist(
+    course_id: str,
+    files: List[Dict]
+):
+    """
+    Check which files exist in GCS and return signed URLs for existing files
+
+    PHASE 2 OPTIMIZATION: Allows frontend to skip downloading from Canvas
+    if files already exist in GCS (much faster to download from GCS)
+
+    Args:
+        course_id: Course identifier
+        files: List of file objects with 'name' and optionally 'size' fields
+
+    Returns:
+        {
+            "exists": [{"name": "file.pdf", "url": "https://...", "size": 123}],
+            "missing": ["other_file.pdf"]
+        }
+
+    Performance: Checks 100 files in ~500ms
+    """
+    try:
+        print(f"\n{'='*80}")
+        print(f"📋 CHECK FILES EXIST REQUEST:")
+        print(f"   Course ID: {course_id}")
+        print(f"   Files to check: {len(files)}")
+        print(f"{'='*80}")
+
+        if not storage_manager:
+            # If no GCS, return all as missing
+            return {
+                "exists": [],
+                "missing": [f["name"] for f in files]
+            }
+
+        exists = []
+        missing = []
+
+        for file_info in files:
+            file_name = file_info.get("name")
+            if not file_name:
+                continue
+
+            # Check both original name and potential .pdf conversion
+            # (since Phase 1 converts Office files to PDF)
+            blob_name = f"{course_id}/{file_name}"
+            pdf_blob_name = None
+
+            # If it's an Office file, also check for PDF version
+            if file_name.endswith(('.docx', '.pptx', '.xlsx', '.doc', '.ppt', '.xls', '.rtf')):
+                pdf_name = file_name.rsplit('.', 1)[0] + '.pdf'
+                pdf_blob_name = f"{course_id}/{pdf_name}"
+
+            # Check if file exists (try PDF version first if applicable)
+            found_blob_name = None
+            if pdf_blob_name and storage_manager.file_exists(pdf_blob_name):
+                found_blob_name = pdf_blob_name
+            elif storage_manager.file_exists(blob_name):
+                found_blob_name = blob_name
+
+            if found_blob_name:
+                # File exists - generate signed URL (valid for 1 hour)
+                signed_url = storage_manager.get_signed_url(found_blob_name, expires_in_seconds=3600)
+
+                if signed_url:
+                    # Get file size from GCS
+                    blob = storage_manager.bucket.blob(found_blob_name)
+                    blob.reload()  # Load metadata
+
+                    exists.append({
+                        "name": file_name,  # Original name for frontend
+                        "actual_name": found_blob_name.split('/')[-1],  # What's stored in GCS
+                        "url": signed_url,
+                        "size": blob.size,
+                        "from_gcs": True
+                    })
+                else:
+                    # Failed to generate URL, treat as missing
+                    missing.append(file_name)
+            else:
+                missing.append(file_name)
+
+        print(f"✅ Check results: {len(exists)} exist in GCS, {len(missing)} missing")
+        if exists:
+            print(f"   Existing files: {[f['name'] for f in exists[:5]]}" + ("..." if len(exists) > 5 else ""))
+        if missing:
+            print(f"   Missing files: {missing[:5]}" + ("..." if len(missing) > 5 else ""))
+
+        return {
+            "exists": exists,
+            "missing": missing
+        }
+
+    except Exception as e:
+        print(f"❌ ERROR in check_files_exist endpoint:")
+        print(f"   Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ========== CHAT HISTORY ENDPOINTS ==========
 
 @app.get("/chats/{course_id}")

@@ -180,6 +180,57 @@ class StorageManager:
             logger.error(f"Failed to list files: {e}")
             raise
 
+    def file_exists(self, blob_name: str) -> bool:
+        """
+        Check if a file exists in GCS
+
+        Args:
+            blob_name: Full path in bucket (e.g., '12345/lecture1.pdf')
+
+        Returns:
+            True if file exists, False otherwise
+        """
+        try:
+            blob = self.bucket.blob(blob_name)
+            return blob.exists()
+        except Exception as e:
+            logger.error(f"Error checking if {blob_name} exists: {e}")
+            return False
+
+    def get_signed_url(self, blob_name: str, expires_in_seconds: int = 3600) -> Optional[str]:
+        """
+        Generate a signed URL for downloading a file from GCS
+
+        Args:
+            blob_name: Full path in bucket (e.g., '12345/lecture1.pdf')
+            expires_in_seconds: URL expiration time in seconds (default: 1 hour)
+
+        Returns:
+            Signed URL string, or None if file doesn't exist
+        """
+        try:
+            from datetime import timedelta
+
+            blob = self.bucket.blob(blob_name)
+
+            if not blob.exists():
+                logger.warning(f"Blob {blob_name} not found, cannot generate signed URL")
+                return None
+
+            # Generate signed URL (valid for specified duration)
+            url = blob.generate_signed_url(
+                expiration=timedelta(seconds=expires_in_seconds),
+                method='GET',
+                version='v4'
+            )
+
+            logger.info(f"Generated signed URL for {blob_name} (expires in {expires_in_seconds}s)")
+            return url
+
+        except Exception as e:
+            logger.error(f"Failed to generate signed URL for {blob_name}: {e}")
+            return None
+
     def delete_file(self, blob_name: str) -> bool:
         """
         Delete a PDF from GCS
