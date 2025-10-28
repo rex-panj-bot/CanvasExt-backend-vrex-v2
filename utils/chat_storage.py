@@ -107,6 +107,21 @@ class ChatStorage:
                     )
                 """))
 
+                # PHASE 3: Gemini File API URI cache (48hr expiration)
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS gemini_file_cache (
+                        file_path VARCHAR(512) PRIMARY KEY,
+                        course_id VARCHAR(255) NOT NULL,
+                        filename TEXT NOT NULL,
+                        gemini_uri TEXT NOT NULL,
+                        gemini_name TEXT NOT NULL,
+                        mime_type VARCHAR(100),
+                        size_bytes BIGINT,
+                        uploaded_at TIMESTAMP DEFAULT NOW(),
+                        expires_at TIMESTAMP NOT NULL
+                    )
+                """))
+
                 # Create indices for faster queries
                 conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS idx_sessions_course
@@ -121,6 +136,16 @@ class ChatStorage:
                 conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS idx_summaries_course
                     ON file_summaries(course_id)
+                """))
+
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_gemini_cache_course
+                    ON gemini_file_cache(course_id)
+                """))
+
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_gemini_cache_expires
+                    ON gemini_file_cache(expires_at)
                 """))
 
                 conn.commit()
@@ -172,6 +197,21 @@ class ChatStorage:
                 )
             """)
 
+            # PHASE 3: Gemini File API URI cache (48hr expiration)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS gemini_file_cache (
+                    file_path TEXT PRIMARY KEY,
+                    course_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    gemini_uri TEXT NOT NULL,
+                    gemini_name TEXT NOT NULL,
+                    mime_type TEXT,
+                    size_bytes INTEGER,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                )
+            """)
+
             # Create indices for faster queries
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_sessions_course
@@ -186,6 +226,16 @@ class ChatStorage:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_summaries_course
                 ON file_summaries(course_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_gemini_cache_course
+                ON gemini_file_cache(course_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_gemini_cache_expires
+                ON gemini_file_cache(expires_at)
             """)
 
             conn.commit()
@@ -666,3 +716,188 @@ class ChatStorage:
         except Exception as e:
             logger.error(f"Error retrieving summaries for course: {e}")
             return []
+
+    # ========== PHASE 3: Gemini File API URI Cache ==========
+
+    def save_gemini_uri(
+        self,
+        file_path: str,
+        course_id: str,
+        filename: str,
+        gemini_uri: str,
+        gemini_name: str,
+        mime_type: Optional[str] = None,
+        size_bytes: Optional[int] = None,
+        expires_hours: int = 48
+    ) -> bool:
+        """
+        Save Gemini File API URI to cache (48 hour expiration)
+
+        PHASE 3: Pre-warm Gemini cache to eliminate query-time upload wait
+
+        Args:
+            file_path: GCS blob path or local file path (unique key)
+            course_id: Course identifier
+            filename: Original filename
+            gemini_uri: Gemini File API URI (e.g., "https://generativelanguage.googleapis.com/v1beta/files/...")
+            gemini_name: Gemini file name (e.g., "files/abc123")
+            mime_type: MIME type
+            size_bytes: File size in bytes
+            expires_hours: Expiration time in hours (default 48, max for Gemini File API)
+
+        Returns:
+            True if successful
+        """
+        try:
+            from datetime import datetime, timedelta
+
+            expires_at = datetime.now() + timedelta(hours=expires_hours)
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        INSERT INTO gemini_file_cache (file_path, course_id, filename, gemini_uri, gemini_name, mime_type, size_bytes, expires_at)
+                        VALUES (:file_path, :course_id, :filename, :gemini_uri, :gemini_name, :mime_type, :size_bytes, :expires_at)
+                        ON CONFLICT (file_path) DO UPDATE SET
+                            gemini_uri = EXCLUDED.gemini_uri,
+                            gemini_name = EXCLUDED.gemini_name,
+                            mime_type = EXCLUDED.mime_type,
+                            size_bytes = EXCLUDED.size_bytes,
+                            uploaded_at = NOW(),
+                            expires_at = EXCLUDED.expires_at
+                    """), {
+                        "file_path": file_path,
+                        "course_id": course_id,
+                        "filename": filename,
+                        "gemini_uri": gemini_uri,
+                        "gemini_name": gemini_name,
+                        "mime_type": mime_type,
+                        "size_bytes": size_bytes,
+                        "expires_at": expires_at
+                    })
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO gemini_file_cache (file_path, course_id, filename, gemini_uri, gemini_name, mime_type, size_bytes, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (file_path, course_id, filename, gemini_uri, gemini_name, mime_type, size_bytes, expires_at))
+                    conn.commit()
+
+            logger.info(f"✅ Cached Gemini URI for {filename} (expires in {expires_hours}h)")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save Gemini URI for {filename}: {e}")
+            return False
+
+    def get_gemini_uri(self, file_path: str) -> Optional[Dict]:
+        """
+        Get cached Gemini File API URI if still valid
+
+        PHASE 3: Retrieve cached URI to skip upload during queries
+
+        Args:
+            file_path: GCS blob path or local file path
+
+        Returns:
+            Dict with gemini_uri, gemini_name, etc. if cached and valid, None otherwise
+        """
+        try:
+            from datetime import datetime
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT * FROM gemini_file_cache
+                        WHERE file_path = :file_path AND expires_at > NOW()
+                    """), {"file_path": file_path})
+                    row = result.fetchone()
+                    if row:
+                        return dict(row._mapping)
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT * FROM gemini_file_cache
+                        WHERE file_path = ? AND expires_at > CURRENT_TIMESTAMP
+                    """, (file_path,))
+                    row = cursor.fetchone()
+                    if row:
+                        return dict(row)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error retrieving Gemini URI for {file_path}: {e}")
+            return None
+
+    def get_course_gemini_uris(self, course_id: str) -> List[Dict]:
+        """
+        Get all valid Gemini URIs for a course
+
+        Args:
+            course_id: Course identifier
+
+        Returns:
+            List of dicts with file info and Gemini URIs
+        """
+        try:
+            from datetime import datetime
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT * FROM gemini_file_cache
+                        WHERE course_id = :course_id AND expires_at > NOW()
+                        ORDER BY filename
+                    """), {"course_id": course_id})
+                    return [dict(row._mapping) for row in result.fetchall()]
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT * FROM gemini_file_cache
+                        WHERE course_id = ? AND expires_at > CURRENT_TIMESTAMP
+                        ORDER BY filename
+                    """, (course_id,))
+                    return [dict(row) for row in cursor.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Error retrieving Gemini URIs for course {course_id}: {e}")
+            return []
+
+    def cleanup_expired_gemini_uris(self) -> int:
+        """
+        Remove expired Gemini URIs from cache
+
+        Returns:
+            Number of expired entries deleted
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        DELETE FROM gemini_file_cache WHERE expires_at <= NOW()
+                    """))
+                    conn.commit()
+                    deleted = result.rowcount
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        DELETE FROM gemini_file_cache WHERE expires_at <= CURRENT_TIMESTAMP
+                    """)
+                    conn.commit()
+                    deleted = cursor.rowcount
+
+            if deleted > 0:
+                logger.info(f"🧹 Cleaned up {deleted} expired Gemini URI(s)")
+            return deleted
+
+        except Exception as e:
+            logger.error(f"Error cleaning up expired Gemini URIs: {e}")
+            return 0
