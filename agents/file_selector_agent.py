@@ -52,6 +52,11 @@ class FileSelectorAgent:
             logger.info(f"🔍 Selecting relevant files from {len(file_summaries)} available materials")
             logger.info(f"   Query: {user_query[:100]}...")
 
+            # Limit file summaries to prevent prompt overflow (Gemini Flash limits)
+            if len(file_summaries) > 50:
+                logger.warning(f"⚠️  Limiting file summaries from {len(file_summaries)} to 50 (prompt size)")
+                file_summaries = file_summaries[:50]
+
             # Build context for the selection prompt
             files_context = self._build_files_context(file_summaries)
 
@@ -93,17 +98,31 @@ Return a JSON array with up to {max_files} most relevant files, ordered by relev
 If the question is too general or you need more files to answer comprehensively, you may select up to {max_files} files.
 If no files are relevant, return an empty array with an explanation."""
 
-            # Generate selection using Gemini
-            response = self.client.models.generate_content(
-                model=self.model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,  # Low temperature for consistent selection
-                    max_output_tokens=1500,
+            # Generate selection using Gemini with error handling
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_id,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,  # Low temperature for consistent selection
+                        max_output_tokens=1500,
+                    )
                 )
-            )
 
-            response_text = response.text.strip()
+                # Validate response
+                if not response or not response.text:
+                    logger.error("❌ Empty/null response from Gemini API")
+                    logger.error(f"   Prompt length: {len(prompt)} chars")
+                    logger.error(f"   File summaries: {len(file_summaries)}")
+                    return []  # Fallback to manual selection
+
+                response_text = response.text.strip()
+
+            except Exception as api_error:
+                logger.error(f"❌ Gemini API error during file selection: {api_error}")
+                import traceback
+                traceback.print_exc()
+                return []  # Graceful fallback to manual selection
 
             # Parse JSON response
             try:
