@@ -6,12 +6,13 @@ Uses Gemini 2.5 Flash with native PDF processing for optimal performance.
 
 from google import genai
 from google.genai import types
-from typing import List, Dict, AsyncGenerator
+from typing import List, Dict, AsyncGenerator, Optional
 from utils.file_upload_manager import FileUploadManager
+from agents.file_selector_agent import FileSelectorAgent
 
 
 class RootAgent:
-    def __init__(self, document_manager, google_api_key: str, storage_manager=None):
+    def __init__(self, document_manager, google_api_key: str, storage_manager=None, chat_storage=None):
         """
         Initialize Root Agent with Gemini 2.5 Flash
 
@@ -19,9 +20,11 @@ class RootAgent:
             document_manager: DocumentManager instance for document catalog
             google_api_key: Google API key for Gemini
             storage_manager: Optional StorageManager for GCS file access
+            chat_storage: Optional ChatStorage for file summaries access
         """
         self.document_manager = document_manager
         self.storage_manager = storage_manager
+        self.chat_storage = chat_storage
 
         # Initialize Gemini client
         self.client = genai.Client(api_key=google_api_key)
@@ -33,6 +36,9 @@ class RootAgent:
             cache_duration_hours=48,
             storage_manager=storage_manager
         )
+
+        # Initialize File Selector Agent
+        self.file_selector_agent = FileSelectorAgent(google_api_key=google_api_key)
 
         # Session tracking: {session_id: {doc_ids: set(), file_uris: list()}}
         self.session_uploads = {}
@@ -52,7 +58,8 @@ class RootAgent:
         syllabus_id: str = None,
         session_id: str = None,
         enable_web_search: bool = False,
-        user_api_key: str = None
+        user_api_key: str = None,
+        use_smart_selection: bool = False
     ) -> AsyncGenerator[str, None]:
         """
         Process user query with streaming response
@@ -66,6 +73,7 @@ class RootAgent:
             session_id: WebSocket session ID for tracking uploads
             enable_web_search: Whether to enable Google Search grounding
             user_api_key: Optional user-provided Gemini API key (overrides default)
+            use_smart_selection: Whether to use AI-powered intelligent file selection
 
         Yields:
             Response chunks
@@ -91,6 +99,7 @@ class RootAgent:
             print(f"   Course ID: {course_id}")
             print(f"   Session ID: {session_id}")
             print(f"   Web Search: {'Enabled' if enable_web_search else 'Disabled'}")
+            print(f"   Smart Selection: {'Enabled' if use_smart_selection else 'Disabled'}")
             print(f"   Conversation history length: {len(conversation_history)}")
 
             # Step 1: Get all available documents
@@ -102,13 +111,67 @@ class RootAgent:
                 yield "No course materials found. Please upload PDFs first."
                 return
 
-            # Step 2: Filter based on selection
+            # Step 2: Filter based on selection (manual or AI-powered)
             materials_to_use = []
 
-            print(f"   📋 Selected docs from client: {selected_docs}")
-            print(f"   📋 Number of selected docs: {len(selected_docs) if selected_docs else 0}")
+            # If smart selection is enabled, use AI to select relevant files
+            if use_smart_selection and self.chat_storage:
+                yield "📋 Analyzing your question and selecting relevant materials..."
+                print(f"\n   🤖 SMART SELECTION ENABLED")
 
-            if selected_docs:
+                # Get file summaries from database
+                file_summaries = self.chat_storage.get_all_summaries_for_course(course_id)
+                print(f"   📚 Found {len(file_summaries)} file summaries")
+
+                if not file_summaries:
+                    print(f"   ⚠️  No summaries available, falling back to manual selection")
+                    yield "\n⚠️ No file summaries available. Using all materials.\n"
+                    materials_to_use = all_materials
+                else:
+                    # Get syllabus summary for context
+                    syllabus_summary = None
+                    if syllabus_id:
+                        syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
+                            syllabus_id, file_summaries
+                        )
+
+                    # Use file selector agent to intelligently choose files
+                    selected_files = await self.file_selector_agent.select_relevant_files(
+                        user_query=user_message,
+                        file_summaries=file_summaries,
+                        syllabus_summary=syllabus_summary,
+                        max_files=5
+                    )
+
+                    if not selected_files:
+                        print(f"   ⚠️  File selector returned no files, using all materials")
+                        yield "\n⚠️ Could not determine relevant files. Using all materials.\n"
+                        materials_to_use = all_materials
+                    else:
+                        # Get the actual materials based on selected doc_ids
+                        selected_doc_ids = [f.get("doc_id") for f in selected_files]
+                        materials_to_use = [m for m in all_materials if m["id"] in selected_doc_ids]
+
+                        # Always include syllabus if available
+                        if syllabus_id and syllabus_id not in selected_doc_ids:
+                            syllabus = next((m for m in all_materials if m["id"] == syllabus_id), None)
+                            if syllabus:
+                                materials_to_use.append(syllabus)
+
+                        # Show selected files to user
+                        file_names = [f.get("filename", "unknown") for f in selected_files[:3]]
+                        yield f"\n✅ Selected {len(materials_to_use)} relevant files: {', '.join(file_names)}{'...' if len(file_names) > 3 else ''}\n\n"
+
+                        print(f"   ✅ Smart selection chose {len(materials_to_use)} files:")
+                        for file in selected_files[:5]:
+                            print(f"      📄 {file.get('filename')} (score: {file.get('relevance_score', 0)})")
+
+            # Manual selection (original behavior)
+            elif selected_docs:
+                print(f"   📋 Using manual selection")
+                print(f"   📋 Selected docs from client: {selected_docs}")
+                print(f"   📋 Number of selected docs: {len(selected_docs)}")
+
                 # Debug: Show all material IDs available
                 available_ids = [m["id"] for m in all_materials]
                 print(f"   🔑 Available material IDs ({len(available_ids)}):")
@@ -144,8 +207,11 @@ class RootAgent:
                     if syllabus:
                         materials_to_use.append(syllabus)
                         print(f"   ⭐ Including syllabus: {syllabus['name']}")
+
+            # No selection - use all materials
             else:
-                print(f"   ⚠️  No docs selected - using ALL materials")
+                if not use_smart_selection:  # Only warn if not using smart selection
+                    print(f"   ⚠️  No docs selected - using ALL materials")
                 materials_to_use = all_materials
 
             if not materials_to_use:

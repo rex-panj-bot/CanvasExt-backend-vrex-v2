@@ -24,6 +24,7 @@ from agents.root_agent import RootAgent
 from utils.chat_storage import ChatStorage
 from utils.storage_manager import StorageManager
 from utils.mime_types import get_mime_type, get_file_extension
+from utils.file_summarizer import FileSummarizer
 
 app = FastAPI(title="AI Study Assistant Backend")
 
@@ -41,6 +42,7 @@ root_agent = None
 document_manager = None
 chat_storage = None
 storage_manager = None
+file_summarizer = None
 
 # Store active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
@@ -53,7 +55,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
-    global root_agent, document_manager, chat_storage, storage_manager
+    global root_agent, document_manager, chat_storage, storage_manager, file_summarizer
 
     print("🚀 Starting AI Study Assistant Backend...")
 
@@ -90,14 +92,6 @@ async def startup_event():
         document_manager = DocumentManager(upload_dir="./uploads")
     print(f"✅ Document Manager initialized")
 
-    # Initialize Root Agent with Gemini 2.5 Flash
-    root_agent = RootAgent(
-        document_manager=document_manager,
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-        storage_manager=storage_manager
-    )
-    print(f"✅ Root Agent initialized")
-
     # Initialize Chat Storage (PostgreSQL or SQLite fallback)
     database_url = os.getenv("DATABASE_URL")
     if database_url and database_url.startswith("postgresql"):
@@ -106,6 +100,19 @@ async def startup_event():
     else:
         chat_storage = ChatStorage(db_path="./data/chats.db")
         print(f"✅ Chat Storage (SQLite) initialized")
+
+    # Initialize Root Agent with Gemini 2.5 Flash
+    root_agent = RootAgent(
+        document_manager=document_manager,
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        storage_manager=storage_manager,
+        chat_storage=chat_storage
+    )
+    print(f"✅ Root Agent initialized")
+
+    # Initialize File Summarizer
+    file_summarizer = FileSummarizer(google_api_key=os.getenv("GOOGLE_API_KEY"))
+    print(f"✅ File Summarizer initialized")
 
     print("🎉 Backend ready!")
 
@@ -161,7 +168,8 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
                 "status": "uploaded",
                 "size_bytes": len(content),
                 "path": blob_name,  # GCS blob path
-                "storage": "gcs"
+                "storage": "gcs",
+                "mime_type": mime_type
             }
         else:
             # Fallback to local storage
@@ -179,7 +187,8 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
                 "status": "uploaded",
                 "size_bytes": len(content),
                 "path": str(file_path),
-                "storage": "local"
+                "storage": "local",
+                "mime_type": mime_type
             }
     except Exception as e:
         print(f"❌ Upload error for {file.filename}: {str(e)}")
@@ -190,6 +199,91 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
             "status": "failed",
             "error": str(e)
         }
+
+
+async def _generate_summaries_background(course_id: str, successful_uploads: List[Dict]):
+    """
+    Background task to generate summaries for uploaded files
+    Runs asynchronously after upload completes
+    """
+    try:
+        from utils.file_upload_manager import FileUploadManager
+
+        # Use default API key for summary generation
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            print("⚠️  No GOOGLE_API_KEY found, skipping summary generation")
+            return
+
+        # Create file upload manager for uploading to Gemini
+        file_upload_client = genai.Client(api_key=api_key)
+        file_uploader = FileUploadManager(
+            file_upload_client,
+            cache_duration_hours=48,
+            storage_manager=storage_manager
+        )
+
+        for file_info in successful_uploads:
+            try:
+                filename = file_info["filename"]
+                file_path = file_info["path"]
+
+                # Create doc_id from filename (remove extension)
+                original_name = filename
+                if '.' in filename:
+                    original_name = '.'.join(filename.split('.')[:-1])
+                doc_id = f"{course_id}_{original_name}"
+
+                print(f"📝 Generating summary for {filename}...")
+
+                # Upload file to Gemini File API
+                upload_result = file_uploader.upload_pdf(
+                    file_path=file_path,
+                    display_name=filename,
+                    mime_type=file_info.get("mime_type")
+                )
+
+                if "error" in upload_result:
+                    print(f"❌ Failed to upload {filename} to Gemini: {upload_result['error']}")
+                    continue
+
+                file_uri = upload_result["file"].uri
+                mime_type = upload_result["mime_type"]
+
+                # Generate summary
+                summary, topics, metadata = await file_summarizer.summarize_file(
+                    file_uri=file_uri,
+                    filename=filename,
+                    mime_type=mime_type
+                )
+
+                # Save to database
+                success = chat_storage.save_file_summary(
+                    doc_id=doc_id,
+                    course_id=course_id,
+                    filename=filename,
+                    summary=summary,
+                    topics=topics,
+                    metadata=metadata
+                )
+
+                if success:
+                    print(f"✅ Saved summary for {filename}")
+                else:
+                    print(f"⚠️  Failed to save summary for {filename}")
+
+            except Exception as e:
+                print(f"❌ Error generating summary for {file_info['filename']}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+
+        print(f"✅ Summary generation complete for {len(successful_uploads)} files")
+
+    except Exception as e:
+        print(f"❌ Critical error in summary generation: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @app.post("/upload_pdfs")
@@ -276,6 +370,11 @@ async def upload_pdfs(
             new_paths = [r["path"] for r in successful]
             document_manager.add_files_to_catalog(new_paths)
             print(f"✅ Catalog updated")
+
+        # Generate summaries for uploaded files (asynchronously)
+        if file_summarizer and chat_storage and successful:
+            print(f"📝 Generating summaries for {len(successful)} files...")
+            asyncio.create_task(_generate_summaries_background(course_id, successful))
 
         return {
             "success": True,
@@ -529,6 +628,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             chat_session_id = message_data.get("session_id")  # For saving chat history
             enable_web_search = message_data.get("enable_web_search", False)  # Web search toggle
             user_api_key = message_data.get("api_key")  # User's Gemini API key
+            use_smart_selection = message_data.get("use_smart_selection", False)  # Smart file selection toggle
 
             print(f"\n{'='*80}")
             print(f"📥 WebSocket received message:")
@@ -539,6 +639,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             print(f"   Syllabus ID: {syllabus_id}")
             print(f"   Session ID: {chat_session_id}")
             print(f"   Web Search: {enable_web_search}")
+            print(f"   Smart Selection: {use_smart_selection}")
             print(f"   User API Key: {'Provided' if user_api_key else 'Not provided (using default)'}")
             print(f"{'='*80}")
 
@@ -553,7 +654,8 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 syllabus_id=syllabus_id,
                 session_id=connection_id,
                 enable_web_search=enable_web_search,
-                user_api_key=user_api_key
+                user_api_key=user_api_key,
+                use_smart_selection=use_smart_selection
             ):
                 chunk_count += 1
                 assistant_response += chunk

@@ -93,6 +93,20 @@ class ChatStorage:
                     )
                 """))
 
+                # File summaries table for intelligent file selection
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS file_summaries (
+                        doc_id VARCHAR(255) PRIMARY KEY,
+                        course_id VARCHAR(255) NOT NULL,
+                        filename TEXT NOT NULL,
+                        summary TEXT NOT NULL,
+                        topics TEXT,
+                        metadata TEXT,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+
                 # Create indices for faster queries
                 conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS idx_sessions_course
@@ -102,6 +116,11 @@ class ChatStorage:
                 conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON chat_messages(session_id, timestamp)
+                """))
+
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_summaries_course
+                    ON file_summaries(course_id)
                 """))
 
                 conn.commit()
@@ -139,6 +158,20 @@ class ChatStorage:
                 )
             """)
 
+            # File summaries table for intelligent file selection
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS file_summaries (
+                    doc_id TEXT PRIMARY KEY,
+                    course_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    topics TEXT,
+                    metadata TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Create indices for faster queries
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_sessions_course
@@ -148,6 +181,11 @@ class ChatStorage:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                 ON chat_messages(session_id, timestamp)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_summaries_course
+                ON file_summaries(course_id)
             """)
 
             conn.commit()
@@ -492,4 +530,139 @@ class ChatStorage:
 
         except Exception as e:
             logger.error(f"Error retrieving courses with chats: {e}")
+            return []
+
+    def save_file_summary(
+        self,
+        doc_id: str,
+        course_id: str,
+        filename: str,
+        summary: str,
+        topics: List[str] = None,
+        metadata: Dict = None
+    ) -> bool:
+        """
+        Save or update a file summary
+
+        Args:
+            doc_id: Document identifier
+            course_id: Course identifier
+            filename: Original filename
+            summary: Text summary of the file
+            topics: List of key topics/keywords
+            metadata: Additional metadata
+
+        Returns:
+            True if successful
+        """
+        try:
+            topics_json = json.dumps(topics or [])
+            metadata_json = json.dumps(metadata or {})
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, updated_at)
+                        VALUES (:doc_id, :course_id, :filename, :summary, :topics, :metadata, NOW())
+                        ON CONFLICT (doc_id) DO UPDATE SET
+                            summary = EXCLUDED.summary,
+                            topics = EXCLUDED.topics,
+                            metadata = EXCLUDED.metadata,
+                            updated_at = NOW()
+                    """), {
+                        "doc_id": doc_id,
+                        "course_id": course_id,
+                        "filename": filename,
+                        "summary": summary,
+                        "topics": topics_json,
+                        "metadata": metadata_json
+                    })
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(doc_id) DO UPDATE SET
+                            summary = excluded.summary,
+                            topics = excluded.topics,
+                            metadata = excluded.metadata,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (doc_id, course_id, filename, summary, topics_json, metadata_json))
+                    conn.commit()
+
+            logger.info(f"Saved file summary for {doc_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error saving file summary: {e}")
+            return False
+
+    def get_file_summary(self, doc_id: str) -> Optional[Dict]:
+        """Get a file summary by doc_id"""
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT * FROM file_summaries WHERE doc_id = :doc_id
+                    """), {"doc_id": doc_id})
+                    row = result.fetchone()
+                    if row:
+                        data = dict(row._mapping)
+                        data['topics'] = json.loads(data.get('topics', '[]'))
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        return data
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT * FROM file_summaries WHERE doc_id = ?
+                    """, (doc_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        data = dict(row)
+                        data['topics'] = json.loads(data.get('topics', '[]'))
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        return data
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error retrieving file summary: {e}")
+            return None
+
+    def get_all_summaries_for_course(self, course_id: str) -> List[Dict]:
+        """Get all file summaries for a course"""
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT * FROM file_summaries WHERE course_id = :course_id
+                    """), {"course_id": course_id})
+                    summaries = []
+                    for row in result:
+                        data = dict(row._mapping)
+                        data['topics'] = json.loads(data.get('topics', '[]'))
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        summaries.append(data)
+                    return summaries
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT * FROM file_summaries WHERE course_id = ?
+                    """, (course_id,))
+                    summaries = []
+                    for row in cursor.fetchall():
+                        data = dict(row)
+                        data['topics'] = json.loads(data.get('topics', '[]'))
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        summaries.append(data)
+                    return summaries
+
+        except Exception as e:
+            logger.error(f"Error retrieving summaries for course: {e}")
             return []
