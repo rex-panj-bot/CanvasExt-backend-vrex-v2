@@ -136,6 +136,8 @@ async def root():
 async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
     """Process a single file upload (for parallel execution)"""
     try:
+        from utils.file_converter import convert_office_to_pdf, needs_conversion
+
         # Auto-detect MIME type
         mime_type = get_mime_type(file.filename)
         ext = get_file_extension(file.filename) or 'file'
@@ -151,6 +153,38 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
 
         content = await file.read()
+        original_filename = file.filename
+        actual_filename = file.filename
+        conversion_info = None
+
+        # PHASE 1: Convert Office files to PDF before uploading to GCS
+        # This ensures all files stored in GCS are AI-readable by Gemini
+        if needs_conversion(file.filename):
+            print(f"🔄 Converting {file.filename} ({ext.upper()}) to PDF before upload...")
+            try:
+                # Run conversion in thread pool (blocking operation)
+                loop = asyncio.get_event_loop()
+                pdf_bytes = await loop.run_in_executor(
+                    None,
+                    convert_office_to_pdf,
+                    content,
+                    file.filename
+                )
+
+                if pdf_bytes:
+                    content = pdf_bytes
+                    actual_filename = file.filename.rsplit('.', 1)[0] + '.pdf'
+                    mime_type = 'application/pdf'
+                    conversion_info = f"Converted {original_filename} → {actual_filename} ({len(pdf_bytes):,} bytes)"
+                    print(f"✅ {conversion_info}")
+                else:
+                    conversion_info = f"Conversion failed for {file.filename}, uploaded original format (may not be AI-readable)"
+                    print(f"⚠️  {conversion_info}")
+            except Exception as conv_error:
+                conversion_info = f"Conversion error for {file.filename}: {conv_error} (uploaded original)"
+                print(f"⚠️  {conversion_info}")
+                import traceback
+                traceback.print_exc()
 
         # Upload to GCS if available, otherwise save locally
         if storage_manager:
@@ -160,21 +194,25 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
                 None,
                 storage_manager.upload_pdf,
                 course_id,
-                file.filename,
+                actual_filename,  # Use converted filename
                 content,
                 mime_type  # Pass MIME type
             )
-            return {
-                "filename": file.filename,
+            result = {
+                "filename": original_filename,  # Original name for frontend
+                "actual_filename": actual_filename,  # What's stored in GCS
                 "status": "uploaded",
                 "size_bytes": len(content),
                 "path": blob_name,  # GCS blob path
                 "storage": "gcs",
                 "mime_type": mime_type
             }
+            if conversion_info:
+                result["conversion"] = conversion_info
+            return result
         else:
             # Fallback to local storage
-            file_path = UPLOAD_DIR / f"{course_id}_{file.filename}"
+            file_path = UPLOAD_DIR / f"{course_id}_{actual_filename}"  # Use converted filename
 
             # Run file write in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
@@ -183,14 +221,18 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
                 lambda: open(file_path, "wb").write(content)
             )
 
-            return {
-                "filename": file.filename,
+            result = {
+                "filename": original_filename,  # Original name for frontend
+                "actual_filename": actual_filename,  # What's stored locally
                 "status": "uploaded",
                 "size_bytes": len(content),
                 "path": str(file_path),
                 "storage": "local",
                 "mime_type": mime_type
             }
+            if conversion_info:
+                result["conversion"] = conversion_info
+            return result
     except Exception as e:
         print(f"❌ Upload error for {file.filename}: {str(e)}")
         import traceback
