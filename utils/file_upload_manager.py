@@ -13,7 +13,7 @@ from .file_converter import convert_office_to_pdf, needs_conversion
 
 
 class FileUploadManager:
-    def __init__(self, client: genai.Client, cache_duration_hours: int = 48, storage_manager=None):
+    def __init__(self, client: genai.Client, cache_duration_hours: int = 48, storage_manager=None, chat_storage=None):
         """
         Initialize File Upload Manager
 
@@ -21,12 +21,15 @@ class FileUploadManager:
             client: Gemini client instance
             cache_duration_hours: How long to cache file URIs (default: 48 hours, max for File API)
             storage_manager: Optional StorageManager for GCS file access
+            chat_storage: Optional ChatStorage for database-backed URI caching (PHASE 3)
         """
         self.client = client
         self.cache_duration_hours = cache_duration_hours
         self.storage_manager = storage_manager
+        self.chat_storage = chat_storage
 
-        # Cache: {file_path: {uri, upload_time, file_object}}
+        # In-memory cache: {file_path: {uri, upload_time, file_object}}
+        # Note: Database cache (chat_storage) takes precedence if available
         self._file_cache = {}
 
     def upload_pdf(self, file_path: str, display_name: Optional[str] = None, mime_type: Optional[str] = None) -> Dict:
@@ -54,14 +57,38 @@ class FileUploadManager:
                 # Use a generic MIME type as fallback
                 mime_type = 'application/octet-stream'
 
-        # Check cache first
+        # PHASE 3: Check database cache first (persistent across server restarts)
+        if self.chat_storage:
+            db_cached = self.chat_storage.get_gemini_uri(file_path)
+            if db_cached:
+                print(f"✅ Database cache hit: {filename}")
+                # Reconstruct file object from cached data
+                try:
+                    file_obj = self.client.files.get(name=db_cached['gemini_name'])
+                    result = {
+                        'file': file_obj,
+                        'uri': db_cached['gemini_uri'],
+                        'name': db_cached['gemini_name'],
+                        'display_name': db_cached['filename'],
+                        'size_bytes': db_cached.get('size_bytes', 0),
+                        'mime_type': db_cached.get('mime_type', mime_type),
+                        'upload_time': time.time(),
+                        'from_cache': True
+                    }
+                    # Also cache in memory for this session
+                    self._file_cache[file_path] = result
+                    return result
+                except Exception as e:
+                    print(f"⚠️  Cached file not accessible in Gemini, will re-upload: {e}")
+
+        # Check in-memory cache
         if file_path in self._file_cache:
             cached = self._file_cache[file_path]
             age_hours = (time.time() - cached['upload_time']) / 3600
 
             # If cache still valid (under 48 hours), return cached
             if age_hours < self.cache_duration_hours:
-                print(f"✅ Cache hit: {filename} (uploaded {age_hours:.1f}h ago)")
+                print(f"✅ Memory cache hit: {filename} (uploaded {age_hours:.1f}h ago)")
                 return cached
 
             # Cache expired, remove it
@@ -146,7 +173,24 @@ class FileUploadManager:
                     'upload_time': time.time()
                 }
 
+                # Cache in memory
                 self._file_cache[file_path] = result
+
+                # PHASE 3: Cache in database for persistence across server restarts
+                if self.chat_storage:
+                    # Extract course_id from file_path (format: "course_id/filename")
+                    course_id = file_path.split('/')[0] if '/' in file_path else 'unknown'
+                    self.chat_storage.save_gemini_uri(
+                        file_path=file_path,
+                        course_id=course_id,
+                        filename=original_filename,
+                        gemini_uri=file_obj.uri,
+                        gemini_name=file_obj.name,
+                        mime_type=mime_type,
+                        size_bytes=file_obj.size_bytes,
+                        expires_hours=self.cache_duration_hours
+                    )
+
                 ext = get_file_extension(filename) or 'file'
                 print(f"✅ Uploaded {filename} ({ext.upper()}, {file_obj.size_bytes:,} bytes) - URI: {file_obj.uri[:60]}...")
 

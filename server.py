@@ -115,6 +115,15 @@ async def startup_event():
     file_summarizer = FileSummarizer(google_api_key=os.getenv("GOOGLE_API_KEY"))
     print(f"✅ File Summarizer initialized")
 
+    # PHASE 3: Cleanup expired Gemini URIs on startup
+    if chat_storage:
+        try:
+            deleted = chat_storage.cleanup_expired_gemini_uris()
+            if deleted > 0:
+                print(f"🧹 Cleaned up {deleted} expired Gemini URI(s)")
+        except Exception as e:
+            print(f"⚠️  Failed to cleanup expired URIs: {e}")
+
     print("🎉 Backend ready!")
 
 
@@ -335,6 +344,73 @@ async def _generate_single_summary(
         return {"status": "error", "filename": file_info.get("filename", "unknown"), "error": str(e)}
 
 
+async def _upload_to_gemini_background(course_id: str, successful_uploads: List[Dict]):
+    """
+    PHASE 3: Background task to pre-warm Gemini File API cache
+
+    Uploads files to Gemini immediately after GCS upload to eliminate
+    query-time upload wait (10-30 seconds saved on first query)
+    """
+    try:
+        from utils.file_upload_manager import FileUploadManager
+
+        # Use default API key
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            print("⚠️  No GOOGLE_API_KEY found, skipping Gemini pre-warm")
+            return
+
+        # Create file upload manager with database caching
+        file_upload_client = genai.Client(api_key=api_key)
+        file_uploader = FileUploadManager(
+            file_upload_client,
+            cache_duration_hours=48,
+            storage_manager=storage_manager,
+            chat_storage=chat_storage
+        )
+
+        # Limit concurrent uploads (max 10 at a time to avoid overwhelming Gemini API)
+        semaphore = asyncio.Semaphore(10)
+
+        async def upload_single_file(file_info):
+            async with semaphore:
+                try:
+                    filename = file_info.get("filename") or file_info.get("actual_filename")
+                    file_path = file_info["path"]
+                    mime_type = file_info.get("mime_type")
+
+                    # Upload to Gemini (will cache in database automatically)
+                    upload_result = await asyncio.to_thread(
+                        file_uploader.upload_pdf,
+                        file_path,
+                        filename,
+                        mime_type
+                    )
+
+                    if "error" not in upload_result:
+                        print(f"✅ Pre-warmed Gemini cache: {filename}")
+                        return {"status": "success", "filename": filename}
+                    else:
+                        print(f"⚠️  Gemini pre-warm failed: {filename}: {upload_result['error']}")
+                        return {"status": "error", "filename": filename}
+
+                except Exception as e:
+                    print(f"❌ Gemini pre-warm error for {file_info.get('filename')}: {e}")
+                    return {"status": "error", "filename": file_info.get("filename")}
+
+        print(f"🔥 Pre-warming Gemini cache for {len(successful_uploads)} files (background task)...")
+        tasks = [upload_single_file(file_info) for file_info in successful_uploads]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+        print(f"✅ Gemini pre-warm complete: {success_count}/{len(successful_uploads)} files cached")
+
+    except Exception as e:
+        print(f"❌ Critical error in Gemini pre-warm: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 async def _generate_summaries_background(course_id: str, successful_uploads: List[Dict]):
     """
     Background task to generate summaries for uploaded files in parallel
@@ -353,7 +429,8 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         file_uploader = FileUploadManager(
             file_upload_client,
             cache_duration_hours=48,
-            storage_manager=storage_manager
+            storage_manager=storage_manager,
+            chat_storage=chat_storage  # PHASE 3: Enable database caching
         )
 
         # Semaphore to limit concurrent processing (max 20 at a time)
@@ -428,9 +505,9 @@ async def upload_pdfs(
         print(f"   Storage manager available: {storage_manager is not None}")
         print(f"{'='*80}")
 
-        # Process files in parallel (up to 100 files at once)
-        # Modern async runtime can handle this efficiently
-        BATCH_SIZE = 100
+        # PHASE 4: Process files in parallel (reduced from 100 to 50 for Railway safety)
+        # Prevents memory exhaustion on Railway's limited resources
+        BATCH_SIZE = 50
         print(f"📤 Uploading {len(files)} files {'in parallel' if len(files) <= BATCH_SIZE else f'in batches of {BATCH_SIZE}'}...")
 
         processed_results = []
@@ -478,6 +555,12 @@ async def upload_pdfs(
             new_paths = [r["path"] for r in successful]
             document_manager.add_files_to_catalog(new_paths)
             print(f"✅ Catalog updated")
+
+        # PHASE 3: Pre-warm Gemini File API cache (background task)
+        # This eliminates 10-30s upload wait on first query
+        if successful and chat_storage:
+            print(f"🔥 Starting Gemini pre-warm for {len(successful)} files...")
+            asyncio.create_task(_upload_to_gemini_background(course_id, successful))
 
         # Generate summaries for uploaded files (asynchronously)
         if file_summarizer and chat_storage and successful:
