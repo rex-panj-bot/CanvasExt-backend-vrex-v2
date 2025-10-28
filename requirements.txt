@@ -31,3 +31,4 @@ sqlalchemy==2.0.25
 # Utilities
 python-dotenv
 pydantic
+packaging  # Required by google-api-core
