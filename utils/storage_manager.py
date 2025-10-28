@@ -67,6 +67,16 @@ class StorageManager:
             blob_name = f"{course_id}/{sanitized_filename}"
             blob = self.bucket.blob(blob_name)
 
+            # OPTIMIZATION: Check if file already exists in GCS to avoid re-upload
+            if blob.exists():
+                blob.reload()  # Load metadata to check size
+                if blob.size == len(file_content):
+                    ext = get_file_extension(filename) or 'file'
+                    logger.info(f"⚡ File already in GCS, skipping upload: {blob_name} ({blob.size} bytes, {ext.upper()})")
+                    return blob_name
+                else:
+                    logger.info(f"⚠️  File exists but size mismatch ({blob.size} != {len(file_content)}), re-uploading: {filename}")
+
             # Auto-detect MIME type if not provided
             if not content_type:
                 content_type = get_mime_type(filename)
