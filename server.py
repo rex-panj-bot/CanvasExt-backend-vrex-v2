@@ -202,10 +202,72 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         }
 
 
+async def _generate_single_summary(
+    file_info: Dict,
+    course_id: str,
+    file_uploader,
+    file_summarizer,
+    chat_storage
+) -> Dict:
+    """Generate summary for a single file"""
+    try:
+        filename = file_info["filename"]
+        file_path = file_info["path"]
+
+        # Create doc_id to match document_manager format
+        original_name = filename
+        if '.' in filename:
+            original_name = '.'.join(filename.split('.')[:-1])
+        doc_id = f"{course_id}_{original_name}"
+
+        # Check if summary already exists (cached in database)
+        existing = chat_storage.get_file_summary(doc_id)
+        if existing:
+            print(f"✅ Using cached summary for {filename}")
+            return {"status": "cached", "filename": filename}
+
+        # Upload file to Gemini File API (FileUploadManager handles caching)
+        upload_result = file_uploader.upload_pdf(
+            file_path=file_path,
+            display_name=filename,
+            mime_type=file_info.get("mime_type")
+        )
+
+        if "error" in upload_result:
+            return {"status": "error", "filename": filename, "error": upload_result["error"]}
+
+        file_uri = upload_result["file"].uri
+        mime_type = upload_result["mime_type"]
+
+        # Generate summary (simple LLM call)
+        summary, topics, metadata = await file_summarizer.summarize_file(
+            file_uri=file_uri,
+            filename=filename,
+            mime_type=mime_type
+        )
+
+        # Save to database (cache for future uploads)
+        success = chat_storage.save_file_summary(
+            doc_id=doc_id,
+            course_id=course_id,
+            filename=filename,
+            summary=summary,
+            topics=topics,
+            metadata=metadata
+        )
+
+        if success:
+            return {"status": "success", "filename": filename}
+        else:
+            return {"status": "error", "filename": filename, "error": "Failed to save"}
+
+    except Exception as e:
+        return {"status": "error", "filename": file_info.get("filename", "unknown"), "error": str(e)}
+
+
 async def _generate_summaries_background(course_id: str, successful_uploads: List[Dict]):
     """
-    Background task to generate summaries for uploaded files
-    Runs asynchronously after upload completes
+    Background task to generate summaries for uploaded files in parallel
     """
     try:
         from utils.file_upload_manager import FileUploadManager
@@ -224,66 +286,30 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             storage_manager=storage_manager
         )
 
-        for file_info in successful_uploads:
-            try:
-                filename = file_info["filename"]
-                file_path = file_info["path"]
-                storage_type = file_info.get("storage", "local")
+        print(f"📝 Generating summaries for {len(successful_uploads)} files in parallel...")
 
-                # Create doc_id to match document_manager format
-                # GCS: course_id/filename.ext -> doc_id: course_id_filename_without_ext
-                # Local: course_id_filename.ext -> doc_id: course_id_filename_without_ext
-                original_name = filename
-                if '.' in filename:
-                    original_name = '.'.join(filename.split('.')[:-1])
+        # Generate all summaries in parallel
+        tasks = [
+            _generate_single_summary(file_info, course_id, file_uploader, file_summarizer, chat_storage)
+            for file_info in successful_uploads
+        ]
 
-                doc_id = f"{course_id}_{original_name}"
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                print(f"📝 Generating summary for {filename} (doc_id: {doc_id})...")
+        # Count results
+        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
+        cached_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "cached")
+        error_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error")
+        exception_count = sum(1 for r in results if isinstance(r, Exception))
 
-                # Upload file to Gemini File API
-                upload_result = file_uploader.upload_pdf(
-                    file_path=file_path,
-                    display_name=filename,
-                    mime_type=file_info.get("mime_type")
-                )
+        print(f"✅ Summary generation complete: {success_count} new, {cached_count} cached, {error_count + exception_count} errors")
 
-                if "error" in upload_result:
-                    print(f"❌ Failed to upload {filename} to Gemini: {upload_result['error']}")
-                    continue
-
-                file_uri = upload_result["file"].uri
-                mime_type = upload_result["mime_type"]
-
-                # Generate summary
-                summary, topics, metadata = await file_summarizer.summarize_file(
-                    file_uri=file_uri,
-                    filename=filename,
-                    mime_type=mime_type
-                )
-
-                # Save to database
-                success = chat_storage.save_file_summary(
-                    doc_id=doc_id,
-                    course_id=course_id,
-                    filename=filename,
-                    summary=summary,
-                    topics=topics,
-                    metadata=metadata
-                )
-
-                if success:
-                    print(f"✅ Saved summary for {filename}")
-                else:
-                    print(f"⚠️  Failed to save summary for {filename}")
-
-            except Exception as e:
-                print(f"❌ Error generating summary for {file_info['filename']}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-
-        print(f"✅ Summary generation complete for {len(successful_uploads)} files")
+        # Log errors
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"❌ Exception: {result}")
+            elif isinstance(result, dict) and result.get("status") == "error":
+                print(f"❌ Error for {result['filename']}: {result.get('error')}")
 
     except Exception as e:
         print(f"❌ Critical error in summary generation: {e}")
