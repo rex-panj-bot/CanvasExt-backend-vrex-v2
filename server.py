@@ -325,10 +325,10 @@ async def upload_pdfs(
         print(f"   Storage manager available: {storage_manager is not None}")
         print(f"{'='*80}")
 
-        # Process files in batches to avoid memory issues
-        # With large numbers of files (90+), processing all in parallel causes OOM
-        BATCH_SIZE = 10
-        print(f"📤 Uploading {len(files)} files in batches of {BATCH_SIZE}...")
+        # Process files in parallel (up to 100 files at once)
+        # Modern async runtime can handle this efficiently
+        BATCH_SIZE = 100
+        print(f"📤 Uploading {len(files)} files {'in parallel' if len(files) <= BATCH_SIZE else f'in batches of {BATCH_SIZE}'}...")
 
         processed_results = []
         for i in range(0, len(files), BATCH_SIZE):
