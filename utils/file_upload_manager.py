@@ -192,7 +192,7 @@ class FileUploadManager:
             Dict with uploaded files and stats
         """
         # Process in batches to avoid memory issues with large file sets
-        BATCH_SIZE = 5  # Smaller batch for Gemini uploads (with conversions)
+        BATCH_SIZE = 100  # Allow full parallel uploads for speed
         print(f"📤 Uploading {len(file_paths)} files to Gemini in batches of {BATCH_SIZE}...")
 
         uploaded = []
