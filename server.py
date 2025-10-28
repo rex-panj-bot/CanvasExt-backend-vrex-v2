@@ -202,6 +202,18 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         }
 
 
+def _sync_summarize_file(summarizer, file_uri, filename, mime_type):
+    """Synchronous wrapper for file summarization - runs in thread pool"""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            summarizer.summarize_file(file_uri, filename, mime_type)
+        )
+    finally:
+        loop.close()
+
+
 async def _generate_single_summary(
     file_info: Dict,
     course_id: str,
@@ -209,7 +221,7 @@ async def _generate_single_summary(
     file_summarizer,
     chat_storage
 ) -> Dict:
-    """Generate summary for a single file"""
+    """Generate summary for a single file (optimized with thread pools)"""
     try:
         filename = file_info["filename"]
         file_path = file_info["path"]
@@ -226,11 +238,25 @@ async def _generate_single_summary(
             print(f"✅ Using cached summary for {filename}")
             return {"status": "cached", "filename": filename}
 
-        # Upload file to Gemini File API (FileUploadManager handles caching)
-        upload_result = file_uploader.upload_pdf(
-            file_path=file_path,
-            display_name=filename,
-            mime_type=file_info.get("mime_type")
+        # Skip summarization for very small files (< 50KB)
+        file_size = file_info.get("size_bytes", 0)
+        if file_size > 0 and file_size < 51200:  # 50KB
+            simple_summary = f"Small reference file ({file_size // 1024}KB)"
+            chat_storage.save_file_summary(
+                doc_id, course_id, filename,
+                summary=simple_summary,
+                topics=[],
+                metadata={"doc_type": "reference", "size_bytes": file_size}
+            )
+            print(f"⚡ Skipped tiny file: {filename} ({file_size // 1024}KB)")
+            return {"status": "skipped", "filename": filename}
+
+        # Upload file to Gemini File API (run in thread pool - BLOCKING operation)
+        upload_result = await asyncio.to_thread(
+            file_uploader.upload_pdf,
+            file_path,
+            filename,
+            file_info.get("mime_type")
         )
 
         if "error" in upload_result:
@@ -239,11 +265,13 @@ async def _generate_single_summary(
         file_uri = upload_result["file"].uri
         mime_type = upload_result["mime_type"]
 
-        # Generate summary (simple LLM call)
-        summary, topics, metadata = await file_summarizer.summarize_file(
-            file_uri=file_uri,
-            filename=filename,
-            mime_type=mime_type
+        # Generate summary (run in thread pool - BLOCKING LLM call)
+        summary, topics, metadata = await asyncio.to_thread(
+            _sync_summarize_file,
+            file_summarizer,
+            file_uri,
+            filename,
+            mime_type
         )
 
         # Save to database (cache for future uploads)
@@ -286,23 +314,30 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             storage_manager=storage_manager
         )
 
-        print(f"📝 Generating summaries for {len(successful_uploads)} files in parallel...")
+        # Semaphore to limit concurrent processing (max 20 at a time)
+        semaphore = asyncio.Semaphore(20)
 
-        # Generate all summaries in parallel
-        tasks = [
-            _generate_single_summary(file_info, course_id, file_uploader, file_summarizer, chat_storage)
-            for file_info in successful_uploads
-        ]
+        async def process_with_limit(file_info):
+            """Wrapper to apply semaphore limit"""
+            async with semaphore:
+                return await _generate_single_summary(
+                    file_info, course_id, file_uploader, file_summarizer, chat_storage
+                )
 
+        print(f"📝 Generating summaries for {len(successful_uploads)} files (max 20 concurrent)...")
+
+        # Generate summaries with concurrency limit
+        tasks = [process_with_limit(file_info) for file_info in successful_uploads]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Count results
         success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
         cached_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "cached")
+        skipped_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "skipped")
         error_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error")
         exception_count = sum(1 for r in results if isinstance(r, Exception))
 
-        print(f"✅ Summary generation complete: {success_count} new, {cached_count} cached, {error_count + exception_count} errors")
+        print(f"✅ Summary generation complete: {success_count} new, {cached_count} cached, {skipped_count} skipped, {error_count + exception_count} errors")
 
         # Log errors
         for result in results:

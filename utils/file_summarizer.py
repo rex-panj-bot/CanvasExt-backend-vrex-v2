@@ -45,28 +45,15 @@ class FileSummarizer:
         try:
             logger.info(f"Generating summary for: {filename}")
 
-            # Craft prompt for summarization
-            prompt = f"""Analyze this document and provide a structured analysis:
+            # Craft prompt for summarization (optimized for speed)
+            prompt = f"""Briefly summarize this document in 40-50 words and list the 3 most important topics.
 
 Document: {filename}
 
-Please provide:
-1. **Summary**: A concise 150-200 word summary capturing the main content and purpose
-2. **Topics**: 5-10 key topics, concepts, or keywords (comma-separated list)
-3. **Document Type**: (e.g., lecture notes, textbook chapter, assignment, readings, syllabus, etc.)
-4. **Time/Date References**: Any specific dates, weeks, or time periods mentioned
+Format as JSON:
+{{"summary": "...", "topics": ["topic1", "topic2", "topic3"]}}"""
 
-Format your response as JSON:
-{{
-  "summary": "...",
-  "topics": ["topic1", "topic2", ...],
-  "doc_type": "...",
-  "time_references": "..."
-}}
-
-Focus on academic content that would help determine relevance for student questions."""
-
-            # Generate summary using Gemini
+            # Generate summary using Gemini (optimized config for speed)
             response = self.client.models.generate_content(
                 model=self.model_id,
                 contents=[
@@ -74,8 +61,10 @@ Focus on academic content that would help determine relevance for student questi
                     prompt
                 ],
                 config=types.GenerateContentConfig(
-                    temperature=0.3,  # Lower temperature for more focused summaries
-                    max_output_tokens=800,
+                    temperature=0.1,  # Lower = faster, more deterministic
+                    max_output_tokens=200,  # Reduced from 800
+                    top_p=0.8,  # Reduce token sampling
+                    top_k=20    # Reduce token candidates
                 )
             )
 
@@ -96,9 +85,10 @@ Focus on academic content that would help determine relevance for student questi
 
                 summary = parsed.get("summary", "")
                 topics = parsed.get("topics", [])
+                # Simplified metadata (no doc_type or time_references in new prompt)
                 metadata = {
-                    "doc_type": parsed.get("doc_type", "unknown"),
-                    "time_references": parsed.get("time_references", "")
+                    "doc_type": "document",
+                    "optimized": True  # Flag to indicate optimized summarization
                 }
 
                 logger.info(f"✅ Generated summary for {filename}: {len(summary)} chars, {len(topics)} topics")
