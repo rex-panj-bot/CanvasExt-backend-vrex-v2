@@ -25,6 +25,7 @@ from utils.chat_storage import ChatStorage
 from utils.storage_manager import StorageManager
 from utils.mime_types import get_mime_type, get_file_extension
 from utils.file_summarizer import FileSummarizer
+from google import genai
 
 app = FastAPI(title="AI Study Assistant Backend")
 
@@ -227,14 +228,18 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             try:
                 filename = file_info["filename"]
                 file_path = file_info["path"]
+                storage_type = file_info.get("storage", "local")
 
-                # Create doc_id from filename (remove extension)
+                # Create doc_id to match document_manager format
+                # GCS: course_id/filename.ext -> doc_id: course_id_filename_without_ext
+                # Local: course_id_filename.ext -> doc_id: course_id_filename_without_ext
                 original_name = filename
                 if '.' in filename:
                     original_name = '.'.join(filename.split('.')[:-1])
+
                 doc_id = f"{course_id}_{original_name}"
 
-                print(f"📝 Generating summary for {filename}...")
+                print(f"📝 Generating summary for {filename} (doc_id: {doc_id})...")
 
                 # Upload file to Gemini File API
                 upload_result = file_uploader.upload_pdf(
