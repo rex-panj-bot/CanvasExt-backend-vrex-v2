@@ -75,30 +75,16 @@ class FileSelectorAgent:
 {files_context}
 
 **Task:**
-Analyze the student's question and select the {max_files} most relevant files that would help answer it. Consider:
-1. Direct topic relevance (does the file cover the topics mentioned in the question?)
-2. Temporal relevance (if the question mentions specific weeks/dates, prioritize files from that period)
-3. Question type (conceptual vs. procedural questions may need different materials)
-4. Complementary content (files that together provide complete context)
+Select up to {max_files} most relevant files based on topic relevance. Prioritize files that directly address the question.
 
-**Response Format:**
-Return a JSON array with up to {max_files} most relevant files, ordered by relevance (most relevant first):
+**Response Format (CONCISE - NO EXPLANATIONS):**
+Return ONLY a JSON array of doc_ids, ordered by relevance:
 
 {{
-  "selected_files": [
-    {{
-      "doc_id": "course_123_filename",
-      "filename": "Week 3 Lecture Notes.pdf",
-      "relevance_score": 95,
-      "reason": "Direct coverage of the question topic"
-    }},
-    ...
-  ],
-  "reasoning": "Brief explanation of selection strategy"
+  "selected_files": ["doc_id_1", "doc_id_2", "doc_id_3"]
 }}
 
-If the question is too general or you need more files to answer comprehensively, you may select up to {max_files} files.
-If no files are relevant, return an empty array with an explanation."""
+Return empty array [] if no files are relevant."""
 
             # Generate selection using Gemini with error handling
             try:
@@ -153,15 +139,22 @@ If no files are relevant, return an empty array with an explanation."""
                 response_text = response_text.strip()
                 parsed = json.loads(response_text)
 
-                selected = parsed.get("selected_files", [])
-                reasoning = parsed.get("reasoning", "")
+                selected_doc_ids = parsed.get("selected_files", [])
+
+                # Convert doc_ids to file info objects for compatibility
+                selected = []
+                for doc_id in selected_doc_ids:
+                    # Find the corresponding file info from file_summaries
+                    for file_info in file_summaries:
+                        if file_info.get("doc_id") == doc_id:
+                            selected.append(file_info)
+                            break
 
                 logger.info(f"✅ Selected {len(selected)} relevant files")
-                logger.info(f"   Reasoning: {reasoning}")
 
                 # Log selected files
-                for file_info in selected[:3]:  # Show first 3
-                    logger.info(f"   📄 {file_info.get('filename')} (score: {file_info.get('relevance_score', 0)})")
+                for file_info in selected[:5]:  # Show first 5
+                    logger.info(f"   📄 {file_info.get('filename')}")
 
                 return selected
 
