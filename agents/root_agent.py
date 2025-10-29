@@ -118,6 +118,7 @@ class RootAgent:
             if use_smart_selection and self.chat_storage:
                 yield "📋 Analyzing your question and selecting relevant materials..."
                 print(f"\n   🤖 SMART SELECTION ENABLED")
+                print(f"   ❓ User query: {user_message[:200]}{'...' if len(user_message) > 200 else ''}")
 
                 # Get file summaries from database
                 file_summaries = self.chat_storage.get_all_summaries_for_course(course_id)
@@ -164,7 +165,7 @@ class RootAgent:
 
                         print(f"   ✅ Smart selection chose {len(materials_to_use)} files:")
                         for file in selected_files[:5]:
-                            print(f"      📄 {file.get('filename')} (score: {file.get('relevance_score', 0)})")
+                            print(f"      📄 {file.get('filename')}")
 
             # Manual selection (original behavior)
             elif selected_docs:
