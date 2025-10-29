@@ -129,22 +129,34 @@ class RootAgent:
                     yield "\n⚠️ No file summaries available. Using all materials.\n"
                     materials_to_use = all_materials
                 else:
-                    # Get syllabus summary for context (always try to find it)
+                    # Intelligently decide if we need syllabus based on query
+                    syllabus_keywords = [
+                        'exam', 'test', 'midterm', 'final', 'quiz', 'assessment',
+                        'week', 'chapter', 'unit', 'module', 'section',
+                        'schedule', 'timeline', 'when', 'what order', 'sequence',
+                        'covered', 'coverage', 'scope'
+                    ]
+                    needs_syllabus = any(keyword in user_message.lower() for keyword in syllabus_keywords)
+
                     syllabus_summary = None
-                    if syllabus_id:
-                        print(f"   📋 Looking for syllabus with ID: {syllabus_id}")
-                    else:
-                        print(f"   📋 No syllabus_id provided, searching for syllabus file...")
+                    if needs_syllabus:
+                        print(f"   📚 Query requires course structure context, fetching syllabus...")
+                        if syllabus_id:
+                            print(f"      Looking for syllabus with ID: {syllabus_id}")
+                        else:
+                            print(f"      No syllabus_id provided, searching for syllabus file...")
 
-                    syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
-                        syllabus_id, file_summaries
-                    )
+                        syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
+                            syllabus_id, file_summaries
+                        )
 
-                    if syllabus_summary:
-                        print(f"   ✅ Found syllabus summary ({len(syllabus_summary)} chars)")
-                        print(f"      Preview: {syllabus_summary[:150]}...")
+                        if syllabus_summary:
+                            print(f"   ✅ Found syllabus summary ({len(syllabus_summary)} chars)")
+                            print(f"      Preview: {syllabus_summary[:150]}...")
+                        else:
+                            print(f"   ⚠️  No syllabus found - proceeding without course structure context")
                     else:
-                        print(f"   ⚠️  No syllabus found - file selection will work without course structure context")
+                        print(f"   ⏭️  Query is topic-based, skipping syllabus lookup (faster)")
 
                     # Determine max_files based on user query or use default
                     # Extract number if user asks for specific amount (e.g., "give me 7 files")

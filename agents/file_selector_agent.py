@@ -99,14 +99,21 @@ Use this syllabus to understand course structure, exam coverage, and topic organ
 Select up to {max_files} most relevant files based on topic relevance. Prioritize files that directly address the question.{exam_instruction}
 IMPORTANT: If the question asks for a specific number of files (e.g., "give me 7 files"), return exactly that many files if available. Otherwise, return as many relevant files as needed, up to the {max_files} limit.
 
-**Response Format (CONCISE - NO EXPLANATIONS):**
-Return ONLY a JSON array of doc_ids, ordered by relevance (most relevant first):
+**Response Format:**
+Return a JSON object with selected files and brief reasoning (for debugging):
 
 {{
-  "selected_files": ["doc_id_1", "doc_id_2", "doc_id_3", ...]
+  "selected_files": ["doc_id_1", "doc_id_2", "doc_id_3", ...],
+  "reasoning": "Brief 1-2 sentence explanation of why these files were chosen"
 }}
 
-Return empty array [] if no files are relevant."""
+Example:
+{{
+  "selected_files": ["1432009_Lecture_14", "1432009_Sociobiology_Wilson"],
+  "reasoning": "Selected files covering sociobiology theory and human behavior evolution, which directly address the paper topic."
+}}
+
+Return empty array [] with reasoning if no files are relevant."""
 
             # Generate selection using Gemini with error handling
             try:
@@ -164,8 +171,11 @@ Return empty array [] if no files are relevant."""
                 parsed = json.loads(response_text)
 
                 selected_doc_ids = parsed.get("selected_files", [])
+                reasoning = parsed.get("reasoning", "No reasoning provided")
+
                 print(f"   📋 PARSED RESPONSE:")
                 print(f"      Selected doc_ids: {selected_doc_ids}")
+                print(f"      💡 AI Reasoning: {reasoning}")
 
                 # Convert doc_ids to file info objects for compatibility
                 selected = []
