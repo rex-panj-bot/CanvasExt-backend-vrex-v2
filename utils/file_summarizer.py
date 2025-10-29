@@ -23,7 +23,7 @@ class FileSummarizer:
             google_api_key: Google API key for Gemini
         """
         self.client = genai.Client(api_key=google_api_key)
-        self.model_id = "gemini-2.5-flash"
+        self.model_id = "gemini-2.5-flash-lite"  # 3-6x cheaper, same 65K token limit
 
     async def summarize_file(
         self,
@@ -62,7 +62,7 @@ Format as JSON:
                 ],
                 config=types.GenerateContentConfig(
                     temperature=0.1,  # Lower = faster, more deterministic
-                    max_output_tokens=200,  # Reduced from 800
+                    max_output_tokens=500,  # Increased from 200 for more detailed topics
                     top_p=0.8,  # Reduce token sampling
                     top_k=20    # Reduce token candidates
                 )
@@ -152,7 +152,7 @@ Format your response as JSON:
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.3,
-                    max_output_tokens=800,
+                    max_output_tokens=2000,  # Increased from 800 for richer summaries
                 )
             )
 

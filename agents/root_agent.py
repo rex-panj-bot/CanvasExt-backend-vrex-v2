@@ -395,7 +395,7 @@ Examples:
             config_params = {
                 "system_instruction": system_instruction,
                 "temperature": 0.7,
-                "max_output_tokens": 8192,
+                "max_output_tokens": 16000,  # Increased from 8192 for more detailed answers
             }
 
             # Only add Google Search tool if enabled

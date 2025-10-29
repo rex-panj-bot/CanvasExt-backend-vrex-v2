@@ -23,7 +23,7 @@ class FileSelectorAgent:
             google_api_key: Google API key for Gemini
         """
         self.client = genai.Client(api_key=google_api_key)
-        self.model_id = "gemini-2.5-flash"
+        self.model_id = "gemini-2.5-flash-lite"  # 3-6x cheaper, same 65K token limit
 
     async def select_relevant_files(
         self,
@@ -52,9 +52,9 @@ class FileSelectorAgent:
             logger.info(f"🔍 Selecting relevant files from {len(file_summaries)} available materials")
             logger.info(f"   Query: {user_query[:100]}...")
 
-            # Limit file summaries to prevent prompt overflow (Gemini Flash limits)
-            # Reduced to 30 to stay well under context limits and improve response quality
-            MAX_FILES_FOR_SELECTION = 30
+            # Limit file summaries to prevent prompt overflow
+            # With 16K output tokens and Flash-Lite, we can handle 100+ files
+            MAX_FILES_FOR_SELECTION = 100
             if len(file_summaries) > MAX_FILES_FOR_SELECTION:
                 logger.warning(f"⚠️  Limiting file summaries from {len(file_summaries)} to {MAX_FILES_FOR_SELECTION} (prompt size)")
                 file_summaries = file_summaries[:MAX_FILES_FOR_SELECTION]
@@ -93,7 +93,7 @@ Return empty array [] if no files are relevant."""
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.2,  # Low temperature for consistent selection
-                        max_output_tokens=3000,  # Increased from 1500 to allow full JSON response
+                        max_output_tokens=16000,  # Increased from 3000 - allows 100+ files selection
                     )
                 )
 
