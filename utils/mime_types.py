@@ -49,13 +49,25 @@ GEMINI_SUPPORTED = {
 
 # File types that need conversion before Gemini upload (NOT directly supported)
 NEEDS_CONVERSION = {
+    # Microsoft Office → PDF
     'doc',   # Convert to PDF
     'docx',  # Convert to PDF
-    'xls',   # Convert to PDF or CSV
-    'xlsx',  # Convert to PDF or CSV
+    'xls',   # Convert to PDF
+    'xlsx',  # Convert to PDF
     'ppt',   # Convert to PDF
     'pptx',  # Convert to PDF
     'rtf',   # Convert to PDF or TXT
+
+    # OpenDocument formats → PDF
+    'odt',   # OpenDocument Text → PDF
+    'ods',   # OpenDocument Spreadsheet → PDF
+    'odp',   # OpenDocument Presentation → PDF
+
+    # Web/data formats → TXT (Gemini supports text/plain)
+    'html',  # HTML → TXT
+    'htm',   # HTML → TXT
+    'xml',   # XML → TXT
+    'json',  # JSON → TXT
 }
 
 def get_mime_type(filename: str) -> Optional[str]:

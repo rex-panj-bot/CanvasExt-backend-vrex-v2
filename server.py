@@ -174,34 +174,89 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         actual_filename = file.filename
         conversion_info = None
 
-        # PHASE 1: Convert Office files to PDF before uploading to GCS
-        # This ensures all files stored in GCS are AI-readable by Gemini
+        # PHASE 1: Convert files to AI-readable formats before uploading to GCS
+        # This ensures all files stored in GCS are readable by Gemini
         if needs_conversion(file.filename):
-            print(f"🔄 Converting {file.filename} ({ext.upper()}) to PDF before upload...")
-            try:
-                # Run conversion in thread pool (blocking operation)
-                loop = asyncio.get_event_loop()
-                pdf_bytes = await loop.run_in_executor(
-                    None,
-                    convert_office_to_pdf,
-                    content,
-                    file.filename
-                )
+            from utils.file_converter import convert_to_text
 
-                if pdf_bytes:
-                    content = pdf_bytes
-                    actual_filename = file.filename.rsplit('.', 1)[0] + '.pdf'
-                    mime_type = 'application/pdf'
-                    conversion_info = f"Converted {original_filename} → {actual_filename} ({len(pdf_bytes):,} bytes)"
-                    print(f"✅ {conversion_info}")
-                else:
-                    conversion_info = f"Conversion failed for {file.filename}, uploaded original format (may not be AI-readable)"
-                    print(f"⚠️  {conversion_info}")
-            except Exception as conv_error:
-                conversion_info = f"Conversion error for {file.filename}: {conv_error} (uploaded original)"
-                print(f"⚠️  {conversion_info}")
-                import traceback
-                traceback.print_exc()
+            # Determine conversion type based on file extension
+            web_formats = ['html', 'htm', 'xml', 'json']
+            is_web_format = ext.lower() in web_formats
+
+            if is_web_format:
+                # Convert web/data formats to plain text
+                print(f"🔄 Converting {file.filename} ({ext.upper()}) to TXT before upload...")
+                try:
+                    loop = asyncio.get_event_loop()
+                    text_bytes = await loop.run_in_executor(
+                        None,
+                        convert_to_text,
+                        content,
+                        file.filename
+                    )
+
+                    if text_bytes:
+                        content = text_bytes
+                        actual_filename = file.filename.rsplit('.', 1)[0] + '.txt'
+                        mime_type = 'text/plain'
+                        conversion_info = f"Converted {original_filename} → {actual_filename} ({len(text_bytes):,} bytes)"
+                        print(f"✅ {conversion_info}")
+                    else:
+                        # Conversion failed - mark as unreadable
+                        print(f"❌ Failed to convert {file.filename} - file is unreadable by AI")
+                        return {
+                            "filename": file.filename,
+                            "status": "failed",
+                            "error": "Could not convert file to AI-readable format",
+                            "unreadable": True
+                        }
+                except Exception as conv_error:
+                    print(f"❌ Conversion error for {file.filename}: {conv_error}")
+                    import traceback
+                    traceback.print_exc()
+                    return {
+                        "filename": file.filename,
+                        "status": "failed",
+                        "error": f"Conversion error: {str(conv_error)}",
+                        "unreadable": True
+                    }
+            else:
+                # Convert Office/OpenDocument formats to PDF
+                print(f"🔄 Converting {file.filename} ({ext.upper()}) to PDF before upload...")
+                try:
+                    loop = asyncio.get_event_loop()
+                    pdf_bytes = await loop.run_in_executor(
+                        None,
+                        convert_office_to_pdf,
+                        content,
+                        file.filename
+                    )
+
+                    if pdf_bytes:
+                        content = pdf_bytes
+                        actual_filename = file.filename.rsplit('.', 1)[0] + '.pdf'
+                        mime_type = 'application/pdf'
+                        conversion_info = f"Converted {original_filename} → {actual_filename} ({len(pdf_bytes):,} bytes)"
+                        print(f"✅ {conversion_info}")
+                    else:
+                        # Conversion failed - mark as unreadable
+                        print(f"❌ Failed to convert {file.filename} - file is unreadable by AI")
+                        return {
+                            "filename": file.filename,
+                            "status": "failed",
+                            "error": "Could not convert file to PDF format",
+                            "unreadable": True
+                        }
+                except Exception as conv_error:
+                    print(f"❌ Conversion error for {file.filename}: {conv_error}")
+                    import traceback
+                    traceback.print_exc()
+                    return {
+                        "filename": file.filename,
+                        "status": "failed",
+                        "error": f"Conversion error: {str(conv_error)}",
+                        "unreadable": True
+                    }
 
         # Upload to GCS if available, otherwise save locally
         if storage_manager:
