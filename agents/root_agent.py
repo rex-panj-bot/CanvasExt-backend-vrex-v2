@@ -171,7 +171,10 @@ class RootAgent:
                     else:
                         # Get the actual materials based on selected doc_ids
                         selected_doc_ids = [f.get("doc_id") for f in selected_files]
+                        print(f"   🔍 DEBUG: Selected doc IDs from AI: {selected_doc_ids[:5]}...")
+                        print(f"   🔍 DEBUG: Available material IDs: {[m['id'] for m in all_materials[:5]]}...")
                         materials_to_use = [m for m in all_materials if m["id"] in selected_doc_ids]
+                        print(f"   🔍 DEBUG: Matched {len(materials_to_use)} materials from {len(selected_doc_ids)} selected IDs")
 
                         # Always include syllabus if available
                         if syllabus_id and syllabus_id not in selected_doc_ids:
