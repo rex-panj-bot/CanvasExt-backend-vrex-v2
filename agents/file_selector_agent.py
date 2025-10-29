@@ -296,3 +296,44 @@ Return empty array [] with reasoning if no files are relevant."""
 
         print(f"      ❌ No syllabus found")
         return None
+
+    async def should_use_syllabus(self, user_query: str) -> bool:
+        """
+        Use AI to determine if the query requires syllabus/course structure context
+
+        Args:
+            user_query: The student's question
+
+        Returns:
+            True if syllabus would be helpful, False otherwise
+        """
+        try:
+            prompt = f"""Analyze this student question and determine if it requires course structure context (syllabus, schedule, exam coverage).
+
+Question: "{user_query}"
+
+Answer with ONLY "yes" or "no":
+- "yes" if the question is about: exams, tests, quizzes, specific weeks/chapters/modules, what's covered when, course timeline, assessment schedule
+- "no" if the question is about: general topics, concepts, definitions, paper sources, understanding material
+
+Your answer (just "yes" or "no"):"""
+
+            response = self.client.models.generate_content(
+                model=self.model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=10,  # Just need "yes" or "no"
+                )
+            )
+
+            answer = response.text.strip().lower()
+            needs_syllabus = answer == "yes"
+
+            print(f"      AI decision: {answer} ({'needs syllabus' if needs_syllabus else 'topic-based'})")
+            return needs_syllabus
+
+        except Exception as e:
+            print(f"      ⚠️  Error determining syllabus need: {e}")
+            print(f"      Defaulting to: No (topic-based)")
+            return False  # Default to not using syllabus on error

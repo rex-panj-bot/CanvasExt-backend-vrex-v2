@@ -1092,23 +1092,76 @@ async def get_collection_status(course_id: str):
 
 @app.get("/courses/{course_id}/syllabus")
 async def detect_syllabus(course_id: str):
-    """Auto-detect syllabus document for a course"""
+    """Auto-detect or retrieve stored syllabus document for a course"""
     try:
+        # First, check if there's a stored syllabus_id
+        stored_syllabus_id = chat_storage.get_course_syllabus(course_id) if chat_storage else None
+
+        if stored_syllabus_id:
+            syllabus_doc = document_manager.get_document_summary(course_id, stored_syllabus_id)
+            return {
+                "success": True,
+                "syllabus_id": stored_syllabus_id,
+                "syllabus_name": syllabus_doc.get("name") if syllabus_doc else None,
+                "source": "stored"
+            }
+
+        # If not stored, try auto-detection
         syllabus_id = document_manager.find_syllabus(course_id)
 
         if syllabus_id:
             syllabus_doc = document_manager.get_document_summary(course_id, syllabus_id)
+            # Auto-save detected syllabus
+            if chat_storage:
+                chat_storage.set_course_syllabus(course_id, syllabus_id)
             return {
                 "success": True,
                 "syllabus_id": syllabus_id,
-                "syllabus_name": syllabus_doc.get("name") if syllabus_doc else None
+                "syllabus_name": syllabus_doc.get("name") if syllabus_doc else None,
+                "source": "auto-detected"
             }
         else:
             return {
                 "success": True,
                 "syllabus_id": None,
-                "message": "No syllabus found"
+                "message": "No syllabus found",
+                "source": None
             }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.post("/courses/{course_id}/syllabus")
+async def set_syllabus(course_id: str, syllabus_id: str):
+    """Manually set the syllabus document for a course"""
+    try:
+        if not chat_storage:
+            return {
+                "success": False,
+                "error": "Chat storage not available"
+            }
+
+        # Verify the syllabus document exists
+        syllabus_doc = document_manager.get_document_summary(course_id, syllabus_id)
+        if not syllabus_doc:
+            return {
+                "success": False,
+                "error": f"Document {syllabus_id} not found"
+            }
+
+        # Store the syllabus_id
+        chat_storage.set_course_syllabus(course_id, syllabus_id)
+
+        return {
+            "success": True,
+            "syllabus_id": syllabus_id,
+            "syllabus_name": syllabus_doc.get("name"),
+            "message": "Syllabus set successfully"
+        }
+
     except Exception as e:
         return {
             "success": False,

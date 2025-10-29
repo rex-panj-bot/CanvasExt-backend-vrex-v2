@@ -107,6 +107,16 @@ class ChatStorage:
                     )
                 """))
 
+                # Course metadata table (stores syllabus_id, etc.)
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS course_metadata (
+                        course_id VARCHAR(255) PRIMARY KEY,
+                        syllabus_id VARCHAR(255),
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+
                 # PHASE 3: Gemini File API URI cache (48hr expiration)
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS gemini_file_cache (
@@ -192,6 +202,16 @@ class ChatStorage:
                     summary TEXT NOT NULL,
                     topics TEXT,
                     metadata TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Course metadata table (stores syllabus_id, etc.)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS course_metadata (
+                    course_id TEXT PRIMARY KEY,
+                    syllabus_id TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -901,3 +921,67 @@ class ChatStorage:
         except Exception as e:
             logger.error(f"Error cleaning up expired Gemini URIs: {e}")
             return 0
+
+    def set_course_syllabus(self, course_id: str, syllabus_id: str):
+        """
+        Set the syllabus document ID for a course
+
+        Args:
+            course_id: Course identifier
+            syllabus_id: Document ID of the syllabus
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        INSERT INTO course_metadata (course_id, syllabus_id, updated_at)
+                        VALUES (:course_id, :syllabus_id, NOW())
+                        ON CONFLICT (course_id) DO UPDATE SET
+                            syllabus_id = :syllabus_id,
+                            updated_at = NOW()
+                    """), {"course_id": course_id, "syllabus_id": syllabus_id})
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO course_metadata (course_id, syllabus_id, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                    """, (course_id, syllabus_id))
+                    conn.commit()
+
+            logger.info(f"✅ Set syllabus for course {course_id}: {syllabus_id}")
+
+        except Exception as e:
+            logger.error(f"Error setting course syllabus: {e}")
+
+    def get_course_syllabus(self, course_id: str) -> Optional[str]:
+        """
+        Get the syllabus document ID for a course
+
+        Args:
+            course_id: Course identifier
+
+        Returns:
+            Syllabus document ID or None
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT syllabus_id FROM course_metadata WHERE course_id = :course_id
+                    """), {"course_id": course_id})
+                    row = result.fetchone()
+                    return row[0] if row else None
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT syllabus_id FROM course_metadata WHERE course_id = ?
+                    """, (course_id,))
+                    row = cursor.fetchone()
+                    return row[0] if row else None
+
+        except Exception as e:
+            logger.error(f"Error getting course syllabus: {e}")
+            return None
