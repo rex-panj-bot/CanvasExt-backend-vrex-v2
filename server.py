@@ -151,13 +151,21 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         mime_type = get_mime_type(file.filename)
         ext = get_file_extension(file.filename) or 'file'
 
+        # NEVER SKIP: If MIME type unknown, try to infer or use generic
         if not mime_type:
-            print(f"⚠️  Skipping {file.filename} - unsupported file type")
-            return {
-                "filename": file.filename,
-                "status": "skipped",
-                "error": "Unsupported file type"
+            # Try to infer from extension
+            ext_to_mime = {
+                'txt': 'text/plain',
+                'md': 'text/markdown',
+                'csv': 'text/csv',
+                'json': 'application/json',
+                'xml': 'application/xml',
+                'html': 'text/html',
+                'htm': 'text/html',
+                'pdf': 'application/pdf',
             }
+            mime_type = ext_to_mime.get(ext.lower(), 'application/octet-stream')
+            print(f"⚠️  Unknown file type for {file.filename}, using inferred MIME: {mime_type}")
 
         print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
 
@@ -289,18 +297,9 @@ async def _generate_single_summary(
             print(f"✅ Using cached summary for {filename}")
             return {"status": "cached", "filename": filename}
 
-        # Skip summarization for very small files (< 50KB)
+        # NEVER SKIP: Process all files, even small ones
+        # Small files might contain important information (syllabus, instructions, etc.)
         file_size = file_info.get("size_bytes", 0)
-        if file_size > 0 and file_size < 51200:  # 50KB
-            simple_summary = f"Small reference file ({file_size // 1024}KB)"
-            chat_storage.save_file_summary(
-                doc_id, course_id, filename,
-                summary=simple_summary,
-                topics=[],
-                metadata={"doc_type": "reference", "size_bytes": file_size}
-            )
-            print(f"⚡ Skipped tiny file: {filename} ({file_size // 1024}KB)")
-            return {"status": "skipped", "filename": filename}
 
         # Upload file to Gemini File API (run in thread pool - BLOCKING operation)
         upload_result = await asyncio.to_thread(
