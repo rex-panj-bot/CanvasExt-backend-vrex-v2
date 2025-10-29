@@ -53,9 +53,11 @@ class FileSelectorAgent:
             logger.info(f"   Query: {user_query[:100]}...")
 
             # Limit file summaries to prevent prompt overflow (Gemini Flash limits)
-            if len(file_summaries) > 50:
-                logger.warning(f"⚠️  Limiting file summaries from {len(file_summaries)} to 50 (prompt size)")
-                file_summaries = file_summaries[:50]
+            # Reduced to 30 to stay well under context limits and improve response quality
+            MAX_FILES_FOR_SELECTION = 30
+            if len(file_summaries) > MAX_FILES_FOR_SELECTION:
+                logger.warning(f"⚠️  Limiting file summaries from {len(file_summaries)} to {MAX_FILES_FOR_SELECTION} (prompt size)")
+                file_summaries = file_summaries[:MAX_FILES_FOR_SELECTION]
 
             # Build context for the selection prompt
             files_context = self._build_files_context(file_summaries)
@@ -195,13 +197,16 @@ If no files are relevant, return an empty array with an explanation."""
 
             topics_str = ", ".join(topics[:5]) if topics else "N/A"
 
+            # Truncate summary to 150 chars to keep prompt compact
+            truncated_summary = summary[:150] + '...' if len(summary) > 150 else summary
+
             context_lines.append(
                 f"{idx}. **{filename}**\n"
                 f"   - ID: {doc_id}\n"
                 f"   - Type: {doc_type}\n"
                 f"   - Topics: {topics_str}\n"
                 f"   - Time: {time_refs if time_refs else 'N/A'}\n"
-                f"   - Summary: {summary[:200]}{'...' if len(summary) > 200 else ''}\n"
+                f"   - Summary: {truncated_summary}\n"
             )
 
         return "\n".join(context_lines)
