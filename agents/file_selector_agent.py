@@ -76,12 +76,13 @@ class FileSelectorAgent:
 
 **Task:**
 Select up to {max_files} most relevant files based on topic relevance. Prioritize files that directly address the question.
+IMPORTANT: If the question asks for a specific number of files (e.g., "give me 7 files"), return exactly that many files if available. Otherwise, return as many relevant files as needed, up to the {max_files} limit.
 
 **Response Format (CONCISE - NO EXPLANATIONS):**
-Return ONLY a JSON array of doc_ids, ordered by relevance:
+Return ONLY a JSON array of doc_ids, ordered by relevance (most relevant first):
 
 {{
-  "selected_files": ["doc_id_1", "doc_id_2", "doc_id_3"]
+  "selected_files": ["doc_id_1", "doc_id_2", "doc_id_3", ...]
 }}
 
 Return empty array [] if no files are relevant."""

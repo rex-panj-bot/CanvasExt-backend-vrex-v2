@@ -136,12 +136,32 @@ class RootAgent:
                             syllabus_id, file_summaries
                         )
 
+                    # Determine max_files based on user query or use default
+                    # Extract number if user asks for specific amount (e.g., "give me 7 files")
+                    import re
+                    max_files = 15  # Default increased from 5 to 15 (we have 16K output tokens now)
+
+                    # Check if user specifies a number in their query
+                    number_patterns = [
+                        r'at least (\d+)',
+                        r'give me (\d+)',
+                        r'(\d+) files',
+                        r'(\d+) sources'
+                    ]
+                    for pattern in number_patterns:
+                        match = re.search(pattern, user_message.lower())
+                        if match:
+                            requested = int(match.group(1))
+                            max_files = min(requested, 30)  # Cap at 30 for performance
+                            print(f"   📊 User requested {requested} files, using max_files={max_files}")
+                            break
+
                     # Use file selector agent to intelligently choose files
                     selected_files = await self.file_selector_agent.select_relevant_files(
                         user_query=user_message,
                         file_summaries=file_summaries,
                         syllabus_summary=syllabus_summary,
-                        max_files=5
+                        max_files=max_files
                     )
 
                     if not selected_files:
