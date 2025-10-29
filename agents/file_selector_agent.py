@@ -107,9 +107,19 @@ If no files are relevant, return an empty array with an explanation."""
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.2,  # Low temperature for consistent selection
-                        max_output_tokens=1500,
+                        max_output_tokens=3000,  # Increased from 1500 to allow full JSON response
                     )
                 )
+
+                # Check for MAX_TOKENS finish reason (incomplete response)
+                if response and hasattr(response, 'candidates') and response.candidates:
+                    finish_reason = response.candidates[0].finish_reason if hasattr(response.candidates[0], 'finish_reason') else None
+                    if finish_reason and str(finish_reason) == 'FinishReason.MAX_TOKENS':
+                        logger.error("❌ Response truncated due to MAX_TOKENS limit")
+                        logger.error(f"   Prompt length: {len(prompt)} chars")
+                        logger.error(f"   File summaries: {len(file_summaries)}")
+                        logger.error(f"   Consider reducing file count or summary length")
+                        return []  # Fallback to manual selection
 
                 # Validate response
                 if not response or not response.text:
