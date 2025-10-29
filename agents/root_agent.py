@@ -129,12 +129,22 @@ class RootAgent:
                     yield "\n⚠️ No file summaries available. Using all materials.\n"
                     materials_to_use = all_materials
                 else:
-                    # Get syllabus summary for context
+                    # Get syllabus summary for context (always try to find it)
                     syllabus_summary = None
                     if syllabus_id:
-                        syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
-                            syllabus_id, file_summaries
-                        )
+                        print(f"   📋 Looking for syllabus with ID: {syllabus_id}")
+                    else:
+                        print(f"   📋 No syllabus_id provided, searching for syllabus file...")
+
+                    syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
+                        syllabus_id, file_summaries
+                    )
+
+                    if syllabus_summary:
+                        print(f"   ✅ Found syllabus summary ({len(syllabus_summary)} chars)")
+                        print(f"      Preview: {syllabus_summary[:150]}...")
+                    else:
+                        print(f"   ⚠️  No syllabus found - file selection will work without course structure context")
 
                     # Determine max_files based on user query or use default
                     # Extract number if user asks for specific amount (e.g., "give me 7 files")

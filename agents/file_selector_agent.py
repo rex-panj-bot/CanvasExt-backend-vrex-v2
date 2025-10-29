@@ -65,20 +65,38 @@ class FileSelectorAgent:
             # Build context for the selection prompt
             files_context = self._build_files_context(file_summaries)
 
+            # Detect if this is an exam/assessment-related query
+            exam_keywords = ['exam', 'test', 'midterm', 'final', 'quiz', 'assessment']
+            is_exam_query = any(keyword in user_query.lower() for keyword in exam_keywords)
+
             # Craft selection prompt
+            syllabus_context = ""
+            if syllabus_summary:
+                syllabus_context = f"""
+**Course Syllabus Information:**
+{syllabus_summary[:800]}
+{"..." if len(syllabus_summary) > 800 else ""}
+
+Use this syllabus to understand course structure, exam coverage, and topic organization."""
+            else:
+                syllabus_context = "**Course Context:** No syllabus available"
+
+            exam_instruction = ""
+            if is_exam_query and syllabus_summary:
+                exam_instruction = "\n⚠️ EXAM-RELATED QUERY: Consult the syllabus to identify which topics/weeks are covered in the specified exam, then select materials from those relevant periods."
+
             prompt = f"""You are an intelligent file selection assistant for a study assistant AI. Your task is to select the most relevant course materials to answer a student's question.
 
 **Student Question:**
 {user_query}
 
-**Course Context:**
-{syllabus_summary if syllabus_summary else "No syllabus available"}
+{syllabus_context}
 
 **Available Course Materials:**
 {files_context}
 
 **Task:**
-Select up to {max_files} most relevant files based on topic relevance. Prioritize files that directly address the question.
+Select up to {max_files} most relevant files based on topic relevance. Prioritize files that directly address the question.{exam_instruction}
 IMPORTANT: If the question asks for a specific number of files (e.g., "give me 7 files"), return exactly that many files if available. Otherwise, return as many relevant files as needed, up to the {max_files} limit.
 
 **Response Format (CONCISE - NO EXPLANATIONS):**
@@ -243,20 +261,28 @@ Return empty array [] if no files are relevant."""
         Extract syllabus summary if available
 
         Args:
-            syllabus_doc_id: Document ID of the syllabus
+            syllabus_doc_id: Document ID of the syllabus (optional - can be None)
             file_summaries: List of all file summaries
 
         Returns:
             Syllabus summary text or None
         """
-        for file_info in file_summaries:
-            if file_info.get("doc_id") == syllabus_doc_id:
-                return file_info.get("summary", "")
+        # First, try exact match by doc_id if provided
+        if syllabus_doc_id:
+            for file_info in file_summaries:
+                if file_info.get("doc_id") == syllabus_doc_id:
+                    summary = file_info.get("summary", "")
+                    print(f"      ✅ Found syllabus by ID: {file_info.get('filename')}")
+                    return summary
 
         # If not found by exact match, search for "syllabus" in filename
+        print(f"      🔍 Searching for syllabus in {len(file_summaries)} files...")
         for file_info in file_summaries:
             filename = file_info.get("filename", "").lower()
             if "syllabus" in filename:
-                return file_info.get("summary", "")
+                summary = file_info.get("summary", "")
+                print(f"      ✅ Found syllabus by filename: {file_info.get('filename')}")
+                return summary
 
+        print(f"      ❌ No syllabus found")
         return None
