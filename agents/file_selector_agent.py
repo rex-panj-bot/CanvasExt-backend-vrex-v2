@@ -114,6 +114,10 @@ If no files are relevant, return an empty array with an explanation."""
                     logger.error("❌ Empty/null response from Gemini API")
                     logger.error(f"   Prompt length: {len(prompt)} chars")
                     logger.error(f"   File summaries: {len(file_summaries)}")
+                    logger.error(f"   Response object: {response}")
+                    if response:
+                        logger.error(f"   Response candidates: {response.candidates if hasattr(response, 'candidates') else 'N/A'}")
+                        logger.error(f"   Prompt feedback: {response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'}")
                     return []  # Fallback to manual selection
 
                 response_text = response.text.strip()
