@@ -120,6 +120,8 @@ Return empty array [] if no files are relevant."""
                     return []  # Fallback to manual selection
 
                 response_text = response.text.strip()
+                logger.info(f"🤖 RAW API RESPONSE:")
+                logger.info(f"   {response_text[:1000]}{'...' if len(response_text) > 1000 else ''}")
 
             except Exception as api_error:
                 logger.error(f"❌ Gemini API error during file selection: {api_error}")
@@ -141,17 +143,29 @@ Return empty array [] if no files are relevant."""
                 parsed = json.loads(response_text)
 
                 selected_doc_ids = parsed.get("selected_files", [])
+                logger.info(f"📋 PARSED RESPONSE:")
+                logger.info(f"   Selected doc_ids: {selected_doc_ids}")
 
                 # Convert doc_ids to file info objects for compatibility
                 selected = []
+                matched_ids = []
+                unmatched_ids = []
+
                 for doc_id in selected_doc_ids:
                     # Find the corresponding file info from file_summaries
+                    found = False
                     for file_info in file_summaries:
                         if file_info.get("doc_id") == doc_id:
                             selected.append(file_info)
+                            matched_ids.append(doc_id)
+                            found = True
                             break
+                    if not found:
+                        unmatched_ids.append(doc_id)
 
-                logger.info(f"✅ Selected {len(selected)} relevant files")
+                logger.info(f"✅ Selected {len(selected)} relevant files (matched {len(matched_ids)}/{len(selected_doc_ids)} IDs)")
+                if unmatched_ids:
+                    logger.warning(f"⚠️  Could not find file info for {len(unmatched_ids)} doc_ids: {unmatched_ids[:3]}...")
 
                 # Log selected files
                 for file_info in selected[:5]:  # Show first 5
