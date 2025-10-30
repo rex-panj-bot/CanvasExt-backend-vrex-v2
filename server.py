@@ -969,23 +969,39 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
         "stop_streaming": False
     }
 
+    # Create a task to handle incoming messages (including stop signals)
+    async def handle_incoming_messages():
+        """Background task that listens for stop signals"""
+        try:
+            while True:
+                data = await websocket.receive_text()
+                message_data = json.loads(data)
+
+                if message_data.get("type") == "stop":
+                    import time
+                    print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
+                    active_connections[connection_id]["stop_streaming"] = True
+                    print(f"🛑 Set stop_streaming flag to: {active_connections[connection_id]['stop_streaming']}")
+                    await websocket.send_json({
+                        "type": "stopped",
+                        "message": "Generation stopped by user"
+                    })
+                else:
+                    # Queue the message for processing
+                    active_connections[connection_id]["pending_message"] = message_data
+        except Exception as e:
+            print(f"Message handler error: {e}")
+
+    # Start the message handler task
+    message_task = asyncio.create_task(handle_incoming_messages())
+
     try:
         while True:
-            # Receive message from client
-            data = await websocket.receive_text()
-            message_data = json.loads(data)
+            # Wait for a pending message
+            while "pending_message" not in active_connections[connection_id]:
+                await asyncio.sleep(0.01)
 
-            # Check if this is a stop signal
-            if message_data.get("type") == "stop":
-                import time
-                print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
-                active_connections[connection_id]["stop_streaming"] = True
-                print(f"🛑 Set stop_streaming flag to: {active_connections[connection_id]['stop_streaming']}")
-                await websocket.send_json({
-                    "type": "stopped",
-                    "message": "Generation stopped by user"
-                })
-                continue
+            message_data = active_connections[connection_id].pop("pending_message")
 
             # Reset stop flag for new queries
             active_connections[connection_id]["stop_streaming"] = False
@@ -1076,12 +1092,16 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
     except WebSocketDisconnect:
         print(f"🔌 WebSocket disconnected: {connection_id}")
+        # Cancel message handler task
+        message_task.cancel()
         # Clear session cache
         root_agent.clear_session(connection_id)
         if connection_id in active_connections:
             del active_connections[connection_id]
     except Exception as e:
         print(f"❌ WebSocket error: {e}")
+        # Cancel message handler task
+        message_task.cancel()
         await websocket.send_json({
             "type": "error",
             "message": str(e)
