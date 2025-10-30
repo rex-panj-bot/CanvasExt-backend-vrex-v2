@@ -977,8 +977,10 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
             # Check if this is a stop signal
             if message_data.get("type") == "stop":
-                print(f"🛑 Stop signal received for {connection_id}")
+                import time
+                print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
                 active_connections[connection_id]["stop_streaming"] = True
+                print(f"🛑 Set stop_streaming flag to: {active_connections[connection_id]['stop_streaming']}")
                 await websocket.send_json({
                     "type": "stopped",
                     "message": "Generation stopped by user"
@@ -987,6 +989,8 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
             # Reset stop flag for new queries
             active_connections[connection_id]["stop_streaming"] = False
+            import time
+            print(f"🚀 Starting new query at {time.time()}")
 
             user_message = message_data.get("message", "")
             conversation_history = message_data.get("history", [])

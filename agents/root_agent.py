@@ -464,11 +464,17 @@ Examples:
             total_generated = 0
             search_results_shown = False
 
+            chunk_num = 0
             async for chunk in response_stream:
+                chunk_num += 1
                 # Check if user requested to stop
-                if stop_check_callback and stop_check_callback():
-                    print(f"   🛑 Stop requested, breaking Gemini stream early")
-                    break
+                if stop_check_callback:
+                    should_stop = stop_check_callback()
+                    if chunk_num % 5 == 0:  # Log every 5 chunks to avoid spam
+                        print(f"   📊 Chunk {chunk_num}: stop_check = {should_stop}")
+                    if should_stop:
+                        print(f"   🛑 Stop requested at chunk {chunk_num}, breaking Gemini stream early")
+                        break
 
                 # Stream text response
                 if chunk.text:
