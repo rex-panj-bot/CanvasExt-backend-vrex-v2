@@ -927,6 +927,101 @@ async def update_chat_title(course_id: str, session_id: str, data: dict):
         }
 
 
+@app.post("/chats/{course_id}/{session_id}/generate-title")
+async def generate_chat_title(course_id: str, session_id: str, data: dict):
+    """
+    Generate AI title for chat based on first message
+
+    Uses Gemini Flash to create a concise, descriptive title (3-6 words)
+    that summarizes the user's question.
+
+    Args:
+        course_id: Course identifier (for validation)
+        session_id: Session identifier
+        data: Dict containing:
+            - first_message: str (user's first question)
+
+    Returns:
+        JSON with success status and generated title
+    """
+    try:
+        # Verify session exists and belongs to this course
+        session = chat_storage.get_chat_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+
+        if session.get('course_id') != course_id:
+            raise HTTPException(status_code=403, detail="Course ID mismatch")
+
+        first_message = data.get('first_message', '')
+        if not first_message:
+            raise HTTPException(status_code=400, detail="first_message is required")
+
+        # Generate title using Gemini
+        try:
+            from google import genai
+            from google.genai import types
+
+            # Use default API key
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise Exception("GOOGLE_API_KEY not configured")
+
+            client = genai.Client(api_key=api_key)
+
+            # Prompt for title generation
+            prompt = f"""Generate a concise, descriptive title (3-6 words) for this user question.
+The title should capture the main topic or intent of the question.
+Do not use quotes or punctuation in the title.
+
+User question: {first_message[:200]}
+
+Title:"""
+
+            # Call Gemini Flash (fast and cheap)
+            response = client.models.generate_content(
+                model='gemini-2.0-flash-exp',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=20
+                )
+            )
+
+            generated_title = response.text.strip()
+
+            # Fallback if generation fails
+            if not generated_title or len(generated_title) > 100:
+                from datetime import datetime
+                generated_title = f"Chat {datetime.now().strftime('%b %d, %Y')}"
+
+            print(f"✨ Generated title: {generated_title}")
+
+        except Exception as e:
+            print(f"⚠️ Title generation failed: {e}")
+            # Fallback title
+            from datetime import datetime
+            generated_title = f"Chat {datetime.now().strftime('%b %d, %Y')}"
+
+        # Update title in database
+        success = chat_storage.update_chat_title(session_id, generated_title)
+
+        return {
+            "success": success,
+            "title": generated_title,
+            "message": "Title generated successfully" if success else "Failed to save title"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating chat title: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.websocket("/ws/chat/{course_id}")
 async def websocket_chat(websocket: WebSocket, course_id: str):
     """
