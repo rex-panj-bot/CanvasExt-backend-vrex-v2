@@ -963,11 +963,30 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
     print(f"🔌 WebSocket connected: {connection_id}")
 
+    # Store stop flag in connection dict so it can be accessed globally
+    active_connections[connection_id] = {
+        "websocket": websocket,
+        "stop_streaming": False
+    }
+
     try:
         while True:
             # Receive message from client
             data = await websocket.receive_text()
             message_data = json.loads(data)
+
+            # Check if this is a stop signal
+            if message_data.get("type") == "stop":
+                print(f"🛑 Stop signal received for {connection_id}")
+                active_connections[connection_id]["stop_streaming"] = True
+                await websocket.send_json({
+                    "type": "stopped",
+                    "message": "Generation stopped by user"
+                })
+                continue
+
+            # Reset stop flag for new queries
+            active_connections[connection_id]["stop_streaming"] = False
 
             user_message = message_data.get("message", "")
             conversation_history = message_data.get("history", [])
@@ -994,6 +1013,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             # Process with Root Agent and stream response
             chunk_count = 0
             assistant_response = ""
+
             async for chunk in root_agent.process_query_stream(
                 course_id=course_id,
                 user_message=user_message,
@@ -1005,6 +1025,11 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 user_api_key=user_api_key,
                 use_smart_selection=use_smart_selection
             ):
+                # Check if stop signal received
+                if active_connections.get(connection_id, {}).get("stop_streaming", False):
+                    print(f"🛑 Stopping stream early at chunk {chunk_count}")
+                    break
+
                 chunk_count += 1
                 assistant_response += chunk
                 await websocket.send_json({
@@ -1012,11 +1037,14 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                     "content": chunk
                 })
 
-            # Send completion signal
-            print(f"✅ Completed ({chunk_count} chunks)")
-            await websocket.send_json({
-                "type": "done"
-            })
+            # Send completion signal (only if not stopped)
+            if not active_connections.get(connection_id, {}).get("stop_streaming", False):
+                print(f"✅ Completed ({chunk_count} chunks)")
+                await websocket.send_json({
+                    "type": "done"
+                })
+            else:
+                print(f"🛑 Stream stopped at {chunk_count} chunks (saved tokens!)")
 
             # Auto-save chat history if session_id provided
             if chat_session_id and user_message and assistant_response:
@@ -1041,7 +1069,8 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
         print(f"🔌 WebSocket disconnected: {connection_id}")
         # Clear session cache
         root_agent.clear_session(connection_id)
-        del active_connections[connection_id]
+        if connection_id in active_connections:
+            del active_connections[connection_id]
     except Exception as e:
         print(f"❌ WebSocket error: {e}")
         await websocket.send_json({
