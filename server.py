@@ -1748,7 +1748,7 @@ async def restore_material(course_id: str, file_id: str):
 
 
 @app.get("/pdfs/{course_id}/{filename}")
-async def serve_pdf(course_id: str, filename: str):
+async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
     """
     Serve files from GCS for viewing in browser
 
@@ -1821,7 +1821,13 @@ async def serve_pdf(course_id: str, filename: str):
                 signed_url = storage_manager.get_signed_url(blob_name, expiration_minutes=60)
 
                 if signed_url:
-                    print(f"🔗 Generated signed URL, redirecting...")
+                    # Append page anchor if provided
+                    if page:
+                        signed_url = f"{signed_url}#page={page}"
+                        print(f"🔗 Generated signed URL with page anchor: #page={page}")
+                    else:
+                        print(f"🔗 Generated signed URL, redirecting...")
+
                     # Redirect to GCS signed URL for browser to open
                     from fastapi.responses import RedirectResponse
                     return RedirectResponse(url=signed_url, status_code=302)
