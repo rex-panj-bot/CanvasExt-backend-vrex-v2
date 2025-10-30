@@ -108,16 +108,28 @@ class ChatStorage:
                     )
                 """))
 
-                # Add deleted_at column if it doesn't exist (migration)
+                # Migration: Add deleted_at column if it doesn't exist (for existing tables)
+                # Use a separate transaction to avoid breaking the main initialization
                 try:
-                    conn.execute(text("""
-                        ALTER TABLE file_summaries ADD COLUMN deleted_at TIMESTAMP NULL
+                    # Check if column exists first
+                    check_result = conn.execute(text("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name='file_summaries'
+                        AND column_name='deleted_at'
                     """))
-                    conn.commit()
-                    logger.info("Added deleted_at column to file_summaries (PostgreSQL)")
+
+                    if not check_result.fetchone():
+                        # Column doesn't exist, add it
+                        conn.execute(text("""
+                            ALTER TABLE file_summaries ADD COLUMN deleted_at TIMESTAMP NULL
+                        """))
+                        logger.info("Added deleted_at column to file_summaries (PostgreSQL)")
                 except Exception as e:
-                    # Column already exists or other error
-                    pass
+                    # If any error occurs, rollback this specific operation
+                    logger.warning(f"Could not add deleted_at column (may already exist): {e}")
+                    conn.rollback()
+                    # Continue with the rest of initialization
 
                 # Course metadata table (stores syllabus_id, etc.)
                 conn.execute(text("""
@@ -220,16 +232,24 @@ class ChatStorage:
                 )
             """)
 
-            # Add deleted_at column if it doesn't exist (migration)
+            # Migration: Add deleted_at column if it doesn't exist (for existing tables)
             try:
+                # Check if column exists first
                 cursor.execute("""
-                    ALTER TABLE file_summaries ADD COLUMN deleted_at TIMESTAMP NULL
+                    SELECT COUNT(*) FROM pragma_table_info('file_summaries')
+                    WHERE name='deleted_at'
                 """)
-                conn.commit()
-                logger.info("Added deleted_at column to file_summaries (SQLite)")
+                exists = cursor.fetchone()[0] > 0
+
+                if not exists:
+                    # Column doesn't exist, add it
+                    cursor.execute("""
+                        ALTER TABLE file_summaries ADD COLUMN deleted_at TIMESTAMP NULL
+                    """)
+                    logger.info("Added deleted_at column to file_summaries (SQLite)")
             except Exception as e:
-                # Column already exists or other error
-                pass
+                # If any error occurs, just continue
+                logger.warning(f"Could not add deleted_at column (may already exist): {e}")
 
             # Course metadata table (stores syllabus_id, etc.)
             cursor.execute("""
