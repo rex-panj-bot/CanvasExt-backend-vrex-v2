@@ -970,9 +970,10 @@ async def generate_chat_title(course_id: str, session_id: str, data: dict):
             client = genai.Client(api_key=api_key)
 
             # Prompt for title generation
-            prompt = f"""Generate a concise, descriptive title (3-6 words) for this user question.
+            prompt = f"""Generate a concise, descriptive title (max 32 characters) for this user question.
 The title should capture the main topic or intent of the question.
 Do not use quotes or punctuation in the title.
+Keep it SHORT and specific.
 
 User question: {first_message[:200]}
 
@@ -984,18 +985,22 @@ Title:"""
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.7,
-                    max_output_tokens=20
+                    max_output_tokens=15
                 )
             )
 
             generated_title = response.text.strip()
 
-            # Fallback if generation fails
-            if not generated_title or len(generated_title) > 100:
-                from datetime import datetime
-                generated_title = f"Chat {datetime.now().strftime('%b %d, %Y')}"
+            # Enforce 32 character limit
+            if len(generated_title) > 32:
+                generated_title = generated_title[:29] + "..."
 
-            print(f"✨ Generated title: {generated_title}")
+            # Fallback if generation fails
+            if not generated_title:
+                from datetime import datetime
+                generated_title = f"Chat {datetime.now().strftime('%b %d')}"
+
+            print(f"✨ Generated title: {generated_title} ({len(generated_title)} chars)")
 
         except Exception as e:
             print(f"⚠️ Title generation failed: {e}")
