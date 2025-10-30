@@ -748,61 +748,57 @@ async def _proactive_cache_refresh_loop():
         traceback.print_exc()
 
 
-@app.post("/upload_pdfs")
-async def upload_pdfs(
-    course_id: str,
-    files: List[UploadFile] = File(...)
-):
+async def _process_uploads_background(course_id: str, files_in_memory: List[Dict]):
     """
-    Upload files for a course (supports PDFs, documents, images, etc.)
+    Background task to process file uploads after instant response
 
-    Args:
-        course_id: Course identifier (used as filename prefix)
-        files: List of files to upload (PDF, DOCX, TXT, images, etc.)
+    This function does ALL the heavy lifting AFTER the frontend already opened the chat:
+    1. Convert files (Office→PDF, HTML→TXT)
+    2. Upload to GCS/local storage
+    3. Update document catalog
+    4. Pre-warm Gemini cache
+    5. Generate summaries
 
-    Process:
-        1. Saves all files to storage in parallel (GCS or local)
-        2. Auto-detects file types and applies correct MIME types
-        3. Incrementally updates document catalog
-        4. No text extraction or processing (done on-demand during queries)
-
-    Returns:
-        JSON with upload results, success/failure counts
-
-    Performance: ~1-2 seconds for 25 files
+    The user doesn't wait for any of this - they get instant chat access!
     """
     try:
-        print(f"\n{'='*80}")
-        print(f"📤 UPLOAD REQUEST:")
-        print(f"   Course ID: {course_id}")
-        print(f"   Number of files: {len(files)}")
-        print(f"   File names received:")
-        for f in files[:10]:  # Show first 10
-            print(f"      - \"{f.filename}\"")
-        print(f"   Storage manager available: {storage_manager is not None}")
-        print(f"{'='*80}")
+        print(f"\n🔄 BACKGROUND PROCESSING STARTED: {len(files_in_memory)} files for course {course_id}")
 
-        # PHASE 4: Process files in parallel (reduced from 100 to 50 for Railway safety)
-        # Prevents memory exhaustion on Railway's limited resources
+        # Create UploadFile-like objects from memory
+        from fastapi import UploadFile
+        from io import BytesIO
+
+        upload_files = []
+        for file_data in files_in_memory:
+            # Create a file-like object from bytes
+            file_obj = BytesIO(file_data['content'])
+            file_obj.name = file_data['filename']
+
+            # Recreate UploadFile
+            upload_file = UploadFile(
+                filename=file_data['filename'],
+                file=file_obj
+            )
+            upload_files.append(upload_file)
+
+        # PHASE 1: Process files in parallel (GCS upload + conversion)
         BATCH_SIZE = 50
-        print(f"📤 Uploading {len(files)} files {'in parallel' if len(files) <= BATCH_SIZE else f'in batches of {BATCH_SIZE}'}...")
+        print(f"📤 Processing {len(upload_files)} files in batches of {BATCH_SIZE}...")
 
         processed_results = []
-        for i in range(0, len(files), BATCH_SIZE):
-            batch = files[i:i + BATCH_SIZE]
+        for i in range(0, len(upload_files), BATCH_SIZE):
+            batch = upload_files[i:i + BATCH_SIZE]
             batch_num = (i // BATCH_SIZE) + 1
-            total_batches = (len(files) + BATCH_SIZE - 1) // BATCH_SIZE
-            print(f"   Processing batch {batch_num}/{total_batches} ({len(batch)} files)...")
+            total_batches = (len(upload_files) + BATCH_SIZE - 1) // BATCH_SIZE
+            print(f"   Batch {batch_num}/{total_batches}: Processing {len(batch)} files...")
 
             upload_tasks = [_process_single_upload(course_id, file) for file in batch]
             batch_results = await asyncio.gather(*upload_tasks, return_exceptions=True)
 
-            # Handle exceptions in batch results
+            # Handle exceptions
             for j, result in enumerate(batch_results):
                 if isinstance(result, Exception):
-                    print(f"❌ Exception for file {batch[j].filename}: {result}")
-                    import traceback
-                    traceback.print_exception(type(result), result, result.__traceback__)
+                    print(f"❌ Exception for {batch[j].filename}: {result}")
                     processed_results.append({
                         "filename": batch[j].filename,
                         "status": "failed",
@@ -811,45 +807,99 @@ async def upload_pdfs(
                 else:
                     processed_results.append(result)
 
-        # Count successes and failures
+        # Count results
         successful = [r for r in processed_results if r["status"] == "uploaded"]
         failed = [r for r in processed_results if r["status"] == "failed"]
         skipped = [r for r in processed_results if r["status"] == "skipped"]
 
-        print(f"✅ Upload results: {len(successful)} succeeded, {len(failed)} failed, {len(skipped)} skipped")
-        if failed:
-            print(f"❌ Failed files: {[f['filename'] for f in failed]}")
-            for f in failed:
-                print(f"   - {f['filename']}: {f.get('error', 'Unknown error')}")
-        if skipped:
-            print(f"⏭️  Skipped files: {[s['filename'] for s in skipped]}")
-            for s in skipped:
-                print(f"   - {s['filename']}: {s.get('error', 'Unknown reason')}")
+        print(f"✅ Background upload complete: {len(successful)} succeeded, {len(failed)} failed, {len(skipped)} skipped")
 
-        # Incrementally add new files to catalog (much faster than full rescan)
+        # PHASE 2: Update catalog
         if document_manager and successful:
             print(f"📚 Adding {len(successful)} files to catalog...")
             new_paths = [r["path"] for r in successful]
             document_manager.add_files_to_catalog(new_paths)
             print(f"✅ Catalog updated")
 
-        # PHASE 3: Pre-warm Gemini File API cache (background task)
-        # This eliminates 10-30s upload wait on first query
+        # PHASE 3: Pre-warm Gemini cache (background within background!)
         if successful and chat_storage:
             print(f"🔥 Starting Gemini pre-warm for {len(successful)} files...")
             asyncio.create_task(_upload_to_gemini_background(course_id, successful))
 
-        # Generate summaries for uploaded files (asynchronously)
+        # PHASE 4: Generate summaries
         if file_summarizer and chat_storage and successful:
             print(f"📝 Generating summaries for {len(successful)} files...")
             asyncio.create_task(_generate_summaries_background(course_id, successful))
 
+        print(f"✅ BACKGROUND PROCESSING COMPLETE for course {course_id}")
+        print(f"   Files are now available for queries!")
+
+    except Exception as e:
+        print(f"❌ Critical error in background upload processing: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@app.post("/upload_pdfs")
+async def upload_pdfs(
+    course_id: str,
+    files: List[UploadFile] = File(...)
+):
+    """
+    Upload files for a course (supports PDFs, documents, images, etc.)
+
+    INSTANT RESPONSE MODE: Returns immediately after accepting files,
+    processes everything in background for instant study bot creation.
+
+    Args:
+        course_id: Course identifier (used as filename prefix)
+        files: List of files to upload (PDF, DOCX, TXT, images, etc.)
+
+    Process:
+        1. Accept files and store in memory
+        2. Return IMMEDIATE success response (instant chat opening!)
+        3. Background: Save to storage, update catalog, pre-warm Gemini cache
+
+    Returns:
+        JSON with instant success (files processed in background)
+
+    Performance: <100ms response time (instant!)
+    """
+    try:
+        print(f"\n{'='*80}")
+        print(f"📤 UPLOAD REQUEST (INSTANT MODE):")
+        print(f"   Course ID: {course_id}")
+        print(f"   Number of files: {len(files)}")
+        print(f"   File names received:")
+        for f in files[:10]:  # Show first 10
+            print(f"      - \"{f.filename}\"")
+        print(f"   Storage manager available: {storage_manager is not None}")
+        print(f"{'='*80}")
+
+        # Read all files into memory IMMEDIATELY (before background processing)
+        # This is fast (<100ms) and allows us to return response instantly
+        files_in_memory = []
+        for file in files:
+            content = await file.read()
+            files_in_memory.append({
+                'filename': file.filename,
+                'content': content,
+                'content_type': file.content_type
+            })
+
+        print(f"✅ Files accepted ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
+
+        # Start background processing (non-blocking)
+        asyncio.create_task(_process_uploads_background(course_id, files_in_memory))
+
+        # INSTANT RESPONSE - User sees chat immediately!
         return {
             "success": True,
-            "message": f"Uploaded {len(successful)}/{len(files)} PDFs successfully",
-            "files": processed_results,
-            "uploaded_count": len(successful),
-            "failed_count": len(failed)
+            "message": f"Processing {len(files)} files in background",
+            "files": [{"filename": f['filename'], "status": "processing"} for f in files_in_memory],
+            "uploaded_count": len(files_in_memory),
+            "failed_count": 0,
+            "instant_mode": True
         }
 
     except Exception as e:
