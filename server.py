@@ -124,14 +124,19 @@ async def startup_event():
         except Exception as e:
             print(f"⚠️  Failed to cleanup expired URIs: {e}")
 
-    # PHASE 4: Pre-warm Gemini cache for all existing files at startup
-    # This ensures all classes (old and new) have fast query performance
-    if document_manager and chat_storage and storage_manager:
+    # PHASE 4: Lazy Loading Cache System (No Startup Pre-Warming)
+    # Files are cached on-demand during queries for scalability
+    # This ensures fast startup regardless of file count (100K+ files supported)
+    if chat_storage:
         try:
-            print(f"🔥 Starting Gemini cache pre-warm for all files...")
-            asyncio.create_task(_prewarm_gemini_cache_on_startup())
+            cache_stats = chat_storage.get_cache_stats()
+            print(f"📊 Gemini Cache Stats:")
+            print(f"   Files cached: {cache_stats.get('total_files', 0)}")
+            print(f"   Courses covered: {cache_stats.get('courses_count', 0)}")
+            print(f"   Expiring soon: {cache_stats.get('expiring_soon_count', 0)}")
+            print(f"   Cache health: {'✅ Excellent' if cache_stats.get('expiring_soon_count', 0) == 0 else '⚠️  Good'}")
         except Exception as e:
-            print(f"⚠️  Failed to start cache pre-warming: {e}")
+            print(f"⚠️  Failed to get cache stats: {e}")
 
         # Start proactive cache refresh loop (refreshes expiring files every 6 hours)
         try:
@@ -538,133 +543,6 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
 
     except Exception as e:
         print(f"❌ Critical error in summary generation: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-async def _prewarm_gemini_cache_on_startup():
-    """
-    PHASE 4: Pre-warm Gemini cache on startup for all files missing cache
-
-    This background task runs on server startup to:
-    1. Compare document catalog (all files) vs Gemini cache (cached files)
-    2. Upload missing files to Gemini File API
-    3. Ensures ALL classes have fast query performance (1-3s instead of 10-30s)
-
-    Performance: ~10-30s startup cost for 5-10x faster queries
-    """
-    try:
-        # Give server 3 seconds to fully initialize before starting pre-warm
-        await asyncio.sleep(3)
-
-        print(f"\n{'='*80}")
-        print(f"🔥 GEMINI CACHE PRE-WARM STARTING")
-        print(f"{'='*80}")
-
-        # Get all files from document catalog (grouped by course)
-        all_files_by_course = {}
-        catalog = document_manager.catalog
-
-        for course_id, materials in catalog.items():
-            all_files_by_course[course_id] = [mat['path'] for mat in materials]
-
-        total_files = sum(len(files) for files in all_files_by_course.values())
-        print(f"📚 Found {total_files} files across {len(all_files_by_course)} courses in catalog")
-
-        # Get cached files from database
-        cached_files_by_course = chat_storage.get_all_cached_files_by_course()
-        total_cached = sum(len(files) for files in cached_files_by_course.values())
-        print(f"✅ Found {total_cached} files already cached in database")
-
-        # Find files that need pre-warming (in catalog but not in cache)
-        files_to_prewarm = []
-        for course_id, file_paths in all_files_by_course.items():
-            cached_paths = set(cached_files_by_course.get(course_id, []))
-            for file_path in file_paths:
-                if file_path not in cached_paths:
-                    files_to_prewarm.append({
-                        'course_id': course_id,
-                        'path': file_path,
-                        'filename': file_path.split('/')[-1]
-                    })
-
-        if not files_to_prewarm:
-            print(f"✅ All files already cached - no pre-warming needed!")
-            print(f"{'='*80}\n")
-            return
-
-        print(f"🔥 Pre-warming {len(files_to_prewarm)} files not in cache...")
-        print(f"   This will take ~{len(files_to_prewarm) * 2}s (2s per file)")
-
-        # Set up file uploader
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            print("⚠️  No GOOGLE_API_KEY found, skipping pre-warm")
-            return
-
-        from utils.file_upload_manager import FileUploadManager
-        file_upload_client = genai.Client(api_key=api_key)
-        file_uploader = FileUploadManager(
-            file_upload_client,
-            cache_duration_hours=48,
-            storage_manager=storage_manager,
-            chat_storage=chat_storage
-        )
-
-        # Upload files with concurrency limit (10 at a time to avoid overwhelming API)
-        semaphore = asyncio.Semaphore(10)
-
-        async def upload_file(file_info):
-            async with semaphore:
-                try:
-                    filename = file_info['filename']
-                    file_path = file_info['path']
-
-                    # Upload to Gemini (will cache in database automatically)
-                    upload_result = await asyncio.to_thread(
-                        file_uploader.upload_pdf,
-                        file_path,
-                        filename
-                    )
-
-                    if "error" not in upload_result:
-                        print(f"   ✅ Pre-warmed: {filename}")
-                        return {"status": "success", "filename": filename}
-                    else:
-                        print(f"   ⚠️  Failed: {filename}: {upload_result['error']}")
-                        return {"status": "error", "filename": filename}
-
-                except Exception as e:
-                    print(f"   ❌ Error for {file_info['filename']}: {e}")
-                    return {"status": "error", "filename": file_info['filename']}
-
-        # Upload all files in parallel (with semaphore limiting concurrency)
-        tasks = [upload_file(file_info) for file_info in files_to_prewarm]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Count results
-        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-        error_count = len(results) - success_count
-
-        print(f"{'='*80}")
-        print(f"✅ CACHE PRE-WARM COMPLETE: {success_count}/{len(files_to_prewarm)} files cached")
-        if error_count > 0:
-            print(f"⚠️  {error_count} files failed to cache")
-        print(f"🚀 All classes now ready for fast queries (1-3s response time)")
-        print(f"{'='*80}\n")
-
-        # Log cache statistics for monitoring
-        if chat_storage:
-            cache_stats = chat_storage.get_cache_stats()
-            print(f"📊 CACHE STATISTICS:")
-            print(f"   Total files cached: {cache_stats.get('total_files', 0)}")
-            print(f"   Total size: {cache_stats.get('total_bytes', 0) / (1024*1024):.1f} MB")
-            print(f"   Courses covered: {cache_stats.get('courses_count', 0)}")
-            print(f"   Expiring soon: {cache_stats.get('expiring_soon_count', 0)}")
-            print(f"   Cache health: {'✅ Excellent' if cache_stats.get('expiring_soon_count', 0) == 0 else '⚠️  Good'}\n")
-
-    except Exception as e:
-        print(f"❌ Critical error in startup cache pre-warm: {e}")
         import traceback
         traceback.print_exc()
 
