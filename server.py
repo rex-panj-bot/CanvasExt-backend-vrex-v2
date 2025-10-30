@@ -977,7 +977,10 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 data = await websocket.receive_text()
                 message_data = json.loads(data)
 
-                if message_data.get("type") == "stop":
+                if message_data.get("type") == "ping":
+                    # Respond to ping with pong (keepalive heartbeat)
+                    await websocket.send_json({"type": "pong"})
+                elif message_data.get("type") == "stop":
                     import time
                     print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
                     active_connections[connection_id]["stop_streaming"] = True
@@ -1092,21 +1095,39 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
     except WebSocketDisconnect:
         print(f"🔌 WebSocket disconnected: {connection_id}")
-        # Cancel message handler task
-        message_task.cancel()
-        # Clear session cache
-        root_agent.clear_session(connection_id)
-        if connection_id in active_connections:
-            del active_connections[connection_id]
     except Exception as e:
         print(f"❌ WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e)
+            })
+        except:
+            pass  # Connection already closed
+    finally:
+        # Always cleanup resources
+        print(f"🧹 Cleaning up connection: {connection_id}")
+
         # Cancel message handler task
-        message_task.cancel()
-        await websocket.send_json({
-            "type": "error",
-            "message": str(e)
-        })
-        await websocket.close()
+        try:
+            message_task.cancel()
+            await message_task  # Wait for cancellation to complete
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"⚠️ Error cancelling message task: {e}")
+
+        # Clear session cache
+        try:
+            root_agent.clear_session(connection_id)
+        except Exception as e:
+            print(f"⚠️ Error clearing session: {e}")
+
+        # Remove from active connections
+        if connection_id in active_connections:
+            del active_connections[connection_id]
+
+        print(f"✅ Cleanup complete for {connection_id}")
 
 
 @app.get("/collections/{course_id}/status")
