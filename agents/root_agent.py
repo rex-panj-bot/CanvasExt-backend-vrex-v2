@@ -59,7 +59,8 @@ class RootAgent:
         session_id: str = None,
         enable_web_search: bool = False,
         user_api_key: str = None,
-        use_smart_selection: bool = False
+        use_smart_selection: bool = False,
+        stop_check_callback = None
     ) -> AsyncGenerator[str, None]:
         """
         Process user query with streaming response
@@ -464,6 +465,11 @@ Examples:
             search_results_shown = False
 
             async for chunk in response_stream:
+                # Check if user requested to stop
+                if stop_check_callback and stop_check_callback():
+                    print(f"   🛑 Stop requested, breaking Gemini stream early")
+                    break
+
                 # Stream text response
                 if chunk.text:
                     yield chunk.text

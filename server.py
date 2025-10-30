@@ -1014,6 +1014,10 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             chunk_count = 0
             assistant_response = ""
 
+            # Define stop check callback
+            def should_stop():
+                return active_connections.get(connection_id, {}).get("stop_streaming", False)
+
             async for chunk in root_agent.process_query_stream(
                 course_id=course_id,
                 user_message=user_message,
@@ -1023,10 +1027,11 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 session_id=connection_id,
                 enable_web_search=enable_web_search,
                 user_api_key=user_api_key,
-                use_smart_selection=use_smart_selection
+                use_smart_selection=use_smart_selection,
+                stop_check_callback=should_stop
             ):
-                # Check if stop signal received
-                if active_connections.get(connection_id, {}).get("stop_streaming", False):
+                # Check if stop signal received (double check in case callback didn't trigger)
+                if should_stop():
                     print(f"🛑 Stopping stream early at chunk {chunk_count}")
                     break
 
