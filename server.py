@@ -1231,10 +1231,12 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 if message_data.get("type") == "ping":
                     # Respond to ping with pong (keepalive heartbeat)
                     # This prevents Railway from timing out idle WebSocket connections (~55-60s)
+                    print(f"💓 Received ping from {connection_id}")
                     try:
                         await websocket.send_json({"type": "pong"})
+                        print(f"💓 Sent pong to {connection_id}")
                     except Exception as e:
-                        print(f"⚠️ Failed to send pong (connection closed): {e}")
+                        print(f"⚠️ Failed to send pong to {connection_id} (connection closed): {e}")
                         break  # Exit message handler if connection is dead
                     continue  # Don't process ping as a regular message
                 elif message_data.get("type") == "stop":
