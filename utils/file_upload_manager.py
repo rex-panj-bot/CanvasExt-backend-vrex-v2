@@ -61,7 +61,7 @@ class FileUploadManager:
         if self.chat_storage:
             db_cached = self.chat_storage.get_gemini_uri(file_path)
             if db_cached:
-                print(f"✅ Database cache hit: {filename}")
+                print(f"✅ [CACHE HIT] Database: {filename} (saved ~5-10s upload time)")
                 # Reconstruct file object from cached data
                 try:
                     file_obj = self.client.files.get(name=db_cached['gemini_name'])
@@ -79,7 +79,7 @@ class FileUploadManager:
                     self._file_cache[file_path] = result
                     return result
                 except Exception as e:
-                    print(f"⚠️  Cached file not accessible in Gemini, will re-upload: {e}")
+                    print(f"⚠️  [CACHE MISS] Cached file not accessible in Gemini, will re-upload: {e}")
 
         # Check in-memory cache
         if file_path in self._file_cache:
@@ -88,11 +88,11 @@ class FileUploadManager:
 
             # If cache still valid (under 48 hours), return cached
             if age_hours < self.cache_duration_hours:
-                print(f"✅ Memory cache hit: {filename} (uploaded {age_hours:.1f}h ago)")
+                print(f"✅ [CACHE HIT] Memory: {filename} (age: {age_hours:.1f}h, saved ~5-10s)")
                 return cached
 
             # Cache expired, remove it
-            print(f"⚠️  Cache expired for {filename}, re-uploading...")
+            print(f"⚠️  [CACHE MISS] Expired: {filename} (age: {age_hours:.1f}h), re-uploading...")
             del self._file_cache[file_path]
 
         # Determine if this is a GCS blob or local file
@@ -134,7 +134,7 @@ class FileUploadManager:
                     print(f"    Will try uploading original format")
 
             ext = get_file_extension(filename) or 'file'
-            print(f"📤 Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API...")
+            print(f"📤 [CACHE MISS] Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API (~5-10s)...")
             if conversion_attempted and filename.endswith('.pdf'):
                 print(f"    (Converted from {original_filename})")
 

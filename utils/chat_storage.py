@@ -968,6 +968,189 @@ class ChatStorage:
             logger.error(f"Error cleaning up expired Gemini URIs: {e}")
             return 0
 
+    def get_all_cached_files_by_course(self) -> Dict[str, List[str]]:
+        """
+        Get all cached file paths grouped by course_id
+
+        Returns:
+            Dict mapping course_id -> [file_path1, file_path2, ...]
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT course_id, file_path FROM gemini_file_cache
+                        WHERE expires_at > NOW()
+                    """))
+                    rows = result.fetchall()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT course_id, file_path FROM gemini_file_cache
+                        WHERE expires_at > CURRENT_TIMESTAMP
+                    """)
+                    rows = cursor.fetchall()
+
+            # Group by course_id
+            cache_by_course = {}
+            for row in rows:
+                course_id = row[0]
+                file_path = row[1]
+                if course_id not in cache_by_course:
+                    cache_by_course[course_id] = []
+                cache_by_course[course_id].append(file_path)
+
+            return cache_by_course
+
+        except Exception as e:
+            logger.error(f"Error getting cached files by course: {e}")
+            return {}
+
+    def get_files_needing_cache_refresh(self, hours_before_expiry: int = 6) -> List[Dict]:
+        """
+        Get files that will expire soon and need cache refresh
+
+        Args:
+            hours_before_expiry: Refresh files expiring within this many hours
+
+        Returns:
+            List of dicts with file_path, course_id, filename, expires_at
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT file_path, course_id, filename, gemini_uri, gemini_name,
+                               mime_type, size_bytes, expires_at
+                        FROM gemini_file_cache
+                        WHERE expires_at > NOW()
+                        AND expires_at <= NOW() + INTERVAL :hours HOUR
+                        ORDER BY expires_at ASC
+                    """), {"hours": hours_before_expiry})
+                    rows = result.fetchall()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT file_path, course_id, filename, gemini_uri, gemini_name,
+                               mime_type, size_bytes, expires_at
+                        FROM gemini_file_cache
+                        WHERE expires_at > CURRENT_TIMESTAMP
+                        AND expires_at <= datetime(CURRENT_TIMESTAMP, '+' || ? || ' hours')
+                        ORDER BY expires_at ASC
+                    """, (hours_before_expiry,))
+                    rows = cursor.fetchall()
+
+            files = []
+            for row in rows:
+                files.append({
+                    'file_path': row[0],
+                    'course_id': row[1],
+                    'filename': row[2],
+                    'gemini_uri': row[3],
+                    'gemini_name': row[4],
+                    'mime_type': row[5],
+                    'size_bytes': row[6],
+                    'expires_at': row[7]
+                })
+
+            return files
+
+        except Exception as e:
+            logger.error(f"Error getting files needing refresh: {e}")
+            return []
+
+    def get_cache_stats(self) -> Dict:
+        """
+        Get statistics about Gemini cache
+
+        Returns:
+            Dict with total_files, total_bytes, courses_count, expiring_soon_count
+        """
+        try:
+            stats = {
+                'total_files': 0,
+                'total_bytes': 0,
+                'courses_count': 0,
+                'expiring_soon_count': 0,
+                'expired_count': 0
+            }
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    # Total files and bytes
+                    result = conn.execute(text("""
+                        SELECT COUNT(*), COALESCE(SUM(size_bytes), 0)
+                        FROM gemini_file_cache
+                        WHERE expires_at > NOW()
+                    """))
+                    row = result.fetchone()
+                    stats['total_files'] = row[0]
+                    stats['total_bytes'] = row[1]
+
+                    # Unique courses
+                    result = conn.execute(text("""
+                        SELECT COUNT(DISTINCT course_id) FROM gemini_file_cache
+                        WHERE expires_at > NOW()
+                    """))
+                    stats['courses_count'] = result.fetchone()[0]
+
+                    # Expiring soon (within 6 hours)
+                    result = conn.execute(text("""
+                        SELECT COUNT(*) FROM gemini_file_cache
+                        WHERE expires_at > NOW() AND expires_at <= NOW() + INTERVAL '6 hours'
+                    """))
+                    stats['expiring_soon_count'] = result.fetchone()[0]
+
+                    # Already expired
+                    result = conn.execute(text("""
+                        SELECT COUNT(*) FROM gemini_file_cache
+                        WHERE expires_at <= NOW()
+                    """))
+                    stats['expired_count'] = result.fetchone()[0]
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+
+                    # Total files and bytes
+                    cursor.execute("""
+                        SELECT COUNT(*), COALESCE(SUM(size_bytes), 0)
+                        FROM gemini_file_cache
+                        WHERE expires_at > CURRENT_TIMESTAMP
+                    """)
+                    row = cursor.fetchone()
+                    stats['total_files'] = row[0]
+                    stats['total_bytes'] = row[1]
+
+                    # Unique courses
+                    cursor.execute("""
+                        SELECT COUNT(DISTINCT course_id) FROM gemini_file_cache
+                        WHERE expires_at > CURRENT_TIMESTAMP
+                    """)
+                    stats['courses_count'] = cursor.fetchone()[0]
+
+                    # Expiring soon
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM gemini_file_cache
+                        WHERE expires_at > CURRENT_TIMESTAMP
+                        AND expires_at <= datetime(CURRENT_TIMESTAMP, '+6 hours')
+                    """)
+                    stats['expiring_soon_count'] = cursor.fetchone()[0]
+
+                    # Already expired
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM gemini_file_cache
+                        WHERE expires_at <= CURRENT_TIMESTAMP
+                    """)
+                    stats['expired_count'] = cursor.fetchone()[0]
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Error getting cache stats: {e}")
+            return {}
+
     def set_course_syllabus(self, course_id: str, syllabus_id: str):
         """
         Set the syllabus document ID for a course
