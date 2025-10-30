@@ -1079,7 +1079,9 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
                 if message_data.get("type") == "ping":
                     # Respond to ping with pong (keepalive heartbeat)
+                    # This prevents Railway from timing out idle WebSocket connections (~55-60s)
                     await websocket.send_json({"type": "pong"})
+                    continue  # Don't process ping as a regular message
                 elif message_data.get("type") == "stop":
                     import time
                     print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
