@@ -103,9 +103,21 @@ class ChatStorage:
                         topics TEXT,
                         metadata TEXT,
                         created_at TIMESTAMP DEFAULT NOW(),
-                        updated_at TIMESTAMP DEFAULT NOW()
+                        updated_at TIMESTAMP DEFAULT NOW(),
+                        deleted_at TIMESTAMP NULL
                     )
                 """))
+
+                # Add deleted_at column if it doesn't exist (migration)
+                try:
+                    conn.execute(text("""
+                        ALTER TABLE file_summaries ADD COLUMN deleted_at TIMESTAMP NULL
+                    """))
+                    conn.commit()
+                    logger.info("Added deleted_at column to file_summaries (PostgreSQL)")
+                except Exception as e:
+                    # Column already exists or other error
+                    pass
 
                 # Course metadata table (stores syllabus_id, etc.)
                 conn.execute(text("""
@@ -203,9 +215,21 @@ class ChatStorage:
                     topics TEXT,
                     metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    deleted_at TIMESTAMP NULL
                 )
             """)
+
+            # Add deleted_at column if it doesn't exist (migration)
+            try:
+                cursor.execute("""
+                    ALTER TABLE file_summaries ADD COLUMN deleted_at TIMESTAMP NULL
+                """)
+                conn.commit()
+                logger.info("Added deleted_at column to file_summaries (SQLite)")
+            except Exception as e:
+                # Column already exists or other error
+                pass
 
             # Course metadata table (stores syllabus_id, etc.)
             cursor.execute("""
@@ -704,12 +728,13 @@ class ChatStorage:
             return None
 
     def get_all_summaries_for_course(self, course_id: str) -> List[Dict]:
-        """Get all file summaries for a course"""
+        """Get all file summaries for a course (excludes soft-deleted files)"""
         try:
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     result = conn.execute(text("""
-                        SELECT * FROM file_summaries WHERE course_id = :course_id
+                        SELECT * FROM file_summaries
+                        WHERE course_id = :course_id AND deleted_at IS NULL
                     """), {"course_id": course_id})
                     summaries = []
                     for row in result:
@@ -723,7 +748,8 @@ class ChatStorage:
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT * FROM file_summaries WHERE course_id = ?
+                        SELECT * FROM file_summaries
+                        WHERE course_id = ? AND deleted_at IS NULL
                     """, (course_id,))
                     summaries = []
                     for row in cursor.fetchall():
@@ -985,3 +1011,157 @@ class ChatStorage:
         except Exception as e:
             logger.error(f"Error getting course syllabus: {e}")
             return None
+
+    # ========== Soft Delete Operations ==========
+
+    def soft_delete_file(self, doc_id: str) -> bool:
+        """
+        Soft delete a file by setting deleted_at timestamp
+
+        Args:
+            doc_id: Document identifier
+
+        Returns:
+            True if successful
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        UPDATE file_summaries
+                        SET deleted_at = NOW()
+                        WHERE doc_id = :doc_id
+                    """), {"doc_id": doc_id})
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE file_summaries
+                        SET deleted_at = CURRENT_TIMESTAMP
+                        WHERE doc_id = ?
+                    """, (doc_id,))
+                    conn.commit()
+
+            logger.info(f"Soft deleted file {doc_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error soft deleting file: {e}")
+            return False
+
+    def get_deleted_files(self, course_id: str) -> List[Dict]:
+        """
+        Get all soft-deleted files for a course
+
+        Args:
+            course_id: Course identifier
+
+        Returns:
+            List of deleted file dicts
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT doc_id, filename, deleted_at, metadata
+                        FROM file_summaries
+                        WHERE course_id = :course_id AND deleted_at IS NOT NULL
+                        ORDER BY deleted_at DESC
+                    """), {"course_id": course_id})
+                    files = []
+                    for row in result:
+                        data = dict(row._mapping)
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        files.append(data)
+                    return files
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT doc_id, filename, deleted_at, metadata
+                        FROM file_summaries
+                        WHERE course_id = ? AND deleted_at IS NOT NULL
+                        ORDER BY deleted_at DESC
+                    """, (course_id,))
+                    files = []
+                    for row in cursor.fetchall():
+                        data = dict(row)
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        files.append(data)
+                    return files
+
+        except Exception as e:
+            logger.error(f"Error getting deleted files: {e}")
+            return []
+
+    def restore_file(self, doc_id: str) -> bool:
+        """
+        Restore a soft-deleted file by clearing deleted_at timestamp
+
+        Args:
+            doc_id: Document identifier
+
+        Returns:
+            True if successful
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        UPDATE file_summaries
+                        SET deleted_at = NULL
+                        WHERE doc_id = :doc_id
+                    """), {"doc_id": doc_id})
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE file_summaries
+                        SET deleted_at = NULL
+                        WHERE doc_id = ?
+                    """, (doc_id,))
+                    conn.commit()
+
+            logger.info(f"Restored file {doc_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error restoring file: {e}")
+            return False
+
+    def hard_delete_file(self, doc_id: str) -> bool:
+        """
+        Permanently delete a file from database
+
+        Args:
+            doc_id: Document identifier
+
+        Returns:
+            True if successful
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        DELETE FROM file_summaries
+                        WHERE doc_id = :doc_id
+                    """), {"doc_id": doc_id})
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        DELETE FROM file_summaries
+                        WHERE doc_id = ?
+                    """, (doc_id,))
+                    conn.commit()
+
+            logger.info(f"Hard deleted file {doc_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error hard deleting file: {e}")
+            return False

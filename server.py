@@ -1348,6 +1348,140 @@ async def set_syllabus(course_id: str, syllabus_id: str):
         }
 
 
+@app.delete("/courses/{course_id}/materials/{file_id}")
+async def soft_delete_material(course_id: str, file_id: str, permanent: bool = False):
+    """
+    Soft delete or permanently delete a course material file
+
+    Args:
+        course_id: Course identifier
+        file_id: File/document identifier (doc_id from file_summaries)
+        permanent: If True, permanently delete from GCS and database
+
+    Returns:
+        Success confirmation or error
+    """
+    try:
+        if not chat_storage:
+            raise HTTPException(status_code=500, detail="Chat storage not initialized")
+
+        if permanent:
+            # Hard delete: Remove from GCS and database
+            print(f"🗑️  Permanently deleting file {file_id} from course {course_id}")
+
+            # Get file info before deletion
+            file_info = chat_storage.get_file_summary(file_id)
+            if not file_info:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # Delete from GCS if storage_manager available
+            if storage_manager:
+                try:
+                    # Extract filename from metadata or use filename field
+                    metadata = file_info.get('metadata', {})
+                    gcs_path = f"{course_id}/{file_info['filename']}"
+                    storage_manager.delete_file(gcs_path)
+                    print(f"✅ Deleted from GCS: {gcs_path}")
+                except Exception as gcs_error:
+                    print(f"⚠️  Failed to delete from GCS: {gcs_error}")
+
+            # Hard delete from database
+            success = chat_storage.hard_delete_file(file_id)
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to delete file from database")
+
+            return {
+                "success": True,
+                "message": "File permanently deleted",
+                "file_id": file_id,
+                "permanent": True
+            }
+        else:
+            # Soft delete: Set deleted_at timestamp
+            print(f"🗑️  Soft deleting file {file_id} from course {course_id}")
+            success = chat_storage.soft_delete_file(file_id)
+
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to soft delete file")
+
+            return {
+                "success": True,
+                "message": "File removed from AI memory (can be restored from Settings)",
+                "file_id": file_id,
+                "permanent": False
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error deleting material: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting material: {str(e)}")
+
+
+@app.get("/courses/{course_id}/deleted-materials")
+async def get_deleted_materials(course_id: str):
+    """
+    Get all soft-deleted materials for a course
+
+    Args:
+        course_id: Course identifier
+
+    Returns:
+        List of deleted files with metadata
+    """
+    try:
+        if not chat_storage:
+            raise HTTPException(status_code=500, detail="Chat storage not initialized")
+
+        deleted_files = chat_storage.get_deleted_files(course_id)
+
+        return {
+            "success": True,
+            "course_id": course_id,
+            "deleted_files": deleted_files,
+            "count": len(deleted_files)
+        }
+
+    except Exception as e:
+        print(f"❌ Error fetching deleted materials: {e}")
+        raise HTTPException(status_code=500, detail=f"Error fetching deleted materials: {str(e)}")
+
+
+@app.put("/courses/{course_id}/materials/{file_id}/restore")
+async def restore_material(course_id: str, file_id: str):
+    """
+    Restore a soft-deleted material
+
+    Args:
+        course_id: Course identifier
+        file_id: File/document identifier
+
+    Returns:
+        Success confirmation or error
+    """
+    try:
+        if not chat_storage:
+            raise HTTPException(status_code=500, detail="Chat storage not initialized")
+
+        print(f"♻️  Restoring file {file_id} for course {course_id}")
+        success = chat_storage.restore_file(file_id)
+
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to restore file")
+
+        return {
+            "success": True,
+            "message": "File restored successfully",
+            "file_id": file_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error restoring material: {e}")
+        raise HTTPException(status_code=500, detail=f"Error restoring material: {str(e)}")
+
+
 @app.get("/pdfs/{course_id}/{filename}")
 async def serve_pdf(course_id: str, filename: str):
     """
