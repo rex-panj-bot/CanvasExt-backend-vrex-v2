@@ -1080,17 +1080,24 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 if message_data.get("type") == "ping":
                     # Respond to ping with pong (keepalive heartbeat)
                     # This prevents Railway from timing out idle WebSocket connections (~55-60s)
-                    await websocket.send_json({"type": "pong"})
+                    try:
+                        await websocket.send_json({"type": "pong"})
+                    except Exception as e:
+                        print(f"⚠️ Failed to send pong (connection closed): {e}")
+                        break  # Exit message handler if connection is dead
                     continue  # Don't process ping as a regular message
                 elif message_data.get("type") == "stop":
                     import time
                     print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
                     active_connections[connection_id]["stop_streaming"] = True
                     print(f"🛑 Set stop_streaming flag to: {active_connections[connection_id]['stop_streaming']}")
-                    await websocket.send_json({
-                        "type": "stopped",
-                        "message": "Generation stopped by user"
-                    })
+                    try:
+                        await websocket.send_json({
+                            "type": "stopped",
+                            "message": "Generation stopped by user"
+                        })
+                    except Exception as e:
+                        print(f"⚠️ Failed to send stop confirmation (connection closed): {e}")
                 else:
                     # Queue the message for processing
                     active_connections[connection_id]["pending_message"] = message_data
@@ -1162,17 +1169,26 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
                 chunk_count += 1
                 assistant_response += chunk
-                await websocket.send_json({
-                    "type": "chunk",
-                    "content": chunk
-                })
+
+                # Check if connection is still open before sending
+                try:
+                    await websocket.send_json({
+                        "type": "chunk",
+                        "content": chunk
+                    })
+                except Exception as send_error:
+                    print(f"⚠️ Failed to send chunk (connection closed): {send_error}")
+                    break  # Stop streaming if connection is dead
 
             # Send completion signal (only if not stopped)
             if not active_connections.get(connection_id, {}).get("stop_streaming", False):
                 print(f"✅ Completed ({chunk_count} chunks)")
-                await websocket.send_json({
-                    "type": "done"
-                })
+                try:
+                    await websocket.send_json({
+                        "type": "done"
+                    })
+                except Exception as send_error:
+                    print(f"⚠️ Failed to send 'done' signal (connection closed): {send_error}")
             else:
                 print(f"🛑 Stream stopped at {chunk_count} chunks (saved tokens!)")
 
