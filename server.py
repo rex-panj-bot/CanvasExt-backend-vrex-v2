@@ -1764,106 +1764,40 @@ async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
         Opens Lecture_Notes.pdf at page 5
     """
     try:
-        print(f"\n{'='*80}")
-        print(f"📥 File request received:")
-        print(f"   Course ID: {course_id}")
-        print(f"   Filename (raw): {filename}")
-
-        # Sanitize and decode filename
+        # Decode URL-encoded filename
         filename = unquote(filename)
-        print(f"   Filename (decoded): {filename}")
-
-        # Try to find the actual stored filename from database
-        # (it might have been converted, e.g., .docx -> .pdf)
-        actual_filename = filename
-
-        if chat_storage:
-            # Create doc_id to match how files are stored
-            original_name = filename
-            if '.' in filename:
-                original_name = '.'.join(filename.split('.')[:-1])
-            doc_id = f"{course_id}_{original_name}"
-            print(f"   Looking up doc_id: {doc_id}")
-
-            # Look up file metadata
-            file_info = chat_storage.get_file_summary(doc_id)
-            if file_info:
-                print(f"   ✅ Found file info in database")
-                # Check if there's metadata about the actual stored filename
-                metadata = file_info.get('metadata', {})
-                if 'actual_filename' in metadata:
-                    actual_filename = metadata['actual_filename']
-                    print(f"   📝 Actual filename from metadata: {actual_filename}")
-            else:
-                print(f"   ⚠️  No file info found in database for {doc_id}")
-
-        print(f"{'='*80}")
 
         # Try to serve from GCS first
         if storage_manager:
             try:
-                # Try with actual filename first
-                blob_name = f"{course_id}/{actual_filename}"
-                print(f"🔍 Checking GCS for: {blob_name}")
+                # Check if file exists in GCS
+                blob_name = f"{course_id}/{filename}"
 
                 if not storage_manager.file_exists(blob_name):
-                    # Try with original filename as fallback
-                    blob_name = f"{course_id}/{filename}"
-                    print(f"🔍 Trying fallback: {blob_name}")
-
-                    if not storage_manager.file_exists(blob_name):
-                        print(f"❌ File not found in GCS: {blob_name}")
-                        raise HTTPException(status_code=404, detail=f"File not found in GCS: {filename}")
-
-                print(f"✅ Found file in GCS: {blob_name}")
+                    raise HTTPException(status_code=404, detail=f"File not found in GCS: {filename}")
 
                 # Generate signed URL that's valid for 1 hour
                 signed_url = storage_manager.get_signed_url(blob_name, expiration_minutes=60)
 
-                if signed_url:
-                    # Append page anchor if provided
-                    if page:
-                        signed_url = f"{signed_url}#page={page}"
-                        print(f"🔗 Generated signed URL with page anchor: #page={page}")
-                    else:
-                        print(f"🔗 Generated signed URL, redirecting...")
-
-                    # Redirect to GCS signed URL for browser to open
-                    from fastapi.responses import RedirectResponse
-                    return RedirectResponse(url=signed_url, status_code=302)
-                else:
+                if not signed_url:
                     raise HTTPException(status_code=500, detail="Failed to generate signed URL")
+
+                # Append page anchor if provided
+                if page:
+                    signed_url = f"{signed_url}#page={page}"
+
+                # Redirect to GCS signed URL for browser to open
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse(url=signed_url, status_code=302)
 
             except HTTPException:
                 raise
             except Exception as gcs_error:
-                print(f"⚠️  GCS error: {gcs_error}, trying local fallback...")
+                print(f"⚠️  GCS error: {gcs_error}")
+                raise HTTPException(status_code=500, detail=f"GCS error: {str(gcs_error)}")
 
-        # Fallback to local storage
-        # Try actual filename first, then original
-        file_path = UPLOAD_DIR / f"{course_id}_{actual_filename}"
-        if not file_path.exists():
-            file_path = UPLOAD_DIR / f"{course_id}_{filename}"
-
-        # Security check: ensure file exists and is within uploads directory
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail=f"File not found: {filename}")
-
-        if not file_path.is_relative_to(UPLOAD_DIR):
-            raise HTTPException(status_code=403, detail="Access denied")
-
-        # Detect MIME type
-        mime_type = get_mime_type(str(file_path.name)) or "application/octet-stream"
-
-        # Return file with proper headers for browser viewing
-        return FileResponse(
-            path=str(file_path),
-            media_type=mime_type,
-            filename=filename,
-            headers={
-                "Content-Disposition": f"inline; filename={filename}"
-            }
-        )
+        # No storage manager available
+        raise HTTPException(status_code=503, detail="Storage service not available")
     except HTTPException:
         raise
     except Exception as e:
