@@ -891,6 +891,157 @@ async def check_files_exist(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/process_canvas_files")
+async def process_canvas_files(request: Dict):
+    """
+    Process files from Canvas URLs - backend downloads and uploads to GCS
+
+    This eliminates frontend download phase - much faster study bot creation!
+
+    Args:
+        {
+            "course_id": "123456",
+            "files": [
+                {"name": "lecture.pdf", "url": "https://canvas.../files/123/download?..."},
+                ...
+            ]
+        }
+
+    Returns:
+        {
+            "success": True,
+            "processed": 5,
+            "skipped": 2,  # Already in GCS
+            "failed": 0
+        }
+    """
+    try:
+        course_id = request.get("course_id")
+        files = request.get("files", [])
+
+        if not course_id or not files:
+            raise HTTPException(status_code=400, detail="course_id and files required")
+
+        print(f"\n{'='*80}")
+        print(f"🌐 PROCESS CANVAS FILES REQUEST:")
+        print(f"   Course ID: {course_id}")
+        print(f"   Files to process: {len(files)}")
+        print(f"{'='*80}")
+
+        # Check which files already exist in GCS
+        exists_check = await check_files_exist(course_id, files)
+        existing_files = {f["name"] for f in exists_check["exists"]}
+
+        processed = 0
+        skipped = len(existing_files)
+        failed = 0
+
+        # Download and upload files that don't exist in GCS
+        for file_info in files:
+            file_name = file_info.get("name")
+            file_url = file_info.get("url")
+
+            if not file_name or not file_url:
+                continue
+
+            if file_name in existing_files:
+                print(f"⏭️  Skipping {file_name} (already in GCS)")
+                continue
+
+            try:
+                print(f"📥 Downloading {file_name} from Canvas...")
+
+                # Download file from Canvas URL
+                # Canvas URLs have auth tokens in the URL, so no credentials needed
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(file_url) as response:
+                        if response.status != 200:
+                            print(f"❌ Failed to download {file_name}: HTTP {response.status}")
+                            failed += 1
+                            continue
+
+                        file_content = await response.read()
+                        print(f"✅ Downloaded {file_name} ({len(file_content):,} bytes)")
+
+                # Process and upload to GCS (same logic as _process_single_upload)
+                from utils.file_converter import convert_office_to_pdf, needs_conversion
+
+                # Auto-detect MIME type
+                mime_type = get_mime_type(file_name)
+                ext = get_file_extension(file_name) or 'file'
+
+                original_filename = file_name
+                actual_filename = file_name
+                conversion_info = None
+
+                # Convert if needed (same as _process_single_upload)
+                if needs_conversion(file_name):
+                    from utils.file_converter import convert_to_text
+                    web_formats = ['html', 'htm', 'xml', 'json']
+                    is_web_format = ext.lower() in web_formats
+
+                    if is_web_format:
+                        text_bytes = convert_to_text(file_content, file_name)
+                        if text_bytes:
+                            file_content = text_bytes
+                            actual_filename = file_name.rsplit('.', 1)[0] + '.txt'
+                            mime_type = 'text/plain'
+                    else:
+                        # Office format conversion
+                        pdf_bytes = convert_office_to_pdf(file_content, file_name)
+                        if pdf_bytes:
+                            file_content = pdf_bytes
+                            actual_filename = file_name.rsplit('.', 1)[0] + '.pdf'
+                            mime_type = 'application/pdf'
+
+                # Upload to GCS
+                if storage_manager:
+                    blob_name = storage_manager.upload_pdf(
+                        course_id,
+                        actual_filename,
+                        file_content,
+                        mime_type
+                    )
+                    result = {
+                        "filename": original_filename,
+                        "actual_filename": actual_filename,
+                        "status": "uploaded",
+                        "path": blob_name,
+                        "storage": "gcs"
+                    }
+                else:
+                    result = {"status": "failed", "error": "No storage manager"}
+
+                if result.get("status") == "uploaded":
+                    processed += 1
+                    print(f"✅ Processed {file_name}")
+                else:
+                    failed += 1
+                    print(f"❌ Failed to process {file_name}: {result.get('error', 'unknown')}")
+
+            except Exception as e:
+                print(f"❌ Error processing {file_name}: {e}")
+                failed += 1
+
+        print(f"✅ Processing complete: {processed} processed, {skipped} skipped, {failed} failed")
+
+        return {
+            "success": True,
+            "processed": processed,
+            "skipped": skipped,
+            "failed": failed,
+            "total": len(files)
+        }
+
+    except Exception as e:
+        print(f"❌ ERROR in process_canvas_files endpoint:")
+        print(f"   Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ========== CHAT HISTORY ENDPOINTS ==========
 
 @app.get("/chats/{course_id}")
