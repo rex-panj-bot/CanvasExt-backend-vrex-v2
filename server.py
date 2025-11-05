@@ -852,7 +852,7 @@ async def check_files_exist(
 
             if found_blob_name:
                 # File exists - generate signed URL (valid for 1 hour)
-                signed_url = storage_manager.get_signed_url(found_blob_name, expires_in_seconds=3600)
+                signed_url = storage_manager.get_signed_url(found_blob_name, expiration_minutes=60)
 
                 if signed_url:
                     # Get file size from GCS
