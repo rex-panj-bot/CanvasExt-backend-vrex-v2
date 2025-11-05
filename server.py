@@ -950,14 +950,16 @@ async def process_canvas_files(request: Dict):
 
             try:
                 print(f"📥 Downloading {file_name} from Canvas...")
+                print(f"   URL: {file_url[:100]}...")  # Log first 100 chars of URL for debugging
 
                 # Download file from Canvas URL
                 # Canvas URLs have auth tokens in the URL, so no credentials needed
                 import aiohttp
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(file_url) as response:
+                    async with session.get(file_url, allow_redirects=True) as response:
                         if response.status != 200:
                             print(f"❌ Failed to download {file_name}: HTTP {response.status}")
+                            print(f"   Response: {await response.text()}")
                             failed += 1
                             continue
 
