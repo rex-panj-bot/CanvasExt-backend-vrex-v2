@@ -923,7 +923,7 @@ async def process_canvas_files(request: Dict):
             raise HTTPException(status_code=400, detail="course_id and files required")
 
         print(f"\n{'='*80}")
-        print(f"🌐 PROCESS CANVAS FILES REQUEST:")
+        print(f"🌐 PROCESS CANVAS FILES REQUEST (v2 - fixed parameter):")
         print(f"   Course ID: {course_id}")
         print(f"   Files to process: {len(files)}")
         print(f"{'='*80}")
