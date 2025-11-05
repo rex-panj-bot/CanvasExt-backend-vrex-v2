@@ -968,6 +968,41 @@ class ChatStorage:
             logger.error(f"Error cleaning up expired Gemini URIs: {e}")
             return 0
 
+    def delete_gemini_cache_entry(self, file_path: str) -> bool:
+        """
+        Delete a specific Gemini cache entry by file_path
+
+        Args:
+            file_path: GCS blob path (e.g., "course_id/filename.pdf")
+
+        Returns:
+            True if deleted, False if not found or error
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        DELETE FROM gemini_file_cache WHERE file_path = :file_path
+                    """), {"file_path": file_path})
+                    conn.commit()
+                    deleted = result.rowcount > 0
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        DELETE FROM gemini_file_cache WHERE file_path = ?
+                    """, (file_path,))
+                    conn.commit()
+                    deleted = cursor.rowcount > 0
+
+            if deleted:
+                logger.info(f"🗑️  Deleted Gemini cache entry: {file_path}")
+            return deleted
+
+        except Exception as e:
+            logger.error(f"Error deleting Gemini cache entry for {file_path}: {e}")
+            return False
+
     def get_all_cached_files_by_course(self) -> Dict[str, List[str]]:
         """
         Get all cached file paths grouped by course_id

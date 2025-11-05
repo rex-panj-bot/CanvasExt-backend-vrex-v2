@@ -1957,6 +1957,129 @@ async def restore_material(course_id: str, file_id: str):
         raise HTTPException(status_code=500, detail=f"Error restoring material: {str(e)}")
 
 
+@app.post("/admin/cleanup_bad_filenames/{course_id}")
+async def cleanup_bad_filenames(course_id: str, dry_run: bool = True):
+    """
+    Clean up files with problematic filenames (containing "/" in filename)
+
+    Args:
+        course_id: Course identifier
+        dry_run: If True, only report what would be deleted (default: True)
+
+    Returns:
+        {
+            "dry_run": bool,
+            "bad_files_found": int,
+            "deleted_count": int,
+            "deleted_files": [...],
+            "errors": [...]
+        }
+    """
+    try:
+        if not storage_manager:
+            raise HTTPException(status_code=503, detail="Storage service not available")
+
+        print(f"\n{'='*80}")
+        print(f"🧹 CLEANUP BAD FILENAMES REQUEST:")
+        print(f"   Course ID: {course_id}")
+        print(f"   Dry Run: {dry_run}")
+        print(f"{'='*80}")
+
+        # Get all files for the course
+        all_files = storage_manager.list_files(course_id=course_id)
+        print(f"📂 Found {len(all_files)} total files in GCS")
+
+        # Find files with "/" in the filename part (after course_id/)
+        bad_files = []
+        for blob_name in all_files:
+            # Split on first "/" to separate course_id from filename
+            parts = blob_name.split('/', 1)
+            if len(parts) == 2:
+                filename = parts[1]
+                # Check if filename itself contains "/" (indicates bad filename)
+                if '/' in filename:
+                    bad_files.append(blob_name)
+                    print(f"   ⚠️  Bad file found: {blob_name}")
+
+        print(f"🔍 Found {len(bad_files)} files with problematic names")
+
+        if len(bad_files) == 0:
+            return {
+                "dry_run": dry_run,
+                "bad_files_found": 0,
+                "deleted_count": 0,
+                "deleted_files": [],
+                "errors": [],
+                "message": "No bad filenames found! All files have proper names."
+            }
+
+        if dry_run:
+            print(f"🔍 DRY RUN - No files will be deleted")
+            print(f"   Would delete {len(bad_files)} files:")
+            for blob_name in bad_files:
+                print(f"     - {blob_name}")
+            return {
+                "dry_run": True,
+                "bad_files_found": len(bad_files),
+                "deleted_count": 0,
+                "deleted_files": bad_files,
+                "errors": [],
+                "message": f"Dry run complete. Found {len(bad_files)} files that would be deleted."
+            }
+
+        # Actually delete the files
+        deleted_files = []
+        errors = []
+
+        for blob_name in bad_files:
+            try:
+                # Delete from GCS
+                success = storage_manager.delete_file(blob_name)
+
+                if success:
+                    print(f"   ✅ Deleted from GCS: {blob_name}")
+
+                    # Delete from Gemini cache if exists
+                    if chat_storage:
+                        cache_deleted = chat_storage.delete_gemini_cache_entry(blob_name)
+                        if cache_deleted:
+                            print(f"   ✅ Deleted from Gemini cache: {blob_name}")
+
+                    deleted_files.append(blob_name)
+                else:
+                    errors.append({
+                        "file": blob_name,
+                        "error": "File not found or delete failed"
+                    })
+                    print(f"   ❌ Failed to delete: {blob_name}")
+
+            except Exception as e:
+                errors.append({
+                    "file": blob_name,
+                    "error": str(e)
+                })
+                print(f"   ❌ Error deleting {blob_name}: {e}")
+
+        print(f"✅ Cleanup complete: {len(deleted_files)} deleted, {len(errors)} errors")
+
+        return {
+            "dry_run": False,
+            "bad_files_found": len(bad_files),
+            "deleted_count": len(deleted_files),
+            "deleted_files": deleted_files,
+            "errors": errors,
+            "message": f"Successfully deleted {len(deleted_files)} files with bad filenames."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in cleanup: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/pdfs/{course_id}/{filename}")
 async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
     """
