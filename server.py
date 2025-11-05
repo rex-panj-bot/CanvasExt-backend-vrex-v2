@@ -1021,28 +1021,35 @@ async def process_canvas_files(request: Dict):
 
                 ext = ext or 'file'  # Default to 'file' if still no extension
 
+                # Sanitize filename: replace forward slashes (path separators) with dashes
+                # This must happen BEFORE conversion (converter writes temp files)
+                safe_filename = file_name.replace('/', '-')
+                if safe_filename != file_name:
+                    print(f"   ⚠️  Sanitized filename for conversion: '{file_name}' → '{safe_filename}'")
+
                 original_filename = file_name
-                actual_filename = file_name
+                actual_filename = safe_filename
                 conversion_info = None
 
                 # Convert if needed (same as _process_single_upload)
-                if needs_conversion(file_name):
+                # Use safe_filename for converter to avoid path issues
+                if needs_conversion(safe_filename):
                     from utils.file_converter import convert_to_text
                     web_formats = ['html', 'htm', 'xml', 'json']
                     is_web_format = ext.lower() in web_formats
 
                     if is_web_format:
-                        text_bytes = convert_to_text(file_content, file_name)
+                        text_bytes = convert_to_text(file_content, safe_filename)
                         if text_bytes:
                             file_content = text_bytes
-                            actual_filename = file_name.rsplit('.', 1)[0] + '.txt'
+                            actual_filename = safe_filename.rsplit('.', 1)[0] + '.txt'
                             mime_type = 'text/plain'
                     else:
                         # Office format conversion
-                        pdf_bytes = convert_office_to_pdf(file_content, file_name)
+                        pdf_bytes = convert_office_to_pdf(file_content, safe_filename)
                         if pdf_bytes:
                             file_content = pdf_bytes
-                            actual_filename = file_name.rsplit('.', 1)[0] + '.pdf'
+                            actual_filename = safe_filename.rsplit('.', 1)[0] + '.pdf'
                             mime_type = 'application/pdf'
 
                 # Upload to GCS
