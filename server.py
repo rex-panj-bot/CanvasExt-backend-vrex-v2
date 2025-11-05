@@ -952,7 +952,23 @@ async def process_canvas_files(request: Dict):
 
             try:
                 print(f"📥 Downloading {file_name} from Canvas...")
-                print(f"   URL: {file_url[:100]}...")  # Log first 100 chars of URL for debugging
+
+                # Convert Canvas API URL to download URL if needed
+                # API URLs: /api/v1/courses/{id}/files/{file_id}
+                # Download URLs: /files/{file_id}/download
+                download_url = file_url
+                if '/api/v1/' in file_url and '/files/' in file_url:
+                    # Extract file ID and construct download URL
+                    import re
+                    match = re.search(r'/files/(\d+)', file_url)
+                    if match:
+                        file_id = match.group(1)
+                        # Get base URL (everything before /api/v1/...)
+                        base_url = file_url.split('/api/v1/')[0]
+                        download_url = f"{base_url}/files/{file_id}/download?download_frd=1"
+                        print(f"   Converted API URL to download URL")
+
+                print(f"   URL: {download_url[:100]}...")  # Log first 100 chars of URL for debugging
 
                 # Download file from Canvas URL with session cookies for authentication
                 import aiohttp
@@ -961,7 +977,7 @@ async def process_canvas_files(request: Dict):
                     headers['Cookie'] = canvas_cookies
 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(file_url, headers=headers, allow_redirects=True) as response:
+                    async with session.get(download_url, headers=headers, allow_redirects=True) as response:
                         if response.status != 200:
                             print(f"❌ Failed to download {file_name}: HTTP {response.status}")
                             print(f"   Response: {await response.text()}")
