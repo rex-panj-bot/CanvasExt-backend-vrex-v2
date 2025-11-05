@@ -987,12 +987,39 @@ async def process_canvas_files(request: Dict):
                         file_content = await response.read()
                         print(f"✅ Downloaded {file_name} ({len(file_content):,} bytes)")
 
+                        # Get Content-Type from response headers (Canvas provides this)
+                        content_type_header = response.headers.get('Content-Type', '').split(';')[0].strip()
+
                 # Process and upload to GCS (same logic as _process_single_upload)
                 from utils.file_converter import convert_office_to_pdf, needs_conversion
 
-                # Auto-detect MIME type
+                # Auto-detect MIME type from filename first
                 mime_type = get_mime_type(file_name)
-                ext = get_file_extension(file_name) or 'file'
+                ext = get_file_extension(file_name)
+
+                # If no extension in filename, try to detect from Content-Type header
+                if not ext and content_type_header:
+                    # Map common MIME types to extensions
+                    mime_to_ext = {
+                        'application/pdf': 'pdf',
+                        'application/vnd.ms-powerpoint': 'ppt',
+                        'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+                        'application/msword': 'doc',
+                        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+                        'application/vnd.ms-excel': 'xls',
+                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+                        'text/plain': 'txt',
+                        'text/html': 'html',
+                        'image/png': 'png',
+                        'image/jpeg': 'jpg',
+                    }
+                    ext = mime_to_ext.get(content_type_header)
+                    if ext:
+                        print(f"   Detected file type from Content-Type: {content_type_header} → .{ext}")
+                        file_name = f"{file_name}.{ext}"  # Add extension to filename
+                        mime_type = content_type_header
+
+                ext = ext or 'file'  # Default to 'file' if still no extension
 
                 original_filename = file_name
                 actual_filename = file_name

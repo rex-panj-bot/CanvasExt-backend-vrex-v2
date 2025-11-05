@@ -52,7 +52,7 @@ class FileUploadManager:
             mime_type = get_mime_type(filename)
             if not mime_type:
                 # Try to upload anyway - let Gemini reject it if unsupported
-                ext = get_file_extension(filename)
+                ext = get_file_extension(filename) or 'unknown'
                 print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), will attempt upload anyway")
                 # Use a generic MIME type as fallback
                 mime_type = 'application/octet-stream'
@@ -117,7 +117,7 @@ class FileUploadManager:
             original_filename = filename
             conversion_attempted = False
             if needs_conversion(filename):
-                ext = get_file_extension(filename)
+                ext = get_file_extension(filename) or 'unknown'
                 print(f"🔄 Converting {filename} ({ext.upper()}) to PDF...")
                 conversion_attempted = True
                 try:
