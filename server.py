@@ -918,14 +918,16 @@ async def process_canvas_files(request: Dict):
     try:
         course_id = request.get("course_id")
         files = request.get("files", [])
+        canvas_cookies = request.get("cookies", "")  # Session cookies for Canvas auth
 
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
 
         print(f"\n{'='*80}")
-        print(f"🌐 PROCESS CANVAS FILES REQUEST (v2 - fixed parameter):")
+        print(f"🌐 PROCESS CANVAS FILES REQUEST (v3 - with auth):")
         print(f"   Course ID: {course_id}")
         print(f"   Files to process: {len(files)}")
+        print(f"   Has cookies: {bool(canvas_cookies)}")
         print(f"{'='*80}")
 
         # Check which files already exist in GCS
@@ -952,11 +954,14 @@ async def process_canvas_files(request: Dict):
                 print(f"📥 Downloading {file_name} from Canvas...")
                 print(f"   URL: {file_url[:100]}...")  # Log first 100 chars of URL for debugging
 
-                # Download file from Canvas URL
-                # Canvas URLs have auth tokens in the URL, so no credentials needed
+                # Download file from Canvas URL with session cookies for authentication
                 import aiohttp
+                headers = {}
+                if canvas_cookies:
+                    headers['Cookie'] = canvas_cookies
+
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(file_url, allow_redirects=True) as response:
+                    async with session.get(file_url, headers=headers, allow_redirects=True) as response:
                         if response.status != 200:
                             print(f"❌ Failed to download {file_name}: HTTP {response.status}")
                             print(f"   Response: {await response.text()}")
