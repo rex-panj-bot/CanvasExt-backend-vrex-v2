@@ -1958,18 +1958,20 @@ async def restore_material(course_id: str, file_id: str):
 
 
 @app.post("/admin/cleanup_bad_filenames/{course_id}")
-async def cleanup_bad_filenames(course_id: str, dry_run: bool = True):
+async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_duplicates: bool = True):
     """
-    Clean up files with problematic filenames (containing "/" in filename)
+    Clean up files with problematic filenames and duplicates
 
     Args:
         course_id: Course identifier
         dry_run: If True, only report what would be deleted (default: True)
+        remove_duplicates: If True, also remove duplicate files (default: True)
 
     Returns:
         {
             "dry_run": bool,
             "bad_files_found": int,
+            "duplicates_found": int,
             "deleted_count": int,
             "deleted_files": [...],
             "errors": [...]
@@ -1980,9 +1982,10 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True):
             raise HTTPException(status_code=503, detail="Storage service not available")
 
         print(f"\n{'='*80}")
-        print(f"🧹 CLEANUP BAD FILENAMES REQUEST:")
+        print(f"🧹 CLEANUP BAD FILENAMES & DUPLICATES REQUEST:")
         print(f"   Course ID: {course_id}")
         print(f"   Dry Run: {dry_run}")
+        print(f"   Remove Duplicates: {remove_duplicates}")
         print(f"{'='*80}")
 
         # Get all files for the course
@@ -1999,39 +2002,91 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True):
                 # Check if filename itself contains "/" (indicates bad filename)
                 if '/' in filename:
                     bad_files.append(blob_name)
-                    print(f"   ⚠️  Bad file found: {blob_name}")
+                    print(f"   ⚠️  Bad file found (contains '/'): {blob_name}")
 
         print(f"🔍 Found {len(bad_files)} files with problematic names")
 
-        if len(bad_files) == 0:
+        # Find duplicates (keep newest, delete older versions)
+        duplicates_to_delete = []
+        if remove_duplicates:
+            from collections import defaultdict
+            files_by_name = defaultdict(list)
+
+            # Group files by filename
+            for blob_name in all_files:
+                parts = blob_name.split('/', 1)
+                if len(parts) == 2:
+                    filename = parts[1]
+                    files_by_name[filename].append(blob_name)
+
+            # Find duplicates (same filename appears multiple times)
+            for filename, blob_names in files_by_name.items():
+                if len(blob_names) > 1:
+                    # Get metadata for each file to determine which is newest
+                    file_metadata = []
+                    for blob_name in blob_names:
+                        try:
+                            blob = storage_manager.bucket.blob(blob_name)
+                            blob.reload()
+                            file_metadata.append({
+                                'blob_name': blob_name,
+                                'updated': blob.updated,
+                                'size': blob.size
+                            })
+                        except Exception as e:
+                            print(f"   ⚠️  Error getting metadata for {blob_name}: {e}")
+
+                    if len(file_metadata) > 1:
+                        # Sort by updated time (newest first)
+                        file_metadata.sort(key=lambda x: x['updated'], reverse=True)
+
+                        # Keep the newest, mark others for deletion
+                        newest = file_metadata[0]
+                        for old_file in file_metadata[1:]:
+                            duplicates_to_delete.append(old_file['blob_name'])
+                            print(f"   🔄 Duplicate found: {old_file['blob_name']}")
+                            print(f"      Keeping newer version from {newest['updated']}")
+
+            print(f"🔍 Found {len(duplicates_to_delete)} duplicate files to remove")
+
+        # Combine bad files and duplicates
+        files_to_delete = list(set(bad_files + duplicates_to_delete))
+        print(f"🗑️  Total files to delete: {len(files_to_delete)}")
+
+        if len(files_to_delete) == 0:
             return {
                 "dry_run": dry_run,
                 "bad_files_found": 0,
+                "duplicates_found": 0,
                 "deleted_count": 0,
                 "deleted_files": [],
                 "errors": [],
-                "message": "No bad filenames found! All files have proper names."
+                "message": "No bad filenames or duplicates found! All files are clean."
             }
 
         if dry_run:
             print(f"🔍 DRY RUN - No files will be deleted")
-            print(f"   Would delete {len(bad_files)} files:")
-            for blob_name in bad_files:
-                print(f"     - {blob_name}")
+            print(f"   Would delete {len(files_to_delete)} files:")
+            print(f"   - Bad filenames (with '/'): {len(bad_files)}")
+            print(f"   - Duplicates: {len(duplicates_to_delete)}")
+            for blob_name in files_to_delete:
+                reason = "bad filename" if blob_name in bad_files else "duplicate"
+                print(f"     - {blob_name} ({reason})")
             return {
                 "dry_run": True,
                 "bad_files_found": len(bad_files),
+                "duplicates_found": len(duplicates_to_delete),
                 "deleted_count": 0,
-                "deleted_files": bad_files,
+                "deleted_files": files_to_delete,
                 "errors": [],
-                "message": f"Dry run complete. Found {len(bad_files)} files that would be deleted."
+                "message": f"Dry run complete. Found {len(bad_files)} bad filenames and {len(duplicates_to_delete)} duplicates to delete."
             }
 
         # Actually delete the files
         deleted_files = []
         errors = []
 
-        for blob_name in bad_files:
+        for blob_name in files_to_delete:
             try:
                 # Delete from GCS
                 success = storage_manager.delete_file(blob_name)
@@ -2065,10 +2120,11 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True):
         return {
             "dry_run": False,
             "bad_files_found": len(bad_files),
+            "duplicates_found": len(duplicates_to_delete),
             "deleted_count": len(deleted_files),
             "deleted_files": deleted_files,
             "errors": errors,
-            "message": f"Successfully deleted {len(deleted_files)} files with bad filenames."
+            "message": f"Successfully deleted {len(deleted_files)} files ({len(bad_files)} bad filenames, {len(duplicates_to_delete)} duplicates)."
         }
 
     except HTTPException:
