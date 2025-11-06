@@ -1010,6 +1010,7 @@ async def process_canvas_files(request: Dict):
         course_id = request.get("course_id")
         files = request.get("files", [])
         canvas_cookies = request.get("cookies", "")  # Session cookies for Canvas auth
+        skip_existence_check = request.get("skip_check", False)  # NEW: Allow frontend to skip redundant check
 
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
@@ -1019,6 +1020,7 @@ async def process_canvas_files(request: Dict):
         print(f"   Course ID: {course_id}")
         print(f"   Files to process: {len(files)}")
         print(f"   Has cookies: {bool(canvas_cookies)}")
+        print(f"   Skip existence check: {skip_existence_check}")
 
         # DEBUG: Check for duplicate filenames in input
         file_names = [f.get("name") for f in files if f.get("name")]
@@ -1035,9 +1037,13 @@ async def process_canvas_files(request: Dict):
 
         print(f"{'='*80}")
 
-        # Check which files already exist in GCS
-        exists_check = await check_files_exist(course_id, files)
-        existing_files = {f["name"] for f in exists_check["exists"]}
+        # Check which files already exist in GCS (skip if frontend already checked)
+        existing_files = set()
+        if skip_existence_check:
+            print("⚡ Skipping GCS existence check (frontend already filtered files)")
+        else:
+            exists_check = await check_files_exist(course_id, files)
+            existing_files = {f["name"] for f in exists_check["exists"]}
 
         processed = 0
         skipped = len(existing_files)
