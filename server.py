@@ -844,10 +844,7 @@ async def upload_pdfs(
 
 
 @app.post("/check_files_exist")
-async def check_files_exist(
-    course_id: str,
-    files: List[Dict]
-):
+async def check_files_exist(request: Dict):
     """
     Check which files exist in GCS and return signed URLs for existing files
 
@@ -855,8 +852,10 @@ async def check_files_exist(
     if files already exist in GCS (much faster to download from GCS)
 
     Args:
-        course_id: Course identifier
-        files: List of file objects with 'name' and optionally 'size' fields
+        request: {
+            "course_id": "123456",
+            "files": [{"name": "file.pdf", "url": "..."}, ...]
+        }
 
     Returns:
         {
@@ -867,6 +866,12 @@ async def check_files_exist(
     Performance: Checks 100 files in ~500ms
     """
     try:
+        course_id = request.get("course_id")
+        files = request.get("files", [])
+
+        if not course_id or not files:
+            raise HTTPException(status_code=400, detail="course_id and files required")
+
         print(f"\n{'='*80}")
         print(f"📋 CHECK FILES EXIST REQUEST:")
         print(f"   Course ID: {course_id}")
