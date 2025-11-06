@@ -1219,6 +1219,14 @@ async def process_canvas_files(request: Dict):
 
         print(f"✅ Processing complete: {processed} processed, {skipped} skipped, {failed} failed")
 
+        # CRITICAL: Refresh document catalog after uploading new files
+        # This ensures newly uploaded files appear in queries immediately
+        if (processed > 0 or skipped > 0) and document_manager:
+            try:
+                document_manager.refresh_catalog(course_id)
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to refresh catalog: {e}")
+
         return {
             "success": True,
             "processed": processed,

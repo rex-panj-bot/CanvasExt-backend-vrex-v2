@@ -276,6 +276,32 @@ class DocumentManager:
             "materials": materials
         }
 
+    def refresh_catalog(self, course_id: str = None):
+        """
+        Refresh the material catalog by rebuilding from GCS/local storage
+
+        Args:
+            course_id: If provided, only refresh catalog for this course
+                      If None, rebuild entire catalog
+
+        This should be called after uploading new files to ensure they appear
+        in the catalog immediately.
+        """
+        print(f"🔄 Refreshing catalog{f' for course {course_id}' if course_id else ''}...")
+
+        if course_id:
+            # Rebuild just this course's catalog
+            old_count = len(self.catalog.get(course_id, []))
+            self.catalog = self._build_catalog()
+            new_count = len(self.catalog.get(course_id, []))
+            print(f"   ✅ Catalog refreshed: {old_count} → {new_count} materials")
+        else:
+            # Rebuild entire catalog
+            old_total = sum(len(materials) for materials in self.catalog.values())
+            self.catalog = self._build_catalog()
+            new_total = sum(len(materials) for materials in self.catalog.values())
+            print(f"   ✅ Full catalog refreshed: {old_total} → {new_total} materials")
+
     def search_materials(self, course_id: str, query: str, max_results: int = 10) -> List[Dict]:
         """
         Search materials by name/metadata
