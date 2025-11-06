@@ -1155,9 +1155,14 @@ async def process_canvas_files(request: Dict):
                     original_canvas_name = file_info.get("name")  # Before extension detection
                     filename_cache[(course_id, original_canvas_name)] = actual_filename
 
-                    # Return actual_filename (what's in GCS) not original_filename (what Canvas had)
-                    # This fixes file opening - frontend needs to know the sanitized name
-                    return {"status": "uploaded", "filename": actual_filename, "path": blob_name}
+                    # Return both original and actual filenames for frontend mapping
+                    # Frontend needs this to update stored_name in materials
+                    return {
+                        "status": "uploaded",
+                        "original_name": original_canvas_name,
+                        "filename": actual_filename,
+                        "path": blob_name
+                    }
                 else:
                     failed += 1
                     return {"status": "failed", "error": "No storage manager", "filename": file_name}
@@ -1186,11 +1191,20 @@ async def process_canvas_files(request: Dict):
             # Execute all tasks in parallel (limited to 8 concurrent)
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Count results (processed/failed already updated in process_single_file)
+        # Count results and collect file mappings (processed/failed already updated in process_single_file)
+        uploaded_files = []
         for result in results:
             if isinstance(result, Exception):
                 print(f"❌ Task exception: {result}")
                 failed += 1
+            elif isinstance(result, dict):
+                if result.get("status") == "uploaded":
+                    # Track uploaded files with original name -> stored name mapping
+                    uploaded_files.append({
+                        "original_name": result.get("original_name"),
+                        "stored_name": result.get("filename"),
+                        "path": result.get("path")
+                    })
 
         print(f"✅ Processing complete: {processed} processed, {skipped} skipped, {failed} failed")
 
@@ -1199,7 +1213,8 @@ async def process_canvas_files(request: Dict):
             "processed": processed,
             "skipped": skipped,
             "failed": failed,
-            "total": len(files)
+            "total": len(files),
+            "uploaded_files": uploaded_files  # Include file mappings for frontend
         }
 
     except Exception as e:
