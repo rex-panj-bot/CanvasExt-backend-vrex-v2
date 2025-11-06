@@ -1069,8 +1069,10 @@ async def process_canvas_files(request: Dict):
                         mime_type
                     )
                     processed += 1
-                    print(f"✅ Processed {file_name}")
-                    return {"status": "uploaded", "filename": original_filename, "path": blob_name}
+                    print(f"✅ Processed {file_name} → stored as {actual_filename}")
+                    # Return actual_filename (what's in GCS) not original_filename (what Canvas had)
+                    # This fixes file opening - frontend needs to know the sanitized name
+                    return {"status": "uploaded", "filename": actual_filename, "path": blob_name}
                 else:
                     failed += 1
                     return {"status": "failed", "error": "No storage manager", "filename": file_name}
