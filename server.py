@@ -2373,7 +2373,7 @@ async def cleanup_duplicate_summaries(course_id: str, dry_run: bool = True):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/pdfs/{course_id}/{filename}")
+@app.get("/pdfs/{course_id}/{filename:path}")
 async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
     """
     Serve files from GCS for viewing in browser
