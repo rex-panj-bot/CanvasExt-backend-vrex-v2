@@ -2136,6 +2136,69 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/admin/cleanup_duplicate_summaries/{course_id}")
+async def cleanup_duplicate_summaries(course_id: str, dry_run: bool = True):
+    """
+    Clean up duplicate file summary entries in the catalog
+
+    Finds files with same course_id + filename and keeps only the newest entry.
+    This fixes duplicate entries in the document catalog/AI memory.
+
+    Args:
+        course_id: Course identifier
+        dry_run: If True, only report duplicates without deleting (default: True)
+
+    Returns:
+        {
+            "dry_run": bool,
+            "duplicates_found": int,
+            "deleted_count": int,
+            "deleted_entries": [...],
+            "errors": [...]
+        }
+    """
+    try:
+        if not chat_storage:
+            raise HTTPException(status_code=503, detail="Chat storage not available")
+
+        print(f"\n{'='*80}")
+        print(f"🧹 CLEANUP DUPLICATE FILE SUMMARIES REQUEST:")
+        print(f"   Course ID: {course_id}")
+        print(f"   Dry Run: {dry_run}")
+        print(f"{'='*80}")
+
+        result = chat_storage.cleanup_duplicate_file_summaries(course_id, dry_run=dry_run)
+
+        duplicates_found = result.get('duplicates_found', 0)
+        deleted_count = result.get('deleted_count', 0)
+
+        if duplicates_found == 0:
+            message = "No duplicate file summaries found! Catalog is clean."
+        elif dry_run:
+            message = f"Dry run complete. Found {duplicates_found} duplicate entries to remove."
+        else:
+            message = f"Successfully removed {deleted_count} duplicate entries from catalog."
+
+        print(f"✅ {message}")
+
+        return {
+            "dry_run": dry_run,
+            "duplicates_found": duplicates_found,
+            "deleted_count": deleted_count,
+            "deleted_entries": result.get('deleted_entries', []),
+            "errors": result.get('errors', []),
+            "message": message
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in cleanup duplicate summaries: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/pdfs/{course_id}/{filename}")
 async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
     """

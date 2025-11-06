@@ -1042,6 +1042,156 @@ class ChatStorage:
             logger.error(f"Error getting cached files by course: {e}")
             return {}
 
+    def cleanup_duplicate_file_summaries(self, course_id: str, dry_run: bool = True) -> Dict:
+        """
+        Find and remove duplicate file summaries (same course_id + filename)
+        Keeps the most recently updated entry
+
+        Args:
+            course_id: Course identifier
+            dry_run: If True, only report duplicates without deleting
+
+        Returns:
+            {
+                'duplicates_found': int,
+                'deleted_count': int,
+                'deleted_entries': [...],
+                'errors': [...]
+            }
+        """
+        try:
+            duplicates_found = 0
+            deleted_entries = []
+            errors = []
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    # Find duplicates: same course_id + filename, not deleted
+                    result = conn.execute(text("""
+                        SELECT course_id, filename, COUNT(*) as cnt,
+                               array_agg(doc_id ORDER BY updated_at DESC) as doc_ids,
+                               array_agg(updated_at ORDER BY updated_at DESC) as updated_ats
+                        FROM file_summaries
+                        WHERE course_id = :course_id AND deleted_at IS NULL
+                        GROUP BY course_id, filename
+                        HAVING COUNT(*) > 1
+                    """), {"course_id": course_id})
+                    duplicates = result.fetchall()
+
+                    for dup in duplicates:
+                        filename = dup[1]
+                        count = dup[2]
+                        doc_ids = dup[3]
+                        updated_ats = dup[4]
+
+                        duplicates_found += count - 1  # All but the newest
+
+                        # Keep first (newest), delete rest
+                        keep_id = doc_ids[0]
+                        delete_ids = doc_ids[1:]
+
+                        logger.info(f"Found {count} duplicates of '{filename}':")
+                        logger.info(f"  Keeping: {keep_id} (updated: {updated_ats[0]})")
+                        for i, delete_id in enumerate(delete_ids):
+                            logger.info(f"  Deleting: {delete_id} (updated: {updated_ats[i+1]})")
+                            deleted_entries.append({
+                                'doc_id': delete_id,
+                                'filename': filename,
+                                'updated_at': str(updated_ats[i+1])
+                            })
+
+                        if not dry_run:
+                            # Soft delete (set deleted_at timestamp)
+                            for delete_id in delete_ids:
+                                try:
+                                    conn.execute(text("""
+                                        UPDATE file_summaries
+                                        SET deleted_at = NOW()
+                                        WHERE doc_id = :doc_id
+                                    """), {"doc_id": delete_id})
+                                except Exception as e:
+                                    errors.append({
+                                        'doc_id': delete_id,
+                                        'error': str(e)
+                                    })
+                            conn.commit()
+
+            else:  # SQLite
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+
+                    # Find duplicates
+                    cursor.execute("""
+                        SELECT course_id, filename, COUNT(*) as cnt
+                        FROM file_summaries
+                        WHERE course_id = ? AND deleted_at IS NULL
+                        GROUP BY course_id, filename
+                        HAVING COUNT(*) > 1
+                    """, (course_id,))
+                    dup_files = cursor.fetchall()
+
+                    for dup in dup_files:
+                        filename = dup[1]
+                        count = dup[2]
+
+                        # Get all doc_ids for this filename
+                        cursor.execute("""
+                            SELECT doc_id, updated_at
+                            FROM file_summaries
+                            WHERE course_id = ? AND filename = ? AND deleted_at IS NULL
+                            ORDER BY updated_at DESC
+                        """, (course_id, filename))
+                        entries = cursor.fetchall()
+
+                        duplicates_found += len(entries) - 1
+
+                        # Keep first (newest), delete rest
+                        keep_id = entries[0][0]
+                        delete_entries = entries[1:]
+
+                        logger.info(f"Found {count} duplicates of '{filename}':")
+                        logger.info(f"  Keeping: {keep_id} (updated: {entries[0][1]})")
+                        for delete_entry in delete_entries:
+                            delete_id = delete_entry[0]
+                            updated_at = delete_entry[1]
+                            logger.info(f"  Deleting: {delete_id} (updated: {updated_at})")
+                            deleted_entries.append({
+                                'doc_id': delete_id,
+                                'filename': filename,
+                                'updated_at': updated_at
+                            })
+
+                            if not dry_run:
+                                try:
+                                    cursor.execute("""
+                                        UPDATE file_summaries
+                                        SET deleted_at = CURRENT_TIMESTAMP
+                                        WHERE doc_id = ?
+                                    """, (delete_id,))
+                                except Exception as e:
+                                    errors.append({
+                                        'doc_id': delete_id,
+                                        'error': str(e)
+                                    })
+                    if not dry_run:
+                        conn.commit()
+
+            return {
+                'duplicates_found': duplicates_found,
+                'deleted_count': len(deleted_entries) if not dry_run else 0,
+                'deleted_entries': deleted_entries,
+                'errors': errors
+            }
+
+        except Exception as e:
+            logger.error(f"Error cleaning up duplicate file summaries: {e}")
+            return {
+                'duplicates_found': 0,
+                'deleted_count': 0,
+                'deleted_entries': [],
+                'errors': [{'error': str(e)}]
+            }
+
     def get_files_needing_cache_refresh(self, hours_before_expiry: int = 6) -> List[Dict]:
         """
         Get files that will expire soon and need cache refresh
