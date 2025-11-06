@@ -98,6 +98,11 @@ file_summarizer = None
 # Store active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
 
+# In-memory cache for filename mappings: (course_id, original_filename) -> actual_gcs_filename
+# This eliminates the need to guess/check multiple filenames when serving files
+# Populated during check_files_exist and uploads
+filename_cache: Dict[tuple, str] = {}
+
 # PDF storage directory (deprecated - using GCS now, but kept for backward compatibility)
 UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -896,6 +901,14 @@ async def check_files_exist(
         gcs_filenames = {blob.split('/', 1)[1] for blob in all_gcs_files if '/' in blob}
         print(f"   Found {len(gcs_filenames)} files in GCS")
 
+        # Build reverse mapping cache: actual_gcs_filename -> possible_original_names
+        # This helps us populate the filename_cache for faster lookups later
+        gcs_to_originals = {}
+        for gcs_filename in gcs_filenames:
+            # Reverse the sanitization: "Lecture 1-2.pdf" -> "Lecture 1/2.pdf"
+            # Try to match it back to original Canvas names
+            gcs_to_originals[gcs_filename] = gcs_filename
+
         exists = []
         missing = []
 
@@ -922,6 +935,10 @@ async def check_files_exist(
                     found_blob_name = f"{course_id}/{predicted_filename}"
                     found_filename = predicted_filename
                     print(f"   ✅ Found in GCS: {predicted_filename}")
+
+                    # CRITICAL: Cache this mapping for instant lookup later
+                    # (course_id, original_filename) -> actual_gcs_filename
+                    filename_cache[(course_id, file_name)] = found_filename
                     break
 
             if found_blob_name:
@@ -1132,6 +1149,12 @@ async def process_canvas_files(request: Dict):
                     )
                     processed += 1
                     print(f"✅ Processed {file_name} → stored as {actual_filename}")
+
+                    # CRITICAL: Cache this mapping for instant lookup later
+                    # Map original Canvas filename to actual GCS filename
+                    original_canvas_name = file_info.get("name")  # Before extension detection
+                    filename_cache[(course_id, original_canvas_name)] = actual_filename
+
                     # Return actual_filename (what's in GCS) not original_filename (what Canvas had)
                     # This fixes file opening - frontend needs to know the sanitized name
                     return {"status": "uploaded", "filename": actual_filename, "path": blob_name}
@@ -2375,29 +2398,44 @@ async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
         # Try to serve from GCS first
         if storage_manager:
             try:
-                # CRITICAL: Predict the actual stored filename (sanitized/converted)
-                # Frontend may send original Canvas name, but GCS has sanitized name
-                # Example: "Lecture 1/2.pptx" → "Lecture 1-2.pdf"
-                # For files without extensions, try multiple possibilities
-                possible_filenames = predict_stored_filename(filename)
+                # OPTIMIZATION: Check cache first for instant lookup (no guessing needed)
+                cache_key = (course_id, filename)
+                cached_filename = filename_cache.get(cache_key)
 
-                if len(possible_filenames) > 1 or possible_filenames[0] != filename:
-                    print(f"   🔮 Predicted GCS names for '{filename}': {possible_filenames}")
+                if cached_filename:
+                    print(f"   ⚡ Cache hit! '{filename}' → '{cached_filename}'")
+                    blob_name = f"{course_id}/{cached_filename}"
+                    found_filename = cached_filename
+                else:
+                    # Cache miss - need to guess possible filenames
+                    print(f"   ⚠️  Cache miss for '{filename}', checking GCS...")
 
-                # Try each possible filename until we find one that exists
-                blob_name = None
-                found_filename = None
-                for predicted_filename in possible_filenames:
-                    test_blob_name = f"{course_id}/{predicted_filename}"
-                    if storage_manager.file_exists(test_blob_name):
-                        blob_name = test_blob_name
-                        found_filename = predicted_filename
-                        print(f"   ✅ Found in GCS: {predicted_filename}")
-                        break
+                    # Predict the actual stored filename (sanitized/converted)
+                    # Frontend may send original Canvas name, but GCS has sanitized name
+                    # Example: "Lecture 1/2.pptx" → "Lecture 1-2.pdf"
+                    # For files without extensions, try multiple possibilities
+                    possible_filenames = predict_stored_filename(filename)
 
-                if not blob_name:
-                    print(f"   ❌ File not found in GCS. Tried: {possible_filenames}")
-                    raise HTTPException(status_code=404, detail=f"File not found in GCS: {filename}")
+                    if len(possible_filenames) > 1:
+                        print(f"   🔮 Trying {len(possible_filenames)} possibilities: {possible_filenames}")
+
+                    # Try each possible filename until we find one that exists
+                    blob_name = None
+                    found_filename = None
+                    for predicted_filename in possible_filenames:
+                        test_blob_name = f"{course_id}/{predicted_filename}"
+                        if storage_manager.file_exists(test_blob_name):
+                            blob_name = test_blob_name
+                            found_filename = predicted_filename
+                            print(f"   ✅ Found in GCS: {predicted_filename}")
+
+                            # Cache this mapping for next time
+                            filename_cache[cache_key] = found_filename
+                            break
+
+                    if not blob_name:
+                        print(f"   ❌ File not found in GCS. Tried: {possible_filenames}")
+                        raise HTTPException(status_code=404, detail=f"File not found in GCS: {filename}")
 
                 # Generate signed URL that's valid for 1 hour
                 signed_url = storage_manager.get_signed_url(blob_name, expiration_minutes=60)
