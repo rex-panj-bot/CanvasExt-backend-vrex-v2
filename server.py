@@ -874,6 +874,15 @@ async def check_files_exist(
                 "missing": [f["name"] for f in files]
             }
 
+        # OPTIMIZATION: Get ALL files from GCS once (single API call)
+        # This is much faster than checking each file individually
+        print(f"📂 Fetching all files from GCS for course {course_id}...")
+        all_gcs_files = storage_manager.list_files(course_id=course_id)
+
+        # Create a set of filenames (without course_id prefix) for fast lookup
+        gcs_filenames = {blob.split('/', 1)[1] for blob in all_gcs_files if '/' in blob}
+        print(f"   Found {len(gcs_filenames)} files in GCS")
+
         exists = []
         missing = []
 
@@ -891,12 +900,10 @@ async def check_files_exist(
             if predicted_filename != file_name:
                 print(f"   🔮 Predicted storage name: '{file_name}' → '{predicted_filename}'")
 
-            blob_name = f"{course_id}/{predicted_filename}"
-
-            # Check if the predicted filename exists in GCS
+            # Check if the predicted filename exists in our GCS file set (fast lookup)
             found_blob_name = None
-            if storage_manager.file_exists(blob_name):
-                found_blob_name = blob_name
+            if predicted_filename in gcs_filenames:
+                found_blob_name = f"{course_id}/{predicted_filename}"
                 print(f"   ✅ Found in GCS: {predicted_filename}")
 
             if found_blob_name:
@@ -2345,14 +2352,24 @@ async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
         # Decode URL-encoded filename
         filename = unquote(filename)
 
+        print(f"📄 Serving file: {filename}")
+
         # Try to serve from GCS first
         if storage_manager:
             try:
-                # Check if file exists in GCS
-                blob_name = f"{course_id}/{filename}"
+                # CRITICAL: Predict the actual stored filename (sanitized/converted)
+                # Frontend may send original Canvas name, but GCS has sanitized name
+                # Example: "Lecture 1/2.pptx" → "Lecture 1-2.pdf"
+                predicted_filename = predict_stored_filename(filename)
+
+                if predicted_filename != filename:
+                    print(f"   🔮 Predicted GCS name: '{filename}' → '{predicted_filename}'")
+
+                blob_name = f"{course_id}/{predicted_filename}"
 
                 if not storage_manager.file_exists(blob_name):
-                    raise HTTPException(status_code=404, detail=f"File not found in GCS: {filename}")
+                    print(f"   ❌ File not found in GCS: {predicted_filename}")
+                    raise HTTPException(status_code=404, detail=f"File not found in GCS: {predicted_filename}")
 
                 # Generate signed URL that's valid for 1 hour
                 signed_url = storage_manager.get_signed_url(blob_name, expiration_minutes=60)
