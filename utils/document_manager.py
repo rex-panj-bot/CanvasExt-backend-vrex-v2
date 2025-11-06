@@ -53,10 +53,10 @@ class DocumentManager:
                     course_id = parts[0]
                     filename = parts[1]
 
-                    # Remove extension from filename
+                    # CRITICAL: Keep the full filename with extension for document IDs
+                    # Frontend now sends IDs with extensions (e.g., "1421639_file.pdf")
+                    # Previously stripped extensions but this caused mismatches
                     original_name = filename
-                    if '.' in filename:
-                        original_name = '.'.join(filename.split('.')[:-1])
 
                     if course_id not in catalog:
                         catalog[course_id] = []
@@ -66,7 +66,8 @@ class DocumentManager:
                         metadata = self.storage_manager.get_file_metadata(blob_name)
                         size_mb = metadata['size'] / (1024 * 1024)
 
-                        doc_id = f"{course_id}_{original_name}"
+                        # Use full filename with extension in document ID
+                        doc_id = f"{course_id}_{filename}"
                         catalog[course_id].append({
                             "id": doc_id,
                             "name": original_name,
