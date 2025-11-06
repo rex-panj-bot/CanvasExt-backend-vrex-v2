@@ -29,6 +29,43 @@ from google import genai
 
 app = FastAPI(title="AI Study Assistant Backend")
 
+
+def predict_stored_filename(original_filename: str) -> str:
+    """
+    Predict what filename will actually be stored in GCS after sanitization and conversion.
+
+    This is critical for checking if files already exist - we need to check for the
+    SANITIZED and CONVERTED name, not the original Canvas filename.
+
+    Args:
+        original_filename: Original filename from Canvas (e.g., "Lecture 1/2.pptx")
+
+    Returns:
+        Predicted GCS filename (e.g., "Lecture 1-2.pdf")
+
+    Examples:
+        "Lecture 1/2.pptx" → "Lecture 1-2.pdf"
+        "File/Name.docx" → "File-Name.pdf"
+        "Assignment.pdf" → "Assignment.pdf"
+        "NoExtension" → "NoExtension" (can't predict without Content-Type)
+    """
+    # Step 1: Sanitize filename (replace / with -)
+    sanitized = original_filename.replace('/', '-')
+
+    # Step 2: Check if it needs conversion to PDF
+    # Office files get converted to PDF
+    if sanitized.endswith(('.docx', '.pptx', '.xlsx', '.doc', '.ppt', '.xls', '.rtf')):
+        # Replace extension with .pdf
+        return sanitized.rsplit('.', 1)[0] + '.pdf'
+
+    # Web formats get converted to .txt
+    if sanitized.endswith(('.html', '.htm', '.xml', '.json')):
+        return sanitized.rsplit('.', 1)[0] + '.txt'
+
+    # Everything else stays as-is (PDFs, images, text files)
+    return sanitized
+
+
 # CORS middleware for Chrome extension
 app.add_middleware(
     CORSMiddleware,
@@ -845,22 +882,22 @@ async def check_files_exist(
             if not file_name:
                 continue
 
-            # Check both original name and potential .pdf conversion
-            # (since Phase 1 converts Office files to PDF)
-            blob_name = f"{course_id}/{file_name}"
-            pdf_blob_name = None
+            # CRITICAL: Predict what the filename will be after sanitization and conversion
+            # This ensures we check for the ACTUAL filename in GCS, not the Canvas filename
+            # Example: "Lecture 1/2.pptx" becomes "Lecture 1-2.pdf" in GCS
+            predicted_filename = predict_stored_filename(file_name)
 
-            # If it's an Office file, also check for PDF version
-            if file_name.endswith(('.docx', '.pptx', '.xlsx', '.doc', '.ppt', '.xls', '.rtf')):
-                pdf_name = file_name.rsplit('.', 1)[0] + '.pdf'
-                pdf_blob_name = f"{course_id}/{pdf_name}"
+            # DEBUG: Log prediction if different from original
+            if predicted_filename != file_name:
+                print(f"   🔮 Predicted storage name: '{file_name}' → '{predicted_filename}'")
 
-            # Check if file exists (try PDF version first if applicable)
+            blob_name = f"{course_id}/{predicted_filename}"
+
+            # Check if the predicted filename exists in GCS
             found_blob_name = None
-            if pdf_blob_name and storage_manager.file_exists(pdf_blob_name):
-                found_blob_name = pdf_blob_name
-            elif storage_manager.file_exists(blob_name):
+            if storage_manager.file_exists(blob_name):
                 found_blob_name = blob_name
+                print(f"   ✅ Found in GCS: {predicted_filename}")
 
             if found_blob_name:
                 # File exists - generate signed URL (valid for 1 hour)
