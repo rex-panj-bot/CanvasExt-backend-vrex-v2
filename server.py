@@ -816,6 +816,18 @@ async def check_files_exist(
         print(f"📋 CHECK FILES EXIST REQUEST:")
         print(f"   Course ID: {course_id}")
         print(f"   Files to check: {len(files)}")
+
+        # DEBUG: Check for duplicate filenames in input
+        file_names = [f.get("name") for f in files if f.get("name")]
+        unique_names = set(file_names)
+        if len(file_names) != len(unique_names):
+            duplicates = [name for name in file_names if file_names.count(name) > 1]
+            duplicate_counts = {name: file_names.count(name) for name in set(duplicates)}
+            print(f"   ⚠️  WARNING: Found {len(file_names) - len(unique_names)} duplicate filenames in input!")
+            print(f"   Duplicates: {duplicate_counts}")
+        else:
+            print(f"   ✅ No duplicate filenames in input")
+
         print(f"{'='*80}")
 
         if not storage_manager:
@@ -928,6 +940,20 @@ async def process_canvas_files(request: Dict):
         print(f"   Course ID: {course_id}")
         print(f"   Files to process: {len(files)}")
         print(f"   Has cookies: {bool(canvas_cookies)}")
+
+        # DEBUG: Check for duplicate filenames in input
+        file_names = [f.get("name") for f in files if f.get("name")]
+        unique_names = set(file_names)
+        if len(file_names) != len(unique_names):
+            duplicates = [name for name in file_names if file_names.count(name) > 1]
+            duplicate_counts = {name: file_names.count(name) for name in set(duplicates)}
+            print(f"   ⚠️  WARNING: Found {len(file_names) - len(unique_names)} duplicate filenames in input!")
+            print(f"   Duplicates: {duplicate_counts}")
+            # Show first few file names for debugging
+            print(f"   First 10 files: {file_names[:10]}")
+        else:
+            print(f"   ✅ No duplicate filenames in input")
+
         print(f"{'='*80}")
 
         # Check which files already exist in GCS
@@ -938,68 +964,57 @@ async def process_canvas_files(request: Dict):
         skipped = len(existing_files)
         failed = 0
 
-        # Download and upload files that don't exist in GCS
-        for file_info in files:
+        # Helper function to process a single file (for parallel execution)
+        async def process_single_file(file_info, session):
+            nonlocal processed, failed
+
             file_name = file_info.get("name")
             file_url = file_info.get("url")
 
             if not file_name or not file_url:
-                continue
+                return {"status": "skipped", "reason": "missing name or url"}
 
             if file_name in existing_files:
                 print(f"⏭️  Skipping {file_name} (already in GCS)")
-                continue
+                return {"status": "skipped", "reason": "already exists", "filename": file_name}
 
             try:
                 print(f"📥 Downloading {file_name} from Canvas...")
 
                 # Convert Canvas API URL to download URL if needed
-                # API URLs: /api/v1/courses/{id}/files/{file_id}
-                # Download URLs: /files/{file_id}/download
                 download_url = file_url
                 if '/api/v1/' in file_url and '/files/' in file_url:
-                    # Extract file ID and construct download URL
                     import re
                     match = re.search(r'/files/(\d+)', file_url)
                     if match:
                         file_id = match.group(1)
-                        # Get base URL (everything before /api/v1/...)
                         base_url = file_url.split('/api/v1/')[0]
                         download_url = f"{base_url}/files/{file_id}/download?download_frd=1"
-                        print(f"   Converted API URL to download URL")
 
-                print(f"   URL: {download_url[:100]}...")  # Log first 100 chars of URL for debugging
+                print(f"   URL: {download_url[:100]}...")
 
-                # Download file from Canvas URL with session cookies for authentication
-                import aiohttp
+                # Download file from Canvas
                 headers = {}
                 if canvas_cookies:
                     headers['Cookie'] = canvas_cookies
 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(download_url, headers=headers, allow_redirects=True) as response:
-                        if response.status != 200:
-                            print(f"❌ Failed to download {file_name}: HTTP {response.status}")
-                            print(f"   Response: {await response.text()}")
-                            failed += 1
-                            continue
+                async with session.get(download_url, headers=headers, allow_redirects=True) as response:
+                    if response.status != 200:
+                        print(f"❌ Failed to download {file_name}: HTTP {response.status}")
+                        failed += 1
+                        return {"status": "failed", "error": f"HTTP {response.status}", "filename": file_name}
 
-                        file_content = await response.read()
-                        print(f"✅ Downloaded {file_name} ({len(file_content):,} bytes)")
+                    file_content = await response.read()
+                    print(f"✅ Downloaded {file_name} ({len(file_content):,} bytes)")
 
-                        # Get Content-Type from response headers (Canvas provides this)
-                        content_type_header = response.headers.get('Content-Type', '').split(';')[0].strip()
+                    content_type_header = response.headers.get('Content-Type', '').split(';')[0].strip()
 
-                # Process and upload to GCS (same logic as _process_single_upload)
+                # Process and upload (same logic as before)
                 from utils.file_converter import convert_office_to_pdf, needs_conversion
-
-                # Auto-detect MIME type from filename first
                 mime_type = get_mime_type(file_name)
                 ext = get_file_extension(file_name)
 
-                # If no extension in filename, try to detect from Content-Type header
                 if not ext and content_type_header:
-                    # Map common MIME types to extensions
                     mime_to_ext = {
                         'application/pdf': 'pdf',
                         'application/vnd.ms-powerpoint': 'ppt',
@@ -1016,23 +1031,18 @@ async def process_canvas_files(request: Dict):
                     ext = mime_to_ext.get(content_type_header)
                     if ext:
                         print(f"   Detected file type from Content-Type: {content_type_header} → .{ext}")
-                        file_name = f"{file_name}.{ext}"  # Add extension to filename
+                        file_name = f"{file_name}.{ext}"
                         mime_type = content_type_header
 
-                ext = ext or 'file'  # Default to 'file' if still no extension
+                ext = ext or 'file'
 
-                # Sanitize filename: replace forward slashes (path separators) with dashes
-                # This must happen BEFORE conversion (converter writes temp files)
                 safe_filename = file_name.replace('/', '-')
                 if safe_filename != file_name:
                     print(f"   ⚠️  Sanitized filename for conversion: '{file_name}' → '{safe_filename}'")
 
                 original_filename = file_name
                 actual_filename = safe_filename
-                conversion_info = None
 
-                # Convert if needed (same as _process_single_upload)
-                # Use safe_filename for converter to avoid path issues
                 if needs_conversion(safe_filename):
                     from utils.file_converter import convert_to_text
                     web_formats = ['html', 'htm', 'xml', 'json']
@@ -1045,14 +1055,12 @@ async def process_canvas_files(request: Dict):
                             actual_filename = safe_filename.rsplit('.', 1)[0] + '.txt'
                             mime_type = 'text/plain'
                     else:
-                        # Office format conversion
                         pdf_bytes = convert_office_to_pdf(file_content, safe_filename)
                         if pdf_bytes:
                             file_content = pdf_bytes
                             actual_filename = safe_filename.rsplit('.', 1)[0] + '.pdf'
                             mime_type = 'application/pdf'
 
-                # Upload to GCS
                 if storage_manager:
                     blob_name = storage_manager.upload_pdf(
                         course_id,
@@ -1060,25 +1068,41 @@ async def process_canvas_files(request: Dict):
                         file_content,
                         mime_type
                     )
-                    result = {
-                        "filename": original_filename,
-                        "actual_filename": actual_filename,
-                        "status": "uploaded",
-                        "path": blob_name,
-                        "storage": "gcs"
-                    }
-                else:
-                    result = {"status": "failed", "error": "No storage manager"}
-
-                if result.get("status") == "uploaded":
                     processed += 1
                     print(f"✅ Processed {file_name}")
+                    return {"status": "uploaded", "filename": original_filename, "path": blob_name}
                 else:
                     failed += 1
-                    print(f"❌ Failed to process {file_name}: {result.get('error', 'unknown')}")
+                    return {"status": "failed", "error": "No storage manager", "filename": file_name}
 
             except Exception as e:
                 print(f"❌ Error processing {file_name}: {e}")
+                failed += 1
+                return {"status": "failed", "error": str(e), "filename": file_name}
+
+        # Process files in parallel (8 concurrent downloads/uploads)
+        import aiohttp
+        import asyncio
+
+        # Create semaphore to limit concurrent operations
+        semaphore = asyncio.Semaphore(8)
+
+        async def process_with_semaphore(file_info, session):
+            async with semaphore:
+                return await process_single_file(file_info, session)
+
+        # Create single aiohttp session for all requests
+        async with aiohttp.ClientSession() as session:
+            # Create tasks for all files
+            tasks = [process_with_semaphore(file_info, session) for file_info in files]
+
+            # Execute all tasks in parallel (limited to 8 concurrent)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Count results (processed/failed already updated in process_single_file)
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"❌ Task exception: {result}")
                 failed += 1
 
         print(f"✅ Processing complete: {processed} processed, {skipped} skipped, {failed} failed")
@@ -1646,6 +1670,69 @@ async def get_collection_status(course_id: str):
         }
 
 
+@app.post("/collections/{course_id}/refresh")
+async def refresh_collection_catalog(course_id: str):
+    """
+    Refresh the in-memory catalog for a course by rescanning GCS
+
+    This fixes stale catalog issues where files were deleted from GCS
+    but still appear in the catalog.
+
+    Args:
+        course_id: Course identifier
+
+    Returns:
+        JSON with refreshed catalog status
+    """
+    try:
+        if not document_manager or not storage_manager:
+            raise HTTPException(status_code=503, detail="Services not available")
+
+        print(f"\n{'='*80}")
+        print(f"🔄 REFRESH CATALOG REQUEST:")
+        print(f"   Course ID: {course_id}")
+        print(f"{'='*80}")
+
+        # Get current catalog count (before refresh)
+        old_catalog = document_manager.get_material_catalog(course_id)
+        old_count = old_catalog.get("total_documents", 0)
+
+        # Clear the in-memory catalog for this course
+        if course_id in document_manager.catalog:
+            del document_manager.catalog[course_id]
+            print(f"🗑️  Cleared in-memory catalog (had {old_count} entries)")
+
+        # Rebuild catalog from GCS
+        gcs_files = storage_manager.list_files(course_id=course_id)
+        print(f"📂 Found {len(gcs_files)} files in GCS")
+
+        if len(gcs_files) > 0:
+            # Re-add files to catalog
+            document_manager.add_materials_to_catalog(course_id, gcs_files)
+            print(f"✅ Rebuilt catalog from GCS")
+
+        # Get new catalog count
+        new_catalog = document_manager.get_material_catalog(course_id)
+        new_count = new_catalog.get("total_documents", 0)
+
+        print(f"✅ Catalog refreshed: {old_count} → {new_count} documents")
+
+        return {
+            "success": True,
+            "course_id": course_id,
+            "old_count": old_count,
+            "new_count": new_count,
+            "files_removed": old_count - new_count,
+            "message": f"Catalog refreshed: {new_count} documents from GCS"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error refreshing catalog: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/courses/{course_id}/syllabus")
