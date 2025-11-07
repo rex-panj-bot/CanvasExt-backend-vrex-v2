@@ -951,15 +951,12 @@ async def check_files_exist(request: Dict):
                 signed_url = storage_manager.get_signed_url(found_blob_name, expiration_minutes=60)
 
                 if signed_url:
-                    # Get file size from GCS
-                    blob = storage_manager.bucket.blob(found_blob_name)
-                    blob.reload()  # Load metadata
-
+                    # OPTIMIZATION: Removed blob.reload() call (saves ~200ms per file)
+                    # Frontend doesn't need file size, and we already confirmed file exists from list_files()
                     exists.append({
                         "name": file_name,  # Original name for frontend
                         "actual_name": found_blob_name.split('/')[-1],  # What's stored in GCS
                         "url": signed_url,
-                        "size": blob.size,
                         "from_gcs": True
                     })
                 else:
