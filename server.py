@@ -1143,12 +1143,15 @@ async def process_canvas_files(request: Dict):
 
         print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed")
 
-        # Refresh document catalog after uploading new files
-        if (processed > 0 or skipped > 0) and document_manager:
+        # Add newly uploaded files to catalog (incremental, not full refresh)
+        if processed > 0 and document_manager:
             try:
-                document_manager.refresh_catalog(course_id)
+                print(f"📚 Adding {len(uploaded_files)} files to catalog...")
+                new_paths = [upload_result["path"] for upload_result in uploaded_files]
+                document_manager.add_files_to_catalog(new_paths)
+                print(f"✅ Catalog updated")
             except Exception as e:
-                print(f"⚠️ Catalog refresh failed: {e}")
+                print(f"⚠️ Catalog update failed: {e}")
 
         # Generate summaries for uploaded files (same as /upload_pdfs)
         if file_summarizer and chat_storage and processed > 0:
