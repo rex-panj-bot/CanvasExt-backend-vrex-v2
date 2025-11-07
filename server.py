@@ -404,6 +404,18 @@ def _sync_summarize_file(summarizer, file_uri, filename, mime_type):
         loop.close()
 
 
+def _sync_batch_summarize_files(summarizer, files):
+    """Synchronous wrapper for batch file summarization - runs in thread pool"""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            summarizer.summarize_files_batch(files)
+        )
+    finally:
+        loop.close()
+
+
 async def _generate_single_summary(
     file_info: Dict,
     course_id: str,
@@ -543,10 +555,13 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
 
 async def _generate_summaries_background(course_id: str, successful_uploads: List[Dict]):
     """
-    Background task to generate summaries for uploaded files in parallel
+    Background task to generate summaries using batch processing with ThreadPoolExecutor
+    Processes files in batches of 8 to match upload batch size
     """
     try:
         from utils.file_upload_manager import FileUploadManager
+        from concurrent.futures import ThreadPoolExecutor
+        import concurrent.futures
 
         # Use default API key for summary generation
         api_key = os.getenv("GOOGLE_API_KEY")
@@ -560,40 +575,142 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             file_upload_client,
             cache_duration_hours=48,
             storage_manager=storage_manager,
-            chat_storage=chat_storage  # PHASE 3: Enable database caching
+            chat_storage=chat_storage
         )
 
-        # Semaphore to limit concurrent processing (max 20 at a time)
-        semaphore = asyncio.Semaphore(20)
+        print(f"📝 Generating summaries for {len(successful_uploads)} files (batch size: 8)...")
 
-        async def process_with_limit(file_info):
-            """Wrapper to apply semaphore limit"""
-            async with semaphore:
-                return await _generate_single_summary(
-                    file_info, course_id, file_uploader, file_summarizer, chat_storage
+        # PHASE 1: Filter out files that already have cached summaries
+        files_needing_summaries = []
+        cached_count = 0
+
+        for file_info in successful_uploads:
+            filename = file_info.get("actual_filename") or file_info["filename"]
+            doc_id = f"{course_id}_{filename}"
+
+            # Check if summary already exists
+            existing = chat_storage.get_file_summary(doc_id)
+            if existing:
+                cached_count += 1
+            else:
+                files_needing_summaries.append(file_info)
+
+        if not files_needing_summaries:
+            print(f"✅ All {len(successful_uploads)} summaries were cached - no API calls needed!")
+            return
+
+        print(f"📤 Processing {len(files_needing_summaries)} files (cached: {cached_count})...")
+
+        # PHASE 2: Process in batches of 8 using ThreadPoolExecutor
+        BATCH_SIZE = 8
+        total_success = 0
+        total_errors = 0
+
+        def process_batch(batch_files):
+            """Process a batch of files: upload + summarize (runs in thread)"""
+            try:
+                # Upload all files in this batch
+                uploaded_batch = []
+                for file_info in batch_files:
+                    try:
+                        filename = file_info.get("actual_filename") or file_info["filename"]
+                        file_path = file_info["path"]
+
+                        upload_result = file_uploader.upload_pdf(
+                            file_path,
+                            filename,
+                            file_info.get("mime_type")
+                        )
+
+                        if "error" not in upload_result:
+                            uploaded_batch.append({
+                                "filename": filename,
+                                "file_uri": upload_result["file"].uri,
+                                "mime_type": upload_result["mime_type"],
+                                "file_info": file_info
+                            })
+                    except Exception as e:
+                        print(f"❌ Upload error for {filename}: {e}")
+
+                if not uploaded_batch:
+                    return {"success": 0, "errors": len(batch_files)}
+
+                # Batch summarize all uploaded files in this batch
+                batch_for_summary = [
+                    {
+                        "file_uri": f["file_uri"],
+                        "filename": f["filename"],
+                        "mime_type": f["mime_type"]
+                    }
+                    for f in uploaded_batch
+                ]
+
+                batch_results = _sync_batch_summarize_files(
+                    file_summarizer,
+                    batch_for_summary
                 )
 
-        print(f"📝 Generating summaries for {len(successful_uploads)} files (max 20 concurrent)...")
+                # Save summaries to database
+                success_count = 0
+                error_count = 0
 
-        # Generate summaries with concurrency limit
-        tasks = [process_with_limit(file_info) for file_info in successful_uploads]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+                for j, (filename, summary, topics, metadata) in enumerate(batch_results):
+                    try:
+                        file_info = uploaded_batch[j]["file_info"]
+                        actual_filename = file_info.get("actual_filename") or file_info["filename"]
+                        doc_id = f"{course_id}_{actual_filename}"
 
-        # Count results
-        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-        cached_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "cached")
-        skipped_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "skipped")
-        error_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error")
-        exception_count = sum(1 for r in results if isinstance(r, Exception))
+                        success = chat_storage.save_file_summary(
+                            doc_id=doc_id,
+                            course_id=course_id,
+                            filename=actual_filename,
+                            summary=summary,
+                            topics=topics,
+                            metadata=metadata
+                        )
 
-        print(f"✅ Summary generation complete: {success_count} new, {cached_count} cached, {skipped_count} skipped, {error_count + exception_count} errors")
+                        if success:
+                            success_count += 1
+                        else:
+                            error_count += 1
+                            print(f"❌ Failed to save summary for {filename}")
 
-        # Log errors
-        for result in results:
-            if isinstance(result, Exception):
-                print(f"❌ Exception: {result}")
-            elif isinstance(result, dict) and result.get("status") == "error":
-                print(f"❌ Error for {result['filename']}: {result.get('error')}")
+                    except Exception as e:
+                        error_count += 1
+                        print(f"❌ Error saving summary for {filename}: {e}")
+
+                return {"success": success_count, "errors": error_count}
+
+            except Exception as e:
+                print(f"❌ Batch processing error: {e}")
+                return {"success": 0, "errors": len(batch_files)}
+
+        # Split files into batches of 8 and process with ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=3) as executor:  # Max 3 batches in parallel
+            futures = []
+
+            for i in range(0, len(files_needing_summaries), BATCH_SIZE):
+                batch = files_needing_summaries[i:i + BATCH_SIZE]
+                batch_num = (i // BATCH_SIZE) + 1
+                total_batches = (len(files_needing_summaries) + BATCH_SIZE - 1) // BATCH_SIZE
+
+                print(f"🔄 Starting batch {batch_num}/{total_batches} ({len(batch)} files)...")
+
+                # Submit batch to thread pool
+                future = executor.submit(process_batch, batch)
+                futures.append(future)
+
+            # Wait for all batches to complete
+            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                try:
+                    result = future.result()
+                    total_success += result["success"]
+                    total_errors += result["errors"]
+                    print(f"✅ Batch {i} complete: {result['success']} succeeded, {result['errors']} errors")
+                except Exception as e:
+                    print(f"❌ Batch {i} exception: {e}")
+
+        print(f"✅ Summary generation complete: {total_success} new, {cached_count} cached, {total_errors} errors")
 
     except Exception as e:
         print(f"❌ Critical error in summary generation: {e}")

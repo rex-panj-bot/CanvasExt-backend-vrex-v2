@@ -186,3 +186,125 @@ Format your response as JSON:
         except Exception as e:
             logger.error(f"Error generating summary for {filename}: {e}")
             return f"Error: {str(e)}", [], {"doc_type": "page", "error": str(e)}
+
+    async def summarize_files_batch(
+        self,
+        files: List[Dict]
+    ) -> List[Tuple[str, str, List[str], Dict]]:
+        """
+        Generate summaries for multiple files in a single API call
+
+        Args:
+            files: List of dicts with keys: file_uri, filename, mime_type
+
+        Returns:
+            List of tuples: (filename, summary, topics_list, metadata_dict)
+        """
+        try:
+            if not files:
+                return []
+
+            logger.info(f"Generating batch summaries for {len(files)} files...")
+
+            # Build batch prompt with all files
+            file_parts = []
+            file_list = []
+
+            for i, file_info in enumerate(files, 1):
+                file_parts.append(types.Part.from_uri(
+                    file_uri=file_info["file_uri"],
+                    mime_type=file_info["mime_type"]
+                ))
+                file_list.append(f"{i}. {file_info['filename']}")
+
+            files_str = "\n".join(file_list)
+
+            prompt = f"""Analyze these {len(files)} documents and provide a summary for EACH one.
+
+Documents:
+{files_str}
+
+For each document, provide:
+- A brief 40-50 word summary
+- 3 most important topics
+
+Format your response as a JSON array with one object per document (IN THE SAME ORDER):
+[
+  {{"filename": "document1.pdf", "summary": "...", "topics": ["topic1", "topic2", "topic3"]}},
+  {{"filename": "document2.pdf", "summary": "...", "topics": ["topic1", "topic2", "topic3"]}},
+  ...
+]"""
+
+            # Add file parts first, then the prompt
+            contents = file_parts + [prompt]
+
+            # Generate batch summary
+            response = self.client.models.generate_content(
+                model=self.model_id,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=len(files) * 120,  # Scale with number of files (120 per file)
+                    top_p=0.8,
+                    top_k=20
+                )
+            )
+
+            response_text = response.text.strip()
+
+            # Parse JSON array response
+            try:
+                # Remove markdown code blocks if present
+                if response_text.startswith("```json"):
+                    response_text = response_text.split("```json")[1]
+                    response_text = response_text.split("```")[0]
+                elif response_text.startswith("```"):
+                    response_text = response_text.split("```")[1]
+                    response_text = response_text.split("```")[0]
+
+                response_text = response_text.strip()
+                parsed_results = json.loads(response_text)
+
+                # Build results list
+                results = []
+                for i, file_info in enumerate(files):
+                    filename = file_info["filename"]
+
+                    # Try to match by filename or use index
+                    file_result = None
+                    if isinstance(parsed_results, list) and i < len(parsed_results):
+                        file_result = parsed_results[i]
+
+                    if file_result:
+                        summary = file_result.get("summary", "")
+                        topics = file_result.get("topics", [])
+                    else:
+                        summary = "Summary unavailable"
+                        topics = []
+
+                    metadata = {
+                        "doc_type": "document",
+                        "optimized": True,
+                        "batch": True
+                    }
+
+                    results.append((filename, summary, topics, metadata))
+
+                logger.info(f"✅ Generated batch summaries for {len(results)} files")
+                return results
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Could not parse batch JSON response: {e}")
+                # Return empty summaries for all files
+                return [
+                    (file_info["filename"], "Error parsing batch response", [], {"error": str(e)})
+                    for file_info in files
+                ]
+
+        except Exception as e:
+            logger.error(f"Error generating batch summaries: {e}")
+            # Return error summaries for all files
+            return [
+                (file_info["filename"], f"Error: {str(e)}", [], {"error": str(e)})
+                for file_info in files
+            ]
