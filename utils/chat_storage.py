@@ -1210,7 +1210,7 @@ class ChatStorage:
                                mime_type, size_bytes, expires_at
                         FROM gemini_file_cache
                         WHERE expires_at > NOW()
-                        AND expires_at <= NOW() + INTERVAL :hours HOUR
+                        AND expires_at <= NOW() + INTERVAL '1 hour' * :hours
                         ORDER BY expires_at ASC
                     """), {"hours": hours_before_expiry})
                     rows = result.fetchall()

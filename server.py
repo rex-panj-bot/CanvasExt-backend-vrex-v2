@@ -413,14 +413,13 @@ async def _generate_single_summary(
 ) -> Dict:
     """Generate summary for a single file (optimized with thread pools)"""
     try:
-        filename = file_info["filename"]
+        # Use actual_filename (post-conversion) to match catalog IDs
+        # This ensures doc_id format matches what document_manager uses
+        filename = file_info.get("actual_filename") or file_info["filename"]
         file_path = file_info["path"]
 
-        # Create doc_id to match document_manager format
-        original_name = filename
-        if '.' in filename:
-            original_name = '.'.join(filename.split('.')[:-1])
-        doc_id = f"{course_id}_{original_name}"
+        # Create doc_id to match document_manager format (includes extension)
+        doc_id = f"{course_id}_{filename}"
 
         # Check if summary already exists (cached in database)
         existing = chat_storage.get_file_summary(doc_id)
@@ -1151,6 +1150,21 @@ async def process_canvas_files(request: Dict):
             except Exception as e:
                 print(f"⚠️ Catalog refresh failed: {e}")
 
+        # Generate summaries for uploaded files (same as /upload_pdfs)
+        if file_summarizer and chat_storage and processed > 0:
+            print(f"📝 Generating summaries for {processed} uploaded files...")
+            # Transform uploaded_files into format expected by _generate_summaries_background
+            summary_files = []
+            for upload_result in uploaded_files:
+                summary_files.append({
+                    "filename": upload_result.get("stored_name"),  # Use stored_name (post-conversion)
+                    "actual_filename": upload_result.get("stored_name"),
+                    "path": upload_result.get("path"),
+                    "status": "uploaded",
+                    "mime_type": "application/pdf"  # All files converted to PDF
+                })
+            asyncio.create_task(_generate_summaries_background(course_id, summary_files))
+
         return {
             "success": True,
             "processed": processed,
@@ -1162,6 +1176,99 @@ async def process_canvas_files(request: Dict):
 
     except Exception as e:
         print(f"❌ ERROR in process_canvas_files endpoint:")
+        print(f"   Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/regenerate_summaries/{course_id}")
+async def regenerate_missing_summaries(
+    course_id: str,
+    force: bool = False
+):
+    """
+    Regenerate summaries for files that don't have them.
+
+    Args:
+        course_id: Course identifier
+        force: If True, regenerate ALL summaries (not just missing ones)
+
+    Returns:
+        Status of summary regeneration task
+    """
+    try:
+        if not document_manager:
+            raise HTTPException(status_code=500, detail="Document manager not initialized")
+
+        if not file_summarizer or not chat_storage:
+            raise HTTPException(status_code=500, detail="File summarizer or chat storage not initialized")
+
+        # Get all materials from catalog
+        catalog = document_manager.get_material_catalog(course_id)
+        all_materials = catalog.get("materials", [])
+
+        if not all_materials:
+            return {
+                "success": True,
+                "total_files": 0,
+                "existing_summaries": 0,
+                "missing_summaries": 0,
+                "status": "no_files",
+                "message": "No files found in catalog"
+            }
+
+        # Get all existing summaries
+        existing_summaries = chat_storage.get_all_summaries_for_course(course_id)
+        existing_doc_ids = {s["doc_id"] for s in existing_summaries}
+
+        print(f"📊 Backfill check for course {course_id}:")
+        print(f"   Total files in catalog: {len(all_materials)}")
+        print(f"   Existing summaries: {len(existing_summaries)}")
+
+        # Find missing summaries
+        files_to_summarize = []
+        for material in all_materials:
+            doc_id = material["id"]
+
+            # Skip if summary exists (unless force=True)
+            if not force and doc_id in existing_doc_ids:
+                continue
+
+            # Add to batch for summarization
+            files_to_summarize.append({
+                "filename": material["filename"],
+                "actual_filename": material["filename"],
+                "path": material["path"],
+                "status": "uploaded",
+                "mime_type": "application/pdf"
+            })
+
+        if not files_to_summarize:
+            return {
+                "success": True,
+                "total_files": len(all_materials),
+                "existing_summaries": len(existing_summaries),
+                "missing_summaries": 0,
+                "status": "complete",
+                "message": "All files already have summaries"
+            }
+
+        # Generate summaries in background
+        print(f"📝 Backfilling {len(files_to_summarize)} missing summaries...")
+        asyncio.create_task(_generate_summaries_background(course_id, files_to_summarize))
+
+        return {
+            "success": True,
+            "total_files": len(all_materials),
+            "existing_summaries": len(existing_summaries),
+            "missing_summaries": len(files_to_summarize),
+            "status": "generating",
+            "message": f"Generating summaries for {len(files_to_summarize)} files in background"
+        }
+
+    except Exception as e:
+        print(f"❌ ERROR in regenerate_summaries endpoint:")
         print(f"   Error: {str(e)}")
         import traceback
         traceback.print_exc()
