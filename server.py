@@ -872,23 +872,7 @@ async def check_files_exist(request: Dict):
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
 
-        print(f"\n{'='*80}")
-        print(f"📋 CHECK FILES EXIST REQUEST:")
-        print(f"   Course ID: {course_id}")
-        print(f"   Files to check: {len(files)}")
-
-        # DEBUG: Check for duplicate filenames in input
-        file_names = [f.get("name") for f in files if f.get("name")]
-        unique_names = set(file_names)
-        if len(file_names) != len(unique_names):
-            duplicates = [name for name in file_names if file_names.count(name) > 1]
-            duplicate_counts = {name: file_names.count(name) for name in set(duplicates)}
-            print(f"   ⚠️  WARNING: Found {len(file_names) - len(unique_names)} duplicate filenames in input!")
-            print(f"   Duplicates: {duplicate_counts}")
-        else:
-            print(f"   ✅ No duplicate filenames in input")
-
-        print(f"{'='*80}")
+        print(f"📋 Check files: {len(files)} files for course {course_id}")
 
         if not storage_manager:
             # If no GCS, return all as missing
@@ -897,14 +881,9 @@ async def check_files_exist(request: Dict):
                 "missing": [f["name"] for f in files]
             }
 
-        # OPTIMIZATION: Get ALL files from GCS once (single API call)
-        # This is much faster than checking each file individually
-        print(f"📂 Fetching all files from GCS for course {course_id}...")
+        # Get all files from GCS once (single API call)
         all_gcs_files = storage_manager.list_files(course_id=course_id)
-
-        # Create a set of filenames (without course_id prefix) for fast lookup
         gcs_filenames = {blob.split('/', 1)[1] for blob in all_gcs_files if '/' in blob}
-        print(f"   Found {len(gcs_filenames)} files in GCS")
 
         # Build reverse mapping cache: actual_gcs_filename -> possible_original_names
         # This helps us populate the filename_cache for faster lookups later
@@ -922,27 +901,16 @@ async def check_files_exist(request: Dict):
             if not file_name:
                 continue
 
-            # CRITICAL: Predict what the filename will be after sanitization and conversion
-            # This ensures we check for the ACTUAL filename in GCS, not the Canvas filename
-            # Example: "Lecture 1/2.pptx" becomes "Lecture 1-2.pdf" in GCS
-            # For files without extensions, we try multiple possibilities
+            # Predict what the filename will be after sanitization and conversion
             possible_filenames = predict_stored_filename(file_name)
 
-            # DEBUG: Log predictions if different from original
-            if len(possible_filenames) > 1 or possible_filenames[0] != file_name:
-                print(f"   🔮 Predicted storage names for '{file_name}': {possible_filenames}")
-
-            # Check if any of the predicted filenames exist in our GCS file set (fast lookup)
+            # Check if any of the predicted filenames exist in GCS
             found_blob_name = None
             found_filename = None
             for predicted_filename in possible_filenames:
                 if predicted_filename in gcs_filenames:
                     found_blob_name = f"{course_id}/{predicted_filename}"
                     found_filename = predicted_filename
-                    print(f"   ✅ Found in GCS: {predicted_filename}")
-
-                    # CRITICAL: Cache this mapping for instant lookup later
-                    # (course_id, original_filename) -> actual_gcs_filename
                     filename_cache[(course_id, file_name)] = found_filename
                     break
 
@@ -951,25 +919,18 @@ async def check_files_exist(request: Dict):
                 signed_url = storage_manager.get_signed_url(found_blob_name, expiration_minutes=60)
 
                 if signed_url:
-                    # OPTIMIZATION: Removed blob.reload() call (saves ~200ms per file)
-                    # Frontend doesn't need file size, and we already confirmed file exists from list_files()
                     exists.append({
-                        "name": file_name,  # Original name for frontend
-                        "actual_name": found_blob_name.split('/')[-1],  # What's stored in GCS
+                        "name": file_name,
+                        "actual_name": found_blob_name.split('/')[-1],
                         "url": signed_url,
                         "from_gcs": True
                     })
                 else:
-                    # Failed to generate URL, treat as missing
                     missing.append(file_name)
             else:
                 missing.append(file_name)
 
-        print(f"✅ Check results: {len(exists)} exist in GCS, {len(missing)} missing")
-        if exists:
-            print(f"   Existing files: {[f['name'] for f in exists[:5]]}" + ("..." if len(exists) > 5 else ""))
-        if missing:
-            print(f"   Missing files: {missing[:5]}" + ("..." if len(missing) > 5 else ""))
+        print(f"✅ {len(exists)} in GCS, {len(missing)} missing")
 
         return {
             "exists": exists,
@@ -1017,34 +978,12 @@ async def process_canvas_files(request: Dict):
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
 
-        print(f"\n{'='*80}")
-        print(f"🌐 PROCESS CANVAS FILES REQUEST (v3 - with auth):")
-        print(f"   Course ID: {course_id}")
-        print(f"   Files to process: {len(files)}")
-        print(f"   Has cookies: {bool(canvas_cookies)}")
-        print(f"   Skip existence check: {skip_existence_check}")
-
-        # DEBUG: Check for duplicate filenames in input
-        file_names = [f.get("name") for f in files if f.get("name")]
-        unique_names = set(file_names)
-        if len(file_names) != len(unique_names):
-            duplicates = [name for name in file_names if file_names.count(name) > 1]
-            duplicate_counts = {name: file_names.count(name) for name in set(duplicates)}
-            print(f"   ⚠️  WARNING: Found {len(file_names) - len(unique_names)} duplicate filenames in input!")
-            print(f"   Duplicates: {duplicate_counts}")
-            # Show first few file names for debugging
-            print(f"   First 10 files: {file_names[:10]}")
-        else:
-            print(f"   ✅ No duplicate filenames in input")
-
-        print(f"{'='*80}")
+        print(f"🌐 Process {len(files)} files for course {course_id} (skip_check: {skip_existence_check})")
 
         # Check which files already exist in GCS (skip if frontend already checked)
         existing_files = set()
-        if skip_existence_check:
-            print("⚡ Skipping GCS existence check (frontend already filtered files)")
-        else:
-            exists_check = await check_files_exist(course_id, files)
+        if not skip_existence_check:
+            exists_check = await check_files_exist({"course_id": course_id, "files": files})
             existing_files = {f["name"] for f in exists_check["exists"]}
 
         processed = 0
@@ -1062,12 +1001,9 @@ async def process_canvas_files(request: Dict):
                 return {"status": "skipped", "reason": "missing name or url"}
 
             if file_name in existing_files:
-                print(f"⏭️  Skipping {file_name} (already in GCS)")
                 return {"status": "skipped", "reason": "already exists", "filename": file_name}
 
             try:
-                print(f"📥 Downloading {file_name} from Canvas...")
-
                 # Convert Canvas API URL to download URL if needed
                 download_url = file_url
                 if '/api/v1/' in file_url and '/files/' in file_url:
@@ -1078,8 +1014,6 @@ async def process_canvas_files(request: Dict):
                         base_url = file_url.split('/api/v1/')[0]
                         download_url = f"{base_url}/files/{file_id}/download?download_frd=1"
 
-                print(f"   URL: {download_url[:100]}...")
-
                 # Download file from Canvas
                 headers = {}
                 if canvas_cookies:
@@ -1087,12 +1021,11 @@ async def process_canvas_files(request: Dict):
 
                 async with session.get(download_url, headers=headers, allow_redirects=True) as response:
                     if response.status != 200:
-                        print(f"❌ Failed to download {file_name}: HTTP {response.status}")
+                        print(f"❌ {file_name}: HTTP {response.status}")
                         failed += 1
                         return {"status": "failed", "error": f"HTTP {response.status}", "filename": file_name}
 
                     file_content = await response.read()
-                    print(f"✅ Downloaded {file_name} ({len(file_content):,} bytes)")
 
                     content_type_header = response.headers.get('Content-Type', '').split(';')[0].strip()
 
@@ -1124,8 +1057,6 @@ async def process_canvas_files(request: Dict):
                 ext = ext or 'file'
 
                 safe_filename = file_name.replace('/', '-')
-                if safe_filename != file_name:
-                    print(f"   ⚠️  Sanitized filename for conversion: '{file_name}' → '{safe_filename}'")
 
                 original_filename = file_name
                 actual_filename = safe_filename
@@ -1156,11 +1087,10 @@ async def process_canvas_files(request: Dict):
                         mime_type
                     )
                     processed += 1
-                    print(f"✅ Processed {file_name} → stored as {actual_filename}")
+                    print(f"✅ {actual_filename}")
 
-                    # CRITICAL: Cache this mapping for instant lookup later
-                    # Map original Canvas filename to actual GCS filename
-                    original_canvas_name = file_info.get("name")  # Before extension detection
+                    # Cache filename mapping for instant lookup later
+                    original_canvas_name = file_info.get("name")
                     filename_cache[(course_id, original_canvas_name)] = actual_filename
 
                     # Return both original and actual filenames for frontend mapping
@@ -1199,30 +1129,27 @@ async def process_canvas_files(request: Dict):
             # Execute all tasks in parallel (limited to 8 concurrent)
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Count results and collect file mappings (processed/failed already updated in process_single_file)
+        # Count results and collect file mappings
         uploaded_files = []
         for result in results:
             if isinstance(result, Exception):
-                print(f"❌ Task exception: {result}")
                 failed += 1
             elif isinstance(result, dict):
                 if result.get("status") == "uploaded":
-                    # Track uploaded files with original name -> stored name mapping
                     uploaded_files.append({
                         "original_name": result.get("original_name"),
                         "stored_name": result.get("filename"),
                         "path": result.get("path")
                     })
 
-        print(f"✅ Processing complete: {processed} processed, {skipped} skipped, {failed} failed")
+        print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed")
 
-        # CRITICAL: Refresh document catalog after uploading new files
-        # This ensures newly uploaded files appear in queries immediately
+        # Refresh document catalog after uploading new files
         if (processed > 0 or skipped > 0) and document_manager:
             try:
                 document_manager.refresh_catalog(course_id)
             except Exception as e:
-                print(f"⚠️  Warning: Failed to refresh catalog: {e}")
+                print(f"⚠️ Catalog refresh failed: {e}")
 
         return {
             "success": True,
