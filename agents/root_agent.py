@@ -12,6 +12,37 @@ from agents.file_selector_agent import FileSelectorAgent
 
 
 class RootAgent:
+    @staticmethod
+    def strip_extension_for_matching(doc_id: str) -> str:
+        """
+        Strip file extension from document ID for fuzzy matching.
+
+        This handles cases where files are converted during upload:
+        - .pptx → .pdf
+        - .xlsx → .pdf
+        - .docx → .pdf
+
+        Args:
+            doc_id: Document ID like "1424277_filename.pptx"
+
+        Returns:
+            Document ID without extension like "1424277_filename"
+
+        Example:
+            "1424277_Lego Assignment V2.pptx" → "1424277_Lego Assignment V2"
+            "1424277_Lego Assignment V2.pdf" → "1424277_Lego Assignment V2"
+        """
+        if '_' in doc_id:
+            # Split into course_id and filename
+            parts = doc_id.split('_', 1)
+            if len(parts) == 2:
+                course_id, filename = parts
+                # Strip extension from filename
+                if '.' in filename:
+                    filename_no_ext = filename.rsplit('.', 1)[0]
+                    return f"{course_id}_{filename_no_ext}"
+        return doc_id
+
     def __init__(self, document_manager, google_api_key: str, storage_manager=None, chat_storage=None):
         """
         Initialize Root Agent with Gemini 2.5 Flash
@@ -231,7 +262,35 @@ class RootAgent:
                 for sel_id in selected_docs[:10]:  # Show first 10
                     print(f"      - {sel_id}")
 
-                materials_to_use = [m for m in all_materials if m["id"] in selected_docs]
+                # CRITICAL: Match with extension stripping to handle file conversions
+                # Frontend sends: "1424277_file.pptx"
+                # Catalog has: "1424277_file.pdf" (converted)
+                # Solution: Strip extensions and match on basename
+
+                # Build mapping: stripped_id → [full_catalog_ids]
+                stripped_to_catalog = {}
+                for material in all_materials:
+                    stripped_id = self.strip_extension_for_matching(material["id"])
+                    if stripped_id not in stripped_to_catalog:
+                        stripped_to_catalog[stripped_id] = []
+                    stripped_to_catalog[stripped_id].append(material)
+
+                # Match selected docs using stripped comparison
+                materials_to_use = []
+                for selected_id in selected_docs:
+                    stripped_selected = self.strip_extension_for_matching(selected_id)
+
+                    # Check if we have a match (with or without extension)
+                    if stripped_selected in stripped_to_catalog:
+                        # Found match! Add the catalog version (which has correct extension)
+                        matched_materials = stripped_to_catalog[stripped_selected]
+                        materials_to_use.extend(matched_materials)
+
+                        # Debug log if extensions differ
+                        for mat in matched_materials:
+                            if mat["id"] != selected_id:
+                                print(f"   🔄 Extension mismatch resolved: '{selected_id}' → '{mat['id']}'")
+
                 print(f"\n   ✅ Matched {len(materials_to_use)} materials from selection")
 
                 if len(materials_to_use) < len(selected_docs):
