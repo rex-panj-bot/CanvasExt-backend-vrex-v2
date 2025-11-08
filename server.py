@@ -88,6 +88,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Enable Gzip compression for responses (60-80% size reduction for JSON)
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # Global instances
 root_agent = None
 document_manager = None
@@ -563,8 +567,9 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             chat_storage=chat_storage  # PHASE 3: Enable database caching
         )
 
-        # Semaphore to limit concurrent processing (max 20 at a time)
-        semaphore = asyncio.Semaphore(20)
+        # Semaphore to limit concurrent processing (max 50 at a time)
+        # Summaries are I/O bound (Gemini API calls), can handle higher concurrency
+        semaphore = asyncio.Semaphore(50)
 
         async def process_with_limit(file_info):
             """Wrapper to apply semaphore limit"""
@@ -714,7 +719,20 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             upload_files.append(upload_file)
 
         # PHASE 1: Process files in parallel (GCS upload + conversion)
-        BATCH_SIZE = 50
+        # Dynamic batch sizing: Adjust based on average file size to prevent Railway memory spikes
+        total_size = sum(len(f['content']) for f in files_in_memory)
+        avg_size = total_size / len(files_in_memory) if files_in_memory else 0
+
+        # Target: Keep batch memory under 200MB (Railway constraint)
+        MAX_BATCH_MEMORY = 200 * 1024 * 1024  # 200MB
+        if avg_size > 0:
+            BATCH_SIZE = int(MAX_BATCH_MEMORY / avg_size)
+            BATCH_SIZE = max(10, min(BATCH_SIZE, 100))  # Clamp between 10-100
+        else:
+            BATCH_SIZE = 50  # Default
+
+        avg_size_mb = avg_size / (1024 * 1024) if avg_size > 0 else 0
+        print(f"📊 Dynamic batch size: {BATCH_SIZE} (avg file: {avg_size_mb:.2f}MB, target: <200MB per batch)")
         print(f"📤 Processing {len(upload_files)} files in batches of {BATCH_SIZE}...")
 
         processed_results = []
