@@ -4,14 +4,34 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
 .backendvenv/
+.backend-venv/
 venv/
-ENV/
 env/
+ENV/
 
 # Environment variables
 .env
 .env.local
+
+# Cloud credentials
+gcp-service-account.json
+*.json.key
+*-credentials.json
+gcp-base64.txt
+
+# Uploaded files
+uploads/
+backend/uploads/
+
+# Data directory
+data/
+backend/data/
 
 # OS files
 .DS_Store
@@ -19,16 +39,21 @@ env/
 ._*
 .Spotlight-V100
 .Trashes
+Thumbs.db
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Data directories
-backend/data/
-backend/uploads/
+*~
 
 # Logs
 *.log
+
+# Temporary files
+*.tmp
+
+# Database files
+*.db
+*.sqlite
