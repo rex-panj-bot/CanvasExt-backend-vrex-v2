@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.backend-venv/
+venv/
+env/
+ENV/
+
+# Environment variables
+.env
+
+# Cloud credentials
+gcp-service-account.json
+*.json.key
+*-credentials.json
+gcp-base64.txt
+
+# Uploaded files
+uploads/
+
+# Data directory
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+
+# Database files (if any)
+*.db
+*.sqlite

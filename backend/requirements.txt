@@ -1,0 +1,38 @@
+# ==========================================
+# Core Dependencies
+# ==========================================
+
+# Web Server
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+aiohttp  # Async HTTP client for downloading files from Canvas
+
+# PDF Processing
+pypdf2
+
+# Office Document Processing (for conversion to PDF)
+python-pptx         # PowerPoint files
+python-docx         # Word documents
+openpyxl            # Excel spreadsheets
+reportlab           # PDF generation from text
+
+# Web Format Processing (for HTML/XML conversion to text)
+beautifulsoup4      # HTML parsing and tag stripping
+
+# LLM APIs
+google-genai  # Gemini 2.5 Pro SDK
+
+# Cloud Storage
+google-cloud-storage==2.14.0
+google-auth==2.27.0
+
+# Database
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.25
+
+# Utilities
+python-dotenv
+pydantic
+packaging  # Required by google-api-core
