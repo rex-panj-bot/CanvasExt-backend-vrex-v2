@@ -249,10 +249,17 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
 
         print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
 
+        # Read file content
         content = await file.read()
         original_filename = file.filename
         actual_filename = file.filename
         conversion_info = None
+
+        # CRITICAL: Compute SHA-256 hash of ORIGINAL content (before conversion)
+        # This ensures same file = same hash even after PPTX→PDF conversion
+        import hashlib
+        content_hash = hashlib.sha256(content).hexdigest()
+        print(f"🔑 Content hash: {content_hash[:16]}...")
 
         # PHASE 1: Convert files to AI-readable formats before uploading to GCS
         # This ensures all files stored in GCS are readable by Gemini
@@ -342,17 +349,22 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         if storage_manager:
             # Run synchronous GCS upload in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
+            # HASH-BASED: Use hash for GCS path instead of filename
+            hash_filename = f"{content_hash}.pdf"
             blob_name = await loop.run_in_executor(
                 None,
                 storage_manager.upload_pdf,
                 course_id,
-                actual_filename,  # Use converted filename
+                hash_filename,  # Use hash-based filename
                 content,
                 mime_type  # Pass MIME type
             )
+            # HASH-BASED: doc_id is now {course_id}_{hash} instead of {course_id}_{filename}
+            doc_id = f"{course_id}_{content_hash}"
             result = {
-                "filename": original_filename,  # Original name for frontend
-                "actual_filename": actual_filename,  # What's stored in GCS
+                "filename": original_filename,  # Original name for frontend display
+                "doc_id": doc_id,  # Hash-based ID for matching
+                "hash": content_hash,  # Include hash for frontend
                 "status": "uploaded",
                 "size_bytes": len(content),
                 "path": blob_name,  # GCS blob path
@@ -364,7 +376,9 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
             return result
         else:
             # Fallback to local storage
-            file_path = UPLOAD_DIR / f"{course_id}_{actual_filename}"  # Use converted filename
+            # HASH-BASED: Use hash for local path instead of filename
+            hash_filename = f"{content_hash}.pdf"
+            file_path = UPLOAD_DIR / f"{course_id}_{hash_filename}"
 
             # Run file write in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
@@ -373,9 +387,12 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
                 lambda: open(file_path, "wb").write(content)
             )
 
+            # HASH-BASED: doc_id is now {course_id}_{hash}
+            doc_id = f"{course_id}_{content_hash}"
             result = {
-                "filename": original_filename,  # Original name for frontend
-                "actual_filename": actual_filename,  # What's stored locally
+                "filename": original_filename,  # Original name for frontend display
+                "doc_id": doc_id,  # Hash-based ID for matching
+                "hash": content_hash,  # Include hash for frontend
                 "status": "uploaded",
                 "size_bytes": len(content),
                 "path": str(file_path),
@@ -417,13 +434,17 @@ async def _generate_single_summary(
 ) -> Dict:
     """Generate summary for a single file (optimized with thread pools)"""
     try:
-        # Use actual_filename (post-conversion) to match catalog IDs
-        # This ensures doc_id format matches what document_manager uses
-        filename = file_info.get("actual_filename") or file_info["filename"]
+        # HASH-BASED: Use doc_id from upload result (format: {course_id}_{hash})
+        doc_id = file_info.get("doc_id")
+        content_hash = file_info.get("hash")
+        filename = file_info.get("filename")  # Original filename for display
         file_path = file_info["path"]
 
-        # Create doc_id to match document_manager format (includes extension)
-        doc_id = f"{course_id}_{filename}"
+        # Fallback for legacy uploads without hash (should not happen after migration)
+        if not doc_id:
+            print(f"⚠️  Legacy upload detected for {filename}, using old doc_id format")
+            actual_filename = file_info.get("actual_filename") or filename
+            doc_id = f"{course_id}_{actual_filename}"
 
         # Check if summary already exists (cached in database)
         existing = chat_storage.get_file_summary(doc_id)
@@ -458,14 +479,15 @@ async def _generate_single_summary(
             mime_type
         )
 
-        # Save to database (cache for future uploads)
+        # Save to database (cache for future uploads) with hash
         success = chat_storage.save_file_summary(
             doc_id=doc_id,
             course_id=course_id,
             filename=filename,
             summary=summary,
             topics=topics,
-            metadata=metadata
+            metadata=metadata,
+            content_hash=content_hash  # Store hash for matching
         )
 
         if success:
@@ -767,8 +789,8 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
         # PHASE 2: Update catalog
         if document_manager and successful:
             print(f"📚 Adding {len(successful)} files to catalog...")
-            new_paths = [r["path"] for r in successful]
-            document_manager.add_files_to_catalog(new_paths)
+            # HASH-BASED: Pass full result objects to include hash info
+            document_manager.add_files_to_catalog_with_metadata(successful)
             print(f"✅ Catalog updated")
 
         # PHASE 3: Pre-warm Gemini cache (background within background!)

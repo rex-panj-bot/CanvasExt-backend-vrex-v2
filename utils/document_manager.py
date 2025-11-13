@@ -152,7 +152,8 @@ class DocumentManager:
 
     def add_files_to_catalog(self, file_paths: List[str]):
         """
-        Incrementally add new files to catalog without full rescan
+        LEGACY: Incrementally add new files to catalog without full rescan
+        NOTE: This is kept for backward compatibility but should migrate to add_files_to_catalog_with_metadata
 
         Args:
             file_paths: List of new file paths to add (GCS blob paths or local paths)
@@ -225,6 +226,60 @@ class DocumentManager:
             print(f"   ➕ Added to catalog: {filename} → ID: {doc_id}")
 
         print(f"✅ Added {len(file_paths)} files to catalog")
+
+    def add_files_to_catalog_with_metadata(self, upload_results: List[Dict]):
+        """
+        HASH-BASED: Add files to catalog using hash-based IDs from upload results
+
+        Args:
+            upload_results: List of upload result dicts with hash, doc_id, path, filename, etc.
+        """
+        for result in upload_results:
+            # Extract metadata from result
+            doc_id = result.get("doc_id")  # Already formatted as {course_id}_{hash}
+            content_hash = result.get("hash")
+            path = result.get("path")
+            original_filename = result.get("filename")
+            size_bytes = result.get("size_bytes", 0)
+            storage_type = result.get("storage", "unknown")
+
+            if not doc_id or not content_hash or not path:
+                print(f"   ⚠️  Skipping file with missing metadata")
+                continue
+
+            # Extract course_id from doc_id
+            parts = doc_id.split('_', 1)
+            if len(parts) != 2:
+                print(f"   ⚠️  Invalid doc_id format: {doc_id}")
+                continue
+            course_id = parts[0]
+
+            if course_id not in self.catalog:
+                self.catalog[course_id] = []
+
+            # Check if already in catalog by hash
+            if any(doc['id'] == doc_id for doc in self.catalog[course_id]):
+                print(f"   ⏭️  Skipping duplicate: {original_filename} (hash: {content_hash[:16]}...)")
+                continue
+
+            # Convert size to MB
+            size_mb = size_bytes / (1024 * 1024) if size_bytes > 0 else 0.0
+
+            # Add to catalog with hash-based structure
+            self.catalog[course_id].append({
+                "id": doc_id,  # {course_id}_{hash}
+                "hash": content_hash,  # Full SHA-256 hash
+                "name": original_filename,  # Original filename for display
+                "filename": f"{content_hash}.pdf",  # Stored filename (hash-based)
+                "path": path,  # GCS blob path or local path
+                "size_mb": round(size_mb, 2),
+                "num_pages": None,  # Skip for speed
+                "type": self._infer_type(original_filename),
+                "storage": storage_type
+            })
+            print(f"   ➕ Added to catalog: {original_filename} → ID: {doc_id[:24]}... (hash: {content_hash[:16]}...)")
+
+        print(f"✅ Added {len(upload_results)} files to catalog")
 
     def _infer_type(self, name: str) -> str:
         """Infer document type from filename"""

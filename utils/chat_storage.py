@@ -131,6 +131,31 @@ class ChatStorage:
                     conn.rollback()
                     # Continue with the rest of initialization
 
+                # Migration: Add content_hash column for hash-based file identification
+                try:
+                    check_result = conn.execute(text("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name='file_summaries'
+                        AND column_name='content_hash'
+                    """))
+
+                    if not check_result.fetchone():
+                        conn.execute(text("""
+                            ALTER TABLE file_summaries ADD COLUMN content_hash VARCHAR(64) NULL
+                        """))
+                        logger.info("Added content_hash column to file_summaries (PostgreSQL)")
+
+                        # Create index on content_hash for fast lookups
+                        conn.execute(text("""
+                            CREATE INDEX IF NOT EXISTS idx_file_summaries_content_hash
+                            ON file_summaries(content_hash)
+                        """))
+                        logger.info("Created index on content_hash column")
+                except Exception as e:
+                    logger.warning(f"Could not add content_hash column (may already exist): {e}")
+                    conn.rollback()
+
                 # Course metadata table (stores syllabus_id, etc.)
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS course_metadata (
@@ -250,6 +275,29 @@ class ChatStorage:
             except Exception as e:
                 # If any error occurs, just continue
                 logger.warning(f"Could not add deleted_at column (may already exist): {e}")
+
+            # Migration: Add content_hash column for hash-based file identification
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM pragma_table_info('file_summaries')
+                    WHERE name='content_hash'
+                """)
+                exists = cursor.fetchone()[0] > 0
+
+                if not exists:
+                    cursor.execute("""
+                        ALTER TABLE file_summaries ADD COLUMN content_hash TEXT NULL
+                    """)
+                    logger.info("Added content_hash column to file_summaries (SQLite)")
+
+                    # Create index on content_hash for fast lookups
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_file_summaries_content_hash
+                        ON file_summaries(content_hash)
+                    """)
+                    logger.info("Created index on content_hash column")
+            except Exception as e:
+                logger.warning(f"Could not add content_hash column (may already exist): {e}")
 
             # Course metadata table (stores syllabus_id, etc.)
             cursor.execute("""
@@ -653,7 +701,8 @@ class ChatStorage:
         filename: str,
         summary: str,
         topics: List[str] = None,
-        metadata: Dict = None
+        metadata: Dict = None,
+        content_hash: str = None
     ) -> bool:
         """
         Save or update a file summary
@@ -665,6 +714,7 @@ class ChatStorage:
             summary: Text summary of the file
             topics: List of key topics/keywords
             metadata: Additional metadata
+            content_hash: SHA-256 hash of file content (for hash-based identification)
 
         Returns:
             True if successful
@@ -676,12 +726,13 @@ class ChatStorage:
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     conn.execute(text("""
-                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, updated_at)
-                        VALUES (:doc_id, :course_id, :filename, :summary, :topics, :metadata, NOW())
+                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, content_hash, updated_at)
+                        VALUES (:doc_id, :course_id, :filename, :summary, :topics, :metadata, :content_hash, NOW())
                         ON CONFLICT (doc_id) DO UPDATE SET
                             summary = EXCLUDED.summary,
                             topics = EXCLUDED.topics,
                             metadata = EXCLUDED.metadata,
+                            content_hash = EXCLUDED.content_hash,
                             updated_at = NOW()
                     """), {
                         "doc_id": doc_id,
@@ -689,21 +740,23 @@ class ChatStorage:
                         "filename": filename,
                         "summary": summary,
                         "topics": topics_json,
-                        "metadata": metadata_json
+                        "metadata": metadata_json,
+                        "content_hash": content_hash
                     })
                     conn.commit()
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, content_hash, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(doc_id) DO UPDATE SET
                             summary = excluded.summary,
                             topics = excluded.topics,
                             metadata = excluded.metadata,
+                            content_hash = excluded.content_hash,
                             updated_at = CURRENT_TIMESTAMP
-                    """, (doc_id, course_id, filename, summary, topics_json, metadata_json))
+                    """, (doc_id, course_id, filename, summary, topics_json, metadata_json, content_hash))
                     conn.commit()
 
             logger.info(f"Saved file summary for {doc_id}")
