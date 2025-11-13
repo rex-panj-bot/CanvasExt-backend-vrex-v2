@@ -1763,6 +1763,43 @@ async def get_collection_status(course_id: str):
         }
 
 
+@app.get("/collections/{course_id}/materials")
+async def get_course_materials(course_id: str):
+    """
+    Get full materials catalog with hash-based IDs for a course
+
+    Args:
+        course_id: Course identifier
+
+    Returns:
+        JSON with:
+        - success: bool
+        - course_id: str
+        - materials: List[Dict] (full material metadata with hash-based IDs)
+
+    Used by frontend to get hash-based doc_ids after uploading files.
+    Each material includes: id (hash-based), name, filename, hash, type, size_mb, etc.
+    """
+    try:
+        if not document_manager:
+            raise HTTPException(status_code=500, detail="Document manager not initialized")
+
+        catalog = document_manager.get_material_catalog(course_id)
+
+        return {
+            "success": True,
+            "course_id": course_id,
+            "total_documents": catalog.get("total_documents", 0),
+            "materials": catalog.get("materials", [])
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.post("/collections/{course_id}/refresh")
 async def refresh_collection_catalog(course_id: str):
     """
