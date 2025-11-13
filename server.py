@@ -1003,6 +1003,11 @@ async def process_canvas_files(request: Dict):
                 original_filename = file_name
                 actual_filename = safe_filename
 
+                # HASH-BASED: Compute SHA-256 hash of ORIGINAL content (before conversion)
+                import hashlib
+                content_hash = hashlib.sha256(file_content).hexdigest()
+                print(f"🔑 Content hash: {content_hash[:16]}...")
+
                 if needs_conversion(safe_filename):
                     from utils.file_converter import convert_to_text
                     web_formats = ['html', 'htm', 'xml', 'json']
@@ -1022,26 +1027,30 @@ async def process_canvas_files(request: Dict):
                             mime_type = 'application/pdf'
 
                 if storage_manager:
+                    # HASH-BASED: Use hash for GCS filename
+                    hash_filename = f"{content_hash}.pdf"
                     blob_name = storage_manager.upload_pdf(
                         course_id,
-                        actual_filename,
+                        hash_filename,
                         file_content,
                         mime_type
                     )
                     processed += 1
-                    print(f"✅ {actual_filename}")
+                    print(f"✅ {original_filename}")
 
-                    # Cache filename mapping for instant lookup later
-                    original_canvas_name = file_info.get("name")
-                    filename_cache[(course_id, original_canvas_name)] = actual_filename
+                    # HASH-BASED: doc_id is {course_id}_{hash}
+                    doc_id = f"{course_id}_{content_hash}"
 
-                    # Return both original and actual filenames for frontend mapping
-                    # Frontend needs this to update stored_name in materials
+                    # Return hash-based metadata for catalog
                     return {
                         "status": "uploaded",
-                        "original_name": original_canvas_name,
-                        "filename": actual_filename,
-                        "path": blob_name
+                        "filename": original_filename,  # Original name for display
+                        "doc_id": doc_id,  # Hash-based ID
+                        "hash": content_hash,  # SHA-256 hash
+                        "path": blob_name,  # GCS path
+                        "size_bytes": len(file_content),
+                        "mime_type": mime_type,
+                        "storage": "gcs"
                     }
                 else:
                     failed += 1
@@ -1071,45 +1080,31 @@ async def process_canvas_files(request: Dict):
             # Execute all tasks in parallel (limited to 8 concurrent)
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Count results and collect file mappings
+        # Count results and collect file metadata with hashes
         uploaded_files = []
         for result in results:
             if isinstance(result, Exception):
                 failed += 1
             elif isinstance(result, dict):
                 if result.get("status") == "uploaded":
-                    uploaded_files.append({
-                        "original_name": result.get("original_name"),
-                        "stored_name": result.get("filename"),
-                        "path": result.get("path")
-                    })
+                    uploaded_files.append(result)  # Full result with hash metadata
 
         print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed")
 
-        # Add newly uploaded files to catalog (incremental, not full refresh)
+        # Add newly uploaded files to catalog with hash-based metadata
         if processed > 0 and document_manager:
             try:
                 print(f"📚 Adding {len(uploaded_files)} files to catalog...")
-                new_paths = [upload_result["path"] for upload_result in uploaded_files]
-                document_manager.add_files_to_catalog(new_paths)
+                document_manager.add_files_to_catalog_with_metadata(uploaded_files)
                 print(f"✅ Catalog updated")
             except Exception as e:
                 print(f"⚠️ Catalog update failed: {e}")
 
-        # Generate summaries for uploaded files (same as /upload_pdfs)
+        # Generate summaries for uploaded files with hash-based metadata
         if file_summarizer and chat_storage and processed > 0:
             print(f"📝 Generating summaries for {processed} uploaded files...")
-            # Transform uploaded_files into format expected by _generate_summaries_background
-            summary_files = []
-            for upload_result in uploaded_files:
-                summary_files.append({
-                    "filename": upload_result.get("stored_name"),  # Use stored_name (post-conversion)
-                    "actual_filename": upload_result.get("stored_name"),
-                    "path": upload_result.get("path"),
-                    "status": "uploaded",
-                    "mime_type": "application/pdf"  # All files converted to PDF
-                })
-            asyncio.create_task(_generate_summaries_background(course_id, summary_files))
+            # uploaded_files already has correct format with doc_id, hash, etc.
+            asyncio.create_task(_generate_summaries_background(course_id, uploaded_files))
 
         return {
             "success": True,
