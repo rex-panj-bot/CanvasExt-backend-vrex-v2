@@ -1039,6 +1039,12 @@ async def process_canvas_files(request: Dict):
                 content_hash = hashlib.sha256(file_content).hexdigest()
                 print(f"🔑 Content hash: {content_hash[:16]}...")
 
+                # Check if this file (by hash) already exists in GCS
+                hash_blob_name = f"{course_id}/{content_hash}.pdf"
+                if storage_manager and storage_manager.file_exists(hash_blob_name):
+                    print(f"⏭️  {file_name} already exists in GCS (hash: {content_hash[:16]}...)")
+                    return {"status": "skipped", "reason": "already exists (by hash)", "filename": file_name, "hash": content_hash}
+
                 if needs_conversion(safe_filename):
                     from utils.file_converter import convert_to_text
                     web_formats = ['html', 'htm', 'xml', 'json']
