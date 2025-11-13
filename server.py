@@ -838,18 +838,15 @@ async def check_files_exist(request: Dict):
     """
     Check which files exist in GCS using hash-based identification
 
-    TODO: Update frontend to send file hashes instead of filenames
-    Currently returns all files as "missing" until frontend is updated to send hashes
-
-    Expected future format:
-        request: {
+    Request format:
+        {
             "course_id": "123456",
             "files": [{"name": "file.pdf", "hash": "abc123...", "url": "..."}, ...]
         }
 
     Returns:
         {
-            "exists": [{"name": "file.pdf", "doc_id": "{course_id}_{hash}", "url": "https://...", "size": 123}],
+            "exists": [{"name": "file.pdf", "doc_id": "{course_id}_{hash}", "hash": "abc123..."}],
             "missing": [{"name": "file.pdf", "hash": "abc123..."}]
         }
     """
@@ -860,23 +857,57 @@ async def check_files_exist(request: Dict):
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
 
-        print(f"📋 [HASH-BASED] Check files: {len(files)} files for course {course_id}")
+        print(f"📋 [HASH-BASED] Checking {len(files)} files for course {course_id}")
 
         if not storage_manager:
             # If no GCS, return all as missing
             return {
                 "exists": [],
-                "missing": [f.get("name", "unknown") for f in files]
+                "missing": files
             }
 
-        # TODO: Implement hash-based file existence check
-        # For now, return all as missing until frontend sends hashes
-        print(f"⚠️  Hash-based check not yet implemented - returning all as missing")
-        print(f"   Frontend needs to compute and send file hashes")
+        # Check which files exist by hash
+        exists = []
+        missing = []
+
+        for file_info in files:
+            file_hash = file_info.get("hash")
+            file_name = file_info.get("name", "unknown")
+
+            if not file_hash:
+                # No hash provided - can't check, assume missing
+                print(f"   ⚠️  No hash for {file_name}, marking as missing")
+                missing.append(file_info)
+                continue
+
+            # Build the GCS blob path: course_id/hash.pdf
+            blob_name = f"{course_id}/{file_hash}.pdf"
+
+            # Check if blob exists in GCS
+            try:
+                blob_exists = storage_manager.file_exists(blob_name)
+
+                if blob_exists:
+                    doc_id = f"{course_id}_{file_hash}"
+                    exists.append({
+                        "name": file_name,
+                        "hash": file_hash,
+                        "doc_id": doc_id
+                    })
+                    print(f"   ✅ Found: {file_name} (hash: {file_hash[:16]}...)")
+                else:
+                    missing.append(file_info)
+                    print(f"   ❌ Missing: {file_name} (hash: {file_hash[:16]}...)")
+            except Exception as e:
+                print(f"   ⚠️  Error checking {file_name}: {e}")
+                # On error, assume missing to be safe
+                missing.append(file_info)
+
+        print(f"✅ [HASH-BASED] Check complete: {len(exists)} exist, {len(missing)} missing")
 
         return {
-            "exists": [],
-            "missing": [f.get("name", "unknown") for f in files]
+            "exists": exists,
+            "missing": missing
         }
 
     except Exception as e:
