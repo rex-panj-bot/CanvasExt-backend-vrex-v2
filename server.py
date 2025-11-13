@@ -32,21 +32,19 @@ app = FastAPI(title="AI Study Assistant Backend")
 
 def predict_stored_filename(original_filename: str) -> List[str]:
     """
-    Predict ALL possible filenames that could be in GCS after sanitization and conversion.
+    DEPRECATED: Legacy filename prediction for pre-hash system.
 
-    This is critical because Canvas files may not have extensions, and we detect them
-    from Content-Type during download. We need to check for ALL possibilities.
+    This function is obsolete with hash-based file identification.
+    Files are now stored as {course_id}/{hash}.pdf instead of {course_id}/{sanitized_filename}.
+
+    TODO: Remove this function and update /check_files_exist endpoint to use hash-based lookup.
+    The frontend will need to compute hashes and send them instead of filenames.
 
     Args:
         original_filename: Original filename from Canvas (e.g., "Lecture 1/2.pptx" or "Darwin PPT")
 
     Returns:
         List of possible GCS filenames to check (ordered by likelihood)
-
-    Examples:
-        "Lecture 1/2.pptx" → ["Lecture 1-2.pdf", "Lecture 1-2.pptx"]
-        "Darwin PPT" → ["Darwin PPT", "Darwin PPT.pdf", "Darwin PPT.pptx", "Darwin PPT.docx", ...]
-        "Assignment.pdf" → ["Assignment.pdf"]
     """
     # Step 1: Sanitize filename (replace / with -)
     sanitized = original_filename.replace('/', '-')

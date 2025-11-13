@@ -12,36 +12,8 @@ from agents.file_selector_agent import FileSelectorAgent
 
 
 class RootAgent:
-    @staticmethod
-    def strip_extension_for_matching(doc_id: str) -> str:
-        """
-        Strip file extension from document ID for fuzzy matching.
-
-        This handles cases where files are converted during upload:
-        - .pptx → .pdf
-        - .xlsx → .pdf
-        - .docx → .pdf
-
-        Args:
-            doc_id: Document ID like "1424277_filename.pptx"
-
-        Returns:
-            Document ID without extension like "1424277_filename"
-
-        Example:
-            "1424277_Lego Assignment V2.pptx" → "1424277_Lego Assignment V2"
-            "1424277_Lego Assignment V2.pdf" → "1424277_Lego Assignment V2"
-        """
-        if '_' in doc_id:
-            # Split into course_id and filename
-            parts = doc_id.split('_', 1)
-            if len(parts) == 2:
-                course_id, filename = parts
-                # Strip extension from filename
-                if '.' in filename:
-                    filename_no_ext = filename.rsplit('.', 1)[0]
-                    return f"{course_id}_{filename_no_ext}"
-        return doc_id
+    # REMOVED: strip_extension_for_matching() - no longer needed with hash-based IDs
+    # Hash-based doc_ids are immutable and identical between frontend and backend
 
     def __init__(self, document_manager, google_api_key: str, storage_manager=None, chat_storage=None):
         """
@@ -262,52 +234,27 @@ class RootAgent:
                 for sel_id in selected_docs[:10]:  # Show first 10
                     print(f"      - {sel_id}")
 
-                # CRITICAL: Match with extension stripping to handle file conversions
-                # Frontend sends: "1424277_file.pptx"
-                # Catalog has: "1424277_file.pdf" (converted)
-                # Solution: Strip extensions and match on basename
+                # HASH-BASED: Direct ID matching - no fuzzy logic needed
+                # Frontend sends exact doc_id ({course_id}_{hash}) which matches catalog
+                # Build a set of available IDs for O(1) lookup
+                available_id_set = {material["id"] for material in all_materials}
 
-                # Build mapping: stripped_id → [full_catalog_ids]
-                stripped_to_catalog = {}
-                for material in all_materials:
-                    stripped_id = self.strip_extension_for_matching(material["id"])
-                    if stripped_id not in stripped_to_catalog:
-                        stripped_to_catalog[stripped_id] = []
-                    stripped_to_catalog[stripped_id].append(material)
-
-                # Match selected docs using stripped comparison
+                # Match selected docs using exact ID comparison
                 materials_to_use = []
                 for selected_id in selected_docs:
-                    stripped_selected = self.strip_extension_for_matching(selected_id)
-
-                    # Check if we have a match (with or without extension)
-                    if stripped_selected in stripped_to_catalog:
-                        # Found match! Add the catalog version (which has correct extension)
-                        matched_materials = stripped_to_catalog[stripped_selected]
-                        materials_to_use.extend(matched_materials)
-
-                        # Debug log if extensions differ
-                        for mat in matched_materials:
-                            if mat["id"] != selected_id:
-                                print(f"   🔄 Extension mismatch resolved: '{selected_id}' → '{mat['id']}'")
+                    if selected_id in available_id_set:
+                        # Direct match - find and add the material
+                        matched_material = next(m for m in all_materials if m["id"] == selected_id)
+                        materials_to_use.append(matched_material)
 
                 print(f"\n   ✅ Matched {len(materials_to_use)} materials from selection")
 
                 if len(materials_to_use) < len(selected_docs):
                     print(f"   ⚠️  WARNING: {len(selected_docs) - len(materials_to_use)} selected docs not found in catalog!")
-                    missing = set(selected_docs) - set(m["id"] for m in materials_to_use)
+                    missing = set(selected_docs) - available_id_set
                     print(f"   ⚠️  Missing IDs:")
                     for miss_id in list(missing)[:10]:  # Show first 10
                         print(f"      - {miss_id}")
-
-                    # Try to find close matches
-                    print(f"\n   🔍 Looking for close matches:")
-                    for miss_id in list(missing)[:5]:
-                        print(f"      Missing: {miss_id}")
-                        # Find IDs that contain part of this ID
-                        for avail in available_ids:
-                            if miss_id in avail or avail in miss_id or miss_id.replace(":", "").replace("/", "") in avail:
-                                print(f"        → Possible match: {avail}")
 
                 # Always include syllabus if provided and not already selected
                 if syllabus_id and syllabus_id not in selected_docs:
