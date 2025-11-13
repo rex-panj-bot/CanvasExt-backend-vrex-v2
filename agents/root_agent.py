@@ -32,6 +32,7 @@ class RootAgent:
         # Initialize Gemini client
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.5-flash"
+        self.fallback_model = "gemini-2.5-flash-preview"  # Fallback for rate limits/503
 
         # Initialize File Upload Manager
         self.file_upload_manager = FileUploadManager(
@@ -460,11 +461,29 @@ Examples:
 
             config = types.GenerateContentConfig(**config_params)
 
-            response_stream = await api_client.aio.models.generate_content_stream(
-                model=self.model_id,
-                contents=contents,
-                config=config
-            )
+            # Try with primary model, fallback to preview if rate limited or 503
+            model_to_use = self.model_id
+            try:
+                response_stream = await api_client.aio.models.generate_content_stream(
+                    model=model_to_use,
+                    contents=contents,
+                    config=config
+                )
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check for rate limit (429), quota, or 503 (model overloaded)
+                if ('429' in error_str or 'quota' in error_str or 'rate' in error_str or
+                    '503' in error_str or 'overload' in error_str or 'resource_exhausted' in error_str):
+                    print(f"⚠️ Rate limited/overloaded on {model_to_use}, falling back to {self.fallback_model}")
+                    model_to_use = self.fallback_model
+                    # Retry with fallback model
+                    response_stream = await api_client.aio.models.generate_content_stream(
+                        model=model_to_use,
+                        contents=contents,
+                        config=config
+                    )
+                else:
+                    raise  # Re-raise if not a rate limit/overload error
 
             # Step 7: Stream response chunks with grounding metadata
             total_generated = 0

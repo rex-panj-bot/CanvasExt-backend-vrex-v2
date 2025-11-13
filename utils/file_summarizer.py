@@ -23,7 +23,8 @@ class FileSummarizer:
             google_api_key: Google API key for Gemini
         """
         self.client = genai.Client(api_key=google_api_key)
-        self.model_id = "gemini-2.5-flash-lite"  # 3-6x cheaper, same 65K token limit
+        self.model_id = "gemini-2.0-flash-lite"  # Cheaper, faster for summaries
+        self.fallback_model = "gemini-2.5-flash-preview"  # Fallback when rate limited
 
     async def summarize_file(
         self,
@@ -32,7 +33,7 @@ class FileSummarizer:
         mime_type: str
     ) -> Tuple[str, List[str], Dict]:
         """
-        Generate a summary of a file
+        Generate a summary of a file with automatic fallback on rate limits
 
         Args:
             file_uri: Gemini File API URI
@@ -53,20 +54,45 @@ Document: {filename}
 Format as JSON:
 {{"summary": "...", "topics": ["topic1", "topic2", "topic3"]}}"""
 
-            # Generate summary using Gemini (optimized config for speed)
-            response = self.client.models.generate_content(
-                model=self.model_id,
-                contents=[
-                    types.Part.from_uri(file_uri=file_uri, mime_type=mime_type),
-                    prompt
-                ],
-                config=types.GenerateContentConfig(
-                    temperature=0.1,  # Lower = faster, more deterministic
-                    max_output_tokens=500,  # Increased from 200 for more detailed topics
-                    top_p=0.8,  # Reduce token sampling
-                    top_k=20    # Reduce token candidates
+            # Try with primary model first, fallback to 2.5 if rate limited
+            model_to_use = self.model_id
+            try:
+                # Generate summary using Gemini (optimized config for speed)
+                response = self.client.models.generate_content(
+                    model=model_to_use,
+                    contents=[
+                        types.Part.from_uri(file_uri=file_uri, mime_type=mime_type),
+                        prompt
+                    ],
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,  # Lower = faster, more deterministic
+                        max_output_tokens=500,  # Increased from 200 for more detailed topics
+                        top_p=0.8,  # Reduce token sampling
+                        top_k=20    # Reduce token candidates
+                    )
                 )
-            )
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check for rate limit (429) or quota errors
+                if '429' in error_str or 'quota' in error_str or 'rate' in error_str:
+                    logger.warning(f"⚠️ Rate limited on {model_to_use}, falling back to {self.fallback_model}")
+                    model_to_use = self.fallback_model
+                    # Retry with fallback model
+                    response = self.client.models.generate_content(
+                        model=model_to_use,
+                        contents=[
+                            types.Part.from_uri(file_uri=file_uri, mime_type=mime_type),
+                            prompt
+                        ],
+                        config=types.GenerateContentConfig(
+                            temperature=0.1,
+                            max_output_tokens=500,
+                            top_p=0.8,
+                            top_k=20
+                        )
+                    )
+                else:
+                    raise  # Re-raise if not a rate limit error
 
             response_text = response.text.strip()
 
@@ -147,14 +173,34 @@ Format your response as JSON:
   "time_references": "..."
 }}"""
 
-            response = self.client.models.generate_content(
-                model=self.model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.3,
-                    max_output_tokens=2000,  # Increased from 800 for richer summaries
+            # Try with primary model first, fallback to 2.5 if rate limited
+            model_to_use = self.model_id
+            try:
+                response = self.client.models.generate_content(
+                    model=model_to_use,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.3,
+                        max_output_tokens=2000,  # Increased from 800 for richer summaries
+                    )
                 )
-            )
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check for rate limit (429) or quota errors
+                if '429' in error_str or 'quota' in error_str or 'rate' in error_str:
+                    logger.warning(f"⚠️ Rate limited on {model_to_use}, falling back to {self.fallback_model}")
+                    model_to_use = self.fallback_model
+                    # Retry with fallback model
+                    response = self.client.models.generate_content(
+                        model=model_to_use,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.3,
+                            max_output_tokens=2000,
+                        )
+                    )
+                else:
+                    raise  # Re-raise if not a rate limit error
 
             response_text = response.text.strip()
 
