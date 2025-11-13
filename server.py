@@ -30,53 +30,6 @@ from google import genai
 app = FastAPI(title="AI Study Assistant Backend")
 
 
-def predict_stored_filename(original_filename: str) -> List[str]:
-    """
-    DEPRECATED: Legacy filename prediction for pre-hash system.
-
-    This function is obsolete with hash-based file identification.
-    Files are now stored as {course_id}/{hash}.pdf instead of {course_id}/{sanitized_filename}.
-
-    TODO: Remove this function and update /check_files_exist endpoint to use hash-based lookup.
-    The frontend will need to compute hashes and send them instead of filenames.
-
-    Args:
-        original_filename: Original filename from Canvas (e.g., "Lecture 1/2.pptx" or "Darwin PPT")
-
-    Returns:
-        List of possible GCS filenames to check (ordered by likelihood)
-    """
-    # Step 1: Sanitize filename (replace / with -)
-    sanitized = original_filename.replace('/', '-')
-
-    # Step 2: Check if it already has an extension
-    if '.' in sanitized:
-        # Has extension - predict the converted name
-        if sanitized.endswith(('.docx', '.pptx', '.xlsx', '.doc', '.ppt', '.xls', '.rtf')):
-            # Office files get converted to PDF
-            base = sanitized.rsplit('.', 1)[0]
-            return [base + '.pdf', sanitized]  # Try converted first, then original
-
-        if sanitized.endswith(('.html', '.htm', '.xml', '.json')):
-            # Web formats get converted to .txt
-            base = sanitized.rsplit('.', 1)[0]
-            return [base + '.txt', sanitized]
-
-        # Everything else stays as-is (PDFs, images, text files)
-        return [sanitized]
-
-    # Step 3: No extension - could be anything!
-    # Try common possibilities (ordered by likelihood in course materials)
-    return [
-        sanitized,  # Might not have extension even in GCS
-        f"{sanitized}.pdf",  # Most common after conversion
-        f"{sanitized}.pptx",  # Office files
-        f"{sanitized}.docx",
-        f"{sanitized}.xlsx",
-        f"{sanitized}.txt",  # Text files
-    ]
-
-
 # CORS middleware for Chrome extension
 app.add_middleware(
     CORSMiddleware,
@@ -438,11 +391,11 @@ async def _generate_single_summary(
         filename = file_info.get("filename")  # Original filename for display
         file_path = file_info["path"]
 
-        # Fallback for legacy uploads without hash (should not happen after migration)
-        if not doc_id:
-            print(f"⚠️  Legacy upload detected for {filename}, using old doc_id format")
-            actual_filename = file_info.get("actual_filename") or filename
-            doc_id = f"{course_id}_{actual_filename}"
+        # CRITICAL: doc_id and hash are required for hash-based system
+        if not doc_id or not content_hash:
+            error_msg = f"Missing doc_id or hash for {filename} - upload may have failed"
+            print(f"❌ {error_msg}")
+            return {"status": "error", "filename": filename, "error": error_msg}
 
         # Check if summary already exists (cached in database)
         existing = chat_storage.get_file_summary(doc_id)
@@ -883,24 +836,22 @@ async def upload_pdfs(
 @app.post("/check_files_exist")
 async def check_files_exist(request: Dict):
     """
-    Check which files exist in GCS and return signed URLs for existing files
+    Check which files exist in GCS using hash-based identification
 
-    PHASE 2 OPTIMIZATION: Allows frontend to skip downloading from Canvas
-    if files already exist in GCS (much faster to download from GCS)
+    TODO: Update frontend to send file hashes instead of filenames
+    Currently returns all files as "missing" until frontend is updated to send hashes
 
-    Args:
+    Expected future format:
         request: {
             "course_id": "123456",
-            "files": [{"name": "file.pdf", "url": "..."}, ...]
+            "files": [{"name": "file.pdf", "hash": "abc123...", "url": "..."}, ...]
         }
 
     Returns:
         {
-            "exists": [{"name": "file.pdf", "url": "https://...", "size": 123}],
-            "missing": ["other_file.pdf"]
+            "exists": [{"name": "file.pdf", "doc_id": "{course_id}_{hash}", "url": "https://...", "size": 123}],
+            "missing": [{"name": "file.pdf", "hash": "abc123..."}]
         }
-
-    Performance: Checks 100 files in ~500ms
     """
     try:
         course_id = request.get("course_id")
@@ -909,69 +860,23 @@ async def check_files_exist(request: Dict):
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
 
-        print(f"📋 Check files: {len(files)} files for course {course_id}")
+        print(f"📋 [HASH-BASED] Check files: {len(files)} files for course {course_id}")
 
         if not storage_manager:
             # If no GCS, return all as missing
             return {
                 "exists": [],
-                "missing": [f["name"] for f in files]
+                "missing": [f.get("name", "unknown") for f in files]
             }
 
-        # Get all files from GCS once (single API call)
-        all_gcs_files = storage_manager.list_files(course_id=course_id)
-        gcs_filenames = {blob.split('/', 1)[1] for blob in all_gcs_files if '/' in blob}
-
-        # Build reverse mapping cache: actual_gcs_filename -> possible_original_names
-        # This helps us populate the filename_cache for faster lookups later
-        gcs_to_originals = {}
-        for gcs_filename in gcs_filenames:
-            # Reverse the sanitization: "Lecture 1-2.pdf" -> "Lecture 1/2.pdf"
-            # Try to match it back to original Canvas names
-            gcs_to_originals[gcs_filename] = gcs_filename
-
-        exists = []
-        missing = []
-
-        for file_info in files:
-            file_name = file_info.get("name")
-            if not file_name:
-                continue
-
-            # Predict what the filename will be after sanitization and conversion
-            possible_filenames = predict_stored_filename(file_name)
-
-            # Check if any of the predicted filenames exist in GCS
-            found_blob_name = None
-            found_filename = None
-            for predicted_filename in possible_filenames:
-                if predicted_filename in gcs_filenames:
-                    found_blob_name = f"{course_id}/{predicted_filename}"
-                    found_filename = predicted_filename
-                    filename_cache[(course_id, file_name)] = found_filename
-                    break
-
-            if found_blob_name:
-                # File exists - generate signed URL (valid for 1 hour)
-                signed_url = storage_manager.get_signed_url(found_blob_name, expiration_minutes=60)
-
-                if signed_url:
-                    exists.append({
-                        "name": file_name,
-                        "actual_name": found_blob_name.split('/')[-1],
-                        "url": signed_url,
-                        "from_gcs": True
-                    })
-                else:
-                    missing.append(file_name)
-            else:
-                missing.append(file_name)
-
-        print(f"✅ {len(exists)} in GCS, {len(missing)} missing")
+        # TODO: Implement hash-based file existence check
+        # For now, return all as missing until frontend sends hashes
+        print(f"⚠️  Hash-based check not yet implemented - returning all as missing")
+        print(f"   Frontend needs to compute and send file hashes")
 
         return {
-            "exists": exists,
-            "missing": missing
+            "exists": [],
+            "missing": [f.get("name", "unknown") for f in files]
         }
 
     except Exception as e:
@@ -2479,69 +2384,43 @@ async def cleanup_duplicate_summaries(course_id: str, dry_run: bool = True):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/pdfs/{course_id}/{filename:path}")
-async def serve_pdf(course_id: str, filename: str, page: Optional[int] = None):
+@app.get("/pdfs/{course_id}/{doc_id:path}")
+async def serve_pdf(course_id: str, doc_id: str, page: Optional[int] = None):
     """
-    Serve files from GCS for viewing in browser
+    Serve files from GCS using hash-based doc_id
+
+    TODO: Update frontend to use hash-based doc_ids in URLs
+    Currently expects doc_id format: {course_id}_{hash}
+    But path parameter receives just the hash portion
 
     Args:
         course_id: Course identifier
-        filename: Filename (original name from Canvas)
+        doc_id: Document hash or full doc_id
 
     Returns:
-        Redirect to GCS signed URL or local file
+        Redirect to GCS signed URL
 
     Example:
-        GET /pdfs/12345/Lecture_Notes.pdf#page=5
-        Opens Lecture_Notes.pdf at page 5
+        GET /pdfs/12345/abc123def456...#page=5
+        Opens file with hash abc123def456... at page 5
     """
     try:
-        # Decode URL-encoded filename
-        filename = unquote(filename)
+        # Decode URL-encoded doc_id
+        doc_id = unquote(doc_id)
 
-        print(f"📄 Serving file: {filename}")
+        print(f"📄 [HASH-BASED] Serving file with doc_id: {doc_id}")
 
-        # Try to serve from GCS first
+        # Try to serve from GCS
         if storage_manager:
             try:
-                # OPTIMIZATION: Check cache first for instant lookup (no guessing needed)
-                cache_key = (course_id, filename)
-                cached_filename = filename_cache.get(cache_key)
+                # HASH-BASED: doc_id should be the content hash
+                # GCS blob name format: {course_id}/{hash}.pdf
+                blob_name = f"{course_id}/{doc_id}.pdf"
 
-                if cached_filename:
-                    print(f"   ⚡ Cache hit! '{filename}' → '{cached_filename}'")
-                    blob_name = f"{course_id}/{cached_filename}"
-                    found_filename = cached_filename
-                else:
-                    # Cache miss - need to guess possible filenames
-                    print(f"   ⚠️  Cache miss for '{filename}', checking GCS...")
-
-                    # Predict the actual stored filename (sanitized/converted)
-                    # Frontend may send original Canvas name, but GCS has sanitized name
-                    # Example: "Lecture 1/2.pptx" → "Lecture 1-2.pdf"
-                    # For files without extensions, try multiple possibilities
-                    possible_filenames = predict_stored_filename(filename)
-
-                    if len(possible_filenames) > 1:
-                        print(f"   🔮 Trying {len(possible_filenames)} possibilities: {possible_filenames}")
-
-                    # Try each possible filename until we find one that exists
-                    blob_name = None
-                    found_filename = None
-                    for predicted_filename in possible_filenames:
-                        test_blob_name = f"{course_id}/{predicted_filename}"
-                        if storage_manager.file_exists(test_blob_name):
-                            blob_name = test_blob_name
-                            found_filename = predicted_filename
-                            print(f"   ✅ Found in GCS: {predicted_filename}")
-
-                            # Cache this mapping for next time
-                            filename_cache[cache_key] = found_filename
-                            break
-
-                    if not blob_name:
-                        print(f"   ❌ File not found in GCS. Tried: {possible_filenames}")
-                        raise HTTPException(status_code=404, detail=f"File not found in GCS: {filename}")
+                # Check if file exists
+                if not storage_manager.file_exists(blob_name):
+                    print(f"   ❌ File not found in GCS: {blob_name}")
+                    raise HTTPException(status_code=404, detail=f"File not found: {doc_id}")
 
                 # Generate signed URL that's valid for 1 hour
                 signed_url = storage_manager.get_signed_url(blob_name, expiration_minutes=60)
