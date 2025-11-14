@@ -737,11 +737,12 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
 
         print(f"✅ Background upload complete: {len(successful)} succeeded, {len(failed)} failed, {len(skipped)} skipped")
 
-        # PHASE 2: Update catalog
-        if document_manager and successful:
-            print(f"📚 Adding {len(successful)} files to catalog...")
+        # PHASE 2: Update catalog (include both uploaded and skipped files)
+        files_for_catalog = successful + skipped  # Skipped files already exist in GCS, add them too
+        if document_manager and files_for_catalog:
+            print(f"📚 Adding {len(files_for_catalog)} files to catalog ({len(successful)} new, {len(skipped)} existing)...")
             # HASH-BASED: Pass full result objects to include hash info
-            document_manager.add_files_to_catalog_with_metadata(successful)
+            document_manager.add_files_to_catalog_with_metadata(files_for_catalog)
             print(f"✅ Catalog updated")
 
         # PHASE 3: Pre-warm Gemini cache (background within background!)
@@ -1043,7 +1044,18 @@ async def process_canvas_files(request: Dict):
                 hash_blob_name = f"{course_id}/{content_hash}.pdf"
                 if storage_manager and storage_manager.file_exists(hash_blob_name):
                     print(f"⏭️  {file_name} already exists in GCS (hash: {content_hash[:16]}...)")
-                    return {"status": "skipped", "reason": "already exists (by hash)", "filename": file_name, "hash": content_hash}
+                    # File exists - return metadata so it can be added to catalog
+                    doc_id = f"{course_id}_{content_hash}"
+                    return {
+                        "status": "skipped",
+                        "reason": "already exists (by hash)",
+                        "filename": file_name,
+                        "doc_id": doc_id,
+                        "hash": content_hash,
+                        "path": hash_blob_name,
+                        "storage": "gcs",
+                        "size_bytes": len(file_content)
+                    }
 
                 if needs_conversion(safe_filename):
                     from utils.file_converter import convert_to_text
