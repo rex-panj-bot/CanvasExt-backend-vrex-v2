@@ -192,7 +192,7 @@ class DocumentManager:
             self.catalog[course_id].append({
                 "id": doc_id,  # {course_id}_{hash}
                 "hash": content_hash,  # Full SHA-256 hash
-                "canvas_id": metadata.get("canvas_id"),  # Original Canvas file ID (if available)
+                "canvas_id": result.get("canvas_id"),  # Original Canvas file ID (if available)
                 "name": original_filename,  # Original filename for display
                 "filename": f"{content_hash}.pdf",  # Stored filename (hash-based)
                 "path": path,  # GCS blob path or local path
