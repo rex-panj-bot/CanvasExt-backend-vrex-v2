@@ -98,6 +98,7 @@ class ChatStorage:
                     CREATE TABLE IF NOT EXISTS file_summaries (
                         doc_id VARCHAR(255) PRIMARY KEY,
                         course_id VARCHAR(255) NOT NULL,
+                        canvas_id VARCHAR(255),
                         filename TEXT NOT NULL,
                         summary TEXT NOT NULL,
                         topics TEXT,
@@ -130,6 +131,24 @@ class ChatStorage:
                     logger.warning(f"Could not add deleted_at column (may already exist): {e}")
                     conn.rollback()
                     # Continue with the rest of initialization
+
+                # Migration: Add canvas_id column if it doesn't exist (for existing tables)
+                try:
+                    check_result = conn.execute(text("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name='file_summaries'
+                        AND column_name='canvas_id'
+                    """))
+
+                    if not check_result.fetchone():
+                        conn.execute(text("""
+                            ALTER TABLE file_summaries ADD COLUMN canvas_id VARCHAR(255)
+                        """))
+                        logger.info("Added canvas_id column to file_summaries (PostgreSQL)")
+                except Exception as e:
+                    logger.warning(f"Could not add canvas_id column (may already exist): {e}")
+                    conn.rollback()
 
                 # Migration: Add content_hash column for hash-based file identification
                 try:
@@ -247,6 +266,7 @@ class ChatStorage:
                 CREATE TABLE IF NOT EXISTS file_summaries (
                     doc_id TEXT PRIMARY KEY,
                     course_id TEXT NOT NULL,
+                    canvas_id TEXT,
                     filename TEXT NOT NULL,
                     summary TEXT NOT NULL,
                     topics TEXT,
@@ -275,6 +295,22 @@ class ChatStorage:
             except Exception as e:
                 # If any error occurs, just continue
                 logger.warning(f"Could not add deleted_at column (may already exist): {e}")
+
+            # Migration: Add canvas_id column if it doesn't exist (for existing tables)
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM pragma_table_info('file_summaries')
+                    WHERE name='canvas_id'
+                """)
+                exists = cursor.fetchone()[0] > 0
+
+                if not exists:
+                    cursor.execute("""
+                        ALTER TABLE file_summaries ADD COLUMN canvas_id TEXT
+                    """)
+                    logger.info("Added canvas_id column to file_summaries (SQLite)")
+            except Exception as e:
+                logger.warning(f"Could not add canvas_id column (may already exist): {e}")
 
             # Migration: Add content_hash column for hash-based file identification
             try:
@@ -702,7 +738,8 @@ class ChatStorage:
         summary: str,
         topics: List[str] = None,
         metadata: Dict = None,
-        content_hash: str = None
+        content_hash: str = None,
+        canvas_id: str = None
     ) -> bool:
         """
         Save or update a file summary
@@ -715,6 +752,7 @@ class ChatStorage:
             topics: List of key topics/keywords
             metadata: Additional metadata
             content_hash: SHA-256 hash of file content (for hash-based identification)
+            canvas_id: Original Canvas file ID (if available)
 
         Returns:
             True if successful
@@ -726,17 +764,19 @@ class ChatStorage:
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     conn.execute(text("""
-                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, content_hash, updated_at)
-                        VALUES (:doc_id, :course_id, :filename, :summary, :topics, :metadata, :content_hash, NOW())
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, updated_at)
+                        VALUES (:doc_id, :course_id, :canvas_id, :filename, :summary, :topics, :metadata, :content_hash, NOW())
                         ON CONFLICT (doc_id) DO UPDATE SET
                             summary = EXCLUDED.summary,
                             topics = EXCLUDED.topics,
                             metadata = EXCLUDED.metadata,
                             content_hash = EXCLUDED.content_hash,
+                            canvas_id = EXCLUDED.canvas_id,
                             updated_at = NOW()
                     """), {
                         "doc_id": doc_id,
                         "course_id": course_id,
+                        "canvas_id": canvas_id,
                         "filename": filename,
                         "summary": summary,
                         "topics": topics_json,
@@ -748,15 +788,16 @@ class ChatStorage:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        INSERT INTO file_summaries (doc_id, course_id, filename, summary, topics, metadata, content_hash, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(doc_id) DO UPDATE SET
                             summary = excluded.summary,
                             topics = excluded.topics,
                             metadata = excluded.metadata,
                             content_hash = excluded.content_hash,
+                            canvas_id = excluded.canvas_id,
                             updated_at = CURRENT_TIMESTAMP
-                    """, (doc_id, course_id, filename, summary, topics_json, metadata_json, content_hash))
+                    """, (doc_id, course_id, canvas_id, filename, summary, topics_json, metadata_json, content_hash))
                     conn.commit()
 
             logger.info(f"Saved file summary for {doc_id}")

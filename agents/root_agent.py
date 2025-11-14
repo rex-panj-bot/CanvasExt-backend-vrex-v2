@@ -112,6 +112,15 @@ class RootAgent:
             all_materials = catalog.get("materials", [])
             print(f"   📂 Total materials in catalog: {len(all_materials)}")
 
+            # Enrich materials with canvas_id from database (for fallback matching)
+            if self.chat_storage:
+                for material in all_materials:
+                    doc_id = material.get("id")
+                    if doc_id:
+                        file_summary = self.chat_storage.get_file_summary(doc_id)
+                        if file_summary and file_summary.get("canvas_id"):
+                            material["canvas_id"] = file_summary["canvas_id"]
+
             if not all_materials:
                 yield "No course materials found. Please upload PDFs first."
                 return
@@ -240,21 +249,38 @@ class RootAgent:
                 # Build a set of available IDs for O(1) lookup
                 available_id_set = {material["id"] for material in all_materials}
 
+                # Build canvas_id lookup map for fallback matching
+                canvas_id_map = {}
+                for material in all_materials:
+                    if material.get("canvas_id"):
+                        canvas_id_map[material["canvas_id"]] = material
+
                 # Match selected docs using exact ID comparison
                 materials_to_use = []
+                matched_by_canvas_id = []
                 for selected_id in selected_docs:
                     if selected_id in available_id_set:
-                        # Direct match - find and add the material
+                        # Direct match by doc_id - find and add the material
                         matched_material = next(m for m in all_materials if m["id"] == selected_id)
                         materials_to_use.append(matched_material)
+                    elif selected_id in canvas_id_map:
+                        # Fallback: match by Canvas ID (for legacy materials)
+                        matched_material = canvas_id_map[selected_id]
+                        materials_to_use.append(matched_material)
+                        matched_by_canvas_id.append(selected_id)
+                        print(f"   🔄 Matched by Canvas ID: {selected_id} → {matched_material['name']}")
 
                 print(f"\n   ✅ Matched {len(materials_to_use)} materials from selection")
+                if matched_by_canvas_id:
+                    print(f"   📌 {len(matched_by_canvas_id)} matched using fallback Canvas ID matching")
 
                 if len(materials_to_use) < len(selected_docs):
                     print(f"   ⚠️  WARNING: {len(selected_docs) - len(materials_to_use)} selected docs not found in catalog!")
-                    missing = set(selected_docs) - available_id_set
+                    matched_ids = {m["id"] for m in materials_to_use}
+                    matched_canvas_ids = {m.get("canvas_id") for m in materials_to_use if m.get("canvas_id")}
+                    missing = [sid for sid in selected_docs if sid not in available_id_set and sid not in canvas_id_map]
                     print(f"   ⚠️  Missing IDs:")
-                    for miss_id in list(missing)[:10]:  # Show first 10
+                    for miss_id in missing[:10]:  # Show first 10
                         print(f"      - {miss_id}")
 
                 # Always include syllabus if provided and not already selected

@@ -2211,6 +2211,74 @@ async def restore_material(course_id: str, file_id: str):
         raise HTTPException(status_code=500, detail=f"Error restoring material: {str(e)}")
 
 
+@app.post("/courses/{course_id}/update_canvas_ids")
+async def update_canvas_ids(course_id: str, updates: Dict):
+    """
+    Update canvas_id for existing files in the database
+
+    Request format:
+    {
+        "updates": [
+            {"doc_id": "1425905_abc123...", "canvas_id": "15061355"},
+            ...
+        ]
+    }
+
+    Returns:
+        {
+            "success": True,
+            "updated_count": int
+        }
+    """
+    try:
+        if not chat_storage:
+            raise HTTPException(status_code=500, detail="Chat storage not initialized")
+
+        updates_list = updates.get("updates", [])
+        if not updates_list:
+            raise HTTPException(status_code=400, detail="No updates provided")
+
+        print(f"🔄 Updating canvas_ids for {len(updates_list)} files in course {course_id}")
+
+        updated_count = 0
+        for update in updates_list:
+            doc_id = update.get("doc_id")
+            canvas_id = update.get("canvas_id")
+
+            if not doc_id:
+                continue
+
+            # Get existing file summary
+            file_summary = chat_storage.get_file_summary(doc_id)
+            if file_summary:
+                # Update with canvas_id
+                chat_storage.save_file_summary(
+                    doc_id=doc_id,
+                    course_id=course_id,
+                    filename=file_summary["filename"],
+                    summary=file_summary["summary"],
+                    topics=file_summary.get("topics"),
+                    metadata=file_summary.get("metadata"),
+                    content_hash=file_summary.get("content_hash"),
+                    canvas_id=canvas_id
+                )
+                updated_count += 1
+                print(f"   ✅ Updated {doc_id[:24]}... with canvas_id: {canvas_id}")
+
+        print(f"✅ Updated {updated_count} files with canvas_ids")
+
+        return {
+            "success": True,
+            "updated_count": updated_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating canvas_ids: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating canvas_ids: {str(e)}")
+
+
 @app.post("/admin/cleanup_bad_filenames/{course_id}")
 async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_duplicates: bool = True):
     """
