@@ -1131,20 +1131,24 @@ async def process_canvas_files(request: Dict):
 
         # Count results and collect file metadata with hashes
         uploaded_files = []
+        skipped_files = []
         for result in results:
             if isinstance(result, Exception):
                 failed += 1
             elif isinstance(result, dict):
                 if result.get("status") == "uploaded":
                     uploaded_files.append(result)  # Full result with hash metadata
+                elif result.get("status") == "skipped":
+                    skipped_files.append(result)  # Skipped files also have hash metadata
 
         print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed")
 
-        # Add newly uploaded files to catalog with hash-based metadata
-        if processed > 0 and document_manager:
+        # Add uploaded AND skipped files to catalog with hash-based metadata
+        files_for_catalog = uploaded_files + skipped_files
+        if files_for_catalog and document_manager:
             try:
-                print(f"📚 Adding {len(uploaded_files)} files to catalog...")
-                document_manager.add_files_to_catalog_with_metadata(uploaded_files)
+                print(f"📚 Adding {len(files_for_catalog)} files to catalog ({len(uploaded_files)} new, {len(skipped_files)} existing)...")
+                document_manager.add_files_to_catalog_with_metadata(files_for_catalog)
                 print(f"✅ Catalog updated")
             except Exception as e:
                 print(f"⚠️ Catalog update failed: {e}")
@@ -1161,7 +1165,7 @@ async def process_canvas_files(request: Dict):
             "skipped": skipped,
             "failed": failed,
             "total": len(files),
-            "uploaded_files": uploaded_files  # Include file mappings for frontend
+            "uploaded_files": uploaded_files + skipped_files  # Include both new and existing files for frontend
         }
 
     except Exception as e:
