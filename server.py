@@ -3,7 +3,7 @@ FastAPI Server for AI Study Assistant
 Handles WebSocket connections, PDF uploads, and agent coordination
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import uvicorn
@@ -381,7 +381,8 @@ async def _generate_single_summary(
     course_id: str,
     file_uploader,
     file_summarizer,
-    chat_storage
+    chat_storage,
+    canvas_user_id: Optional[str] = None
 ) -> Dict:
     """Generate summary for a single file (optimized with thread pools)"""
     try:
@@ -438,7 +439,8 @@ async def _generate_single_summary(
             summary=summary,
             topics=topics,
             metadata=metadata,
-            content_hash=content_hash  # Store hash for matching
+            content_hash=content_hash,  # Store hash for matching
+            canvas_user_id=canvas_user_id  # Track who uploaded
         )
 
         if success:
@@ -450,7 +452,7 @@ async def _generate_single_summary(
         return {"status": "error", "filename": file_info.get("filename", "unknown"), "error": str(e)}
 
 
-async def _upload_to_gemini_background(course_id: str, successful_uploads: List[Dict]):
+async def _upload_to_gemini_background(course_id: str, successful_uploads: List[Dict], canvas_user_id: Optional[str] = None):
     """
     PHASE 3: Background task to pre-warm Gemini File API cache
 
@@ -518,7 +520,7 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
         traceback.print_exc()
 
 
-async def _generate_summaries_background(course_id: str, successful_uploads: List[Dict]):
+async def _generate_summaries_background(course_id: str, successful_uploads: List[Dict], canvas_user_id: Optional[str] = None):
     """
     Background task to generate summaries for uploaded files in parallel
     """
@@ -548,7 +550,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             """Wrapper to apply semaphore limit"""
             async with semaphore:
                 return await _generate_single_summary(
-                    file_info, course_id, file_uploader, file_summarizer, chat_storage
+                    file_info, course_id, file_uploader, file_summarizer, chat_storage, canvas_user_id
                 )
 
         print(f"📝 Generating summaries for {len(successful_uploads)} files (max 20 concurrent)...")
@@ -658,7 +660,7 @@ async def _proactive_cache_refresh_loop():
         traceback.print_exc()
 
 
-async def _process_uploads_background(course_id: str, files_in_memory: List[Dict]):
+async def _process_uploads_background(course_id: str, files_in_memory: List[Dict], canvas_user_id: Optional[str] = None):
     """
     Background task to process file uploads after instant response
 
@@ -672,7 +674,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
     The user doesn't wait for any of this - they get instant chat access!
     """
     try:
-        print(f"\n🔄 BACKGROUND PROCESSING STARTED: {len(files_in_memory)} files for course {course_id}")
+        print(f"\n🔄 BACKGROUND PROCESSING STARTED: {len(files_in_memory)} files for course {course_id} (user: {canvas_user_id})")
 
         # Create UploadFile-like objects from memory
         from fastapi import UploadFile
@@ -748,12 +750,12 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
         # PHASE 3: Pre-warm Gemini cache (background within background!)
         if successful and chat_storage:
             print(f"🔥 Starting Gemini pre-warm for {len(successful)} files...")
-            asyncio.create_task(_upload_to_gemini_background(course_id, successful))
+            asyncio.create_task(_upload_to_gemini_background(course_id, successful, canvas_user_id))
 
         # PHASE 4: Generate summaries
         if file_summarizer and chat_storage and successful:
             print(f"📝 Generating summaries for {len(successful)} files...")
-            asyncio.create_task(_generate_summaries_background(course_id, successful))
+            asyncio.create_task(_generate_summaries_background(course_id, successful, canvas_user_id))
 
         print(f"✅ BACKGROUND PROCESSING COMPLETE for course {course_id}")
         print(f"   Files are now available for queries!")
@@ -767,7 +769,8 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
 @app.post("/upload_pdfs")
 async def upload_pdfs(
     course_id: str,
-    files: List[UploadFile] = File(...)
+    files: List[UploadFile] = File(...),
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
 ):
     """
     Upload files for a course (supports PDFs, documents, images, etc.)
@@ -778,6 +781,7 @@ async def upload_pdfs(
     Args:
         course_id: Course identifier (used as filename prefix)
         files: List of files to upload (PDF, DOCX, TXT, images, etc.)
+        x_canvas_user_id: Canvas user ID (passed via X-Canvas-User-Id header)
 
     Process:
         1. Accept files and store in memory
@@ -793,6 +797,7 @@ async def upload_pdfs(
         print(f"\n{'='*80}")
         print(f"📤 UPLOAD REQUEST (INSTANT MODE):")
         print(f"   Course ID: {course_id}")
+        print(f"   Canvas User ID: {x_canvas_user_id}")
         print(f"   Number of files: {len(files)}")
         print(f"   File names received:")
         for f in files[:10]:  # Show first 10
@@ -814,7 +819,7 @@ async def upload_pdfs(
         print(f"✅ Files accepted ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
 
         # Start background processing (non-blocking)
-        asyncio.create_task(_process_uploads_background(course_id, files_in_memory))
+        asyncio.create_task(_process_uploads_background(course_id, files_in_memory, x_canvas_user_id))
 
         # INSTANT RESPONSE - User sees chat immediately!
         return {
@@ -2225,6 +2230,100 @@ async def restore_material(course_id: str, file_id: str):
     except Exception as e:
         print(f"❌ Error restoring material: {e}")
         raise HTTPException(status_code=500, detail=f"Error restoring material: {str(e)}")
+
+
+@app.delete("/users/{canvas_user_id}/data")
+async def delete_user_data(canvas_user_id: str):
+    """
+    Delete all data for a specific Canvas user.
+
+    This permanently deletes:
+    - All chat sessions and messages
+    - All uploaded files from Google Cloud Storage
+    - All file summaries from the database
+    - All Gemini cache entries
+
+    Args:
+        canvas_user_id: Canvas user ID whose data should be deleted
+
+    Returns:
+        Deletion statistics
+    """
+    try:
+        if not chat_storage:
+            raise HTTPException(status_code=500, detail="Chat storage not initialized")
+
+        print(f"\n{'='*80}")
+        print(f"🗑️  DELETE USER DATA REQUEST")
+        print(f"   Canvas User ID: {canvas_user_id}")
+        print(f"{'='*80}")
+
+        # Step 1: Get list of files to delete from GCS before deleting from database
+        file_paths = chat_storage.get_user_file_paths(canvas_user_id)
+        print(f"📁 Found {len(file_paths)} files to delete from GCS")
+
+        # Step 2: Get Gemini cache entries (for potential future cleanup)
+        gemini_entries = chat_storage.get_user_gemini_cache_entries(canvas_user_id)
+        print(f"🔥 Found {len(gemini_entries)} Gemini cache entries")
+
+        # Step 3: Delete from GCS
+        gcs_deleted = 0
+        gcs_errors = []
+        if storage_manager and file_paths:
+            for file_path in file_paths:
+                try:
+                    storage_manager.delete_file(file_path)
+                    gcs_deleted += 1
+                except Exception as e:
+                    print(f"⚠️  Failed to delete GCS file {file_path}: {e}")
+                    gcs_errors.append({"path": file_path, "error": str(e)})
+
+        print(f"✅ Deleted {gcs_deleted}/{len(file_paths)} files from GCS")
+
+        # Step 4: Delete from database (chat sessions, messages, file summaries, gemini cache)
+        db_stats = chat_storage.delete_user_data(canvas_user_id)
+
+        print(f"✅ Database cleanup complete:")
+        print(f"   - Chat sessions deleted: {db_stats['chat_sessions_deleted']}")
+        print(f"   - Chat messages deleted: {db_stats['chat_messages_deleted']}")
+        print(f"   - File summaries deleted: {db_stats['file_summaries_deleted']}")
+        print(f"   - Gemini cache entries deleted: {db_stats['gemini_cache_deleted']}")
+
+        # Step 5: Clear in-memory caches
+        if document_manager:
+            # Clear document catalog entries for this user's files
+            # Note: This clears all courses for simplicity - catalog will rebuild on next access
+            document_manager.catalog.clear()
+            print(f"✅ In-memory document catalog cleared")
+
+        result = {
+            "success": True,
+            "canvas_user_id": canvas_user_id,
+            "message": "All user data has been permanently deleted",
+            "statistics": {
+                "gcs_files_deleted": gcs_deleted,
+                "gcs_files_attempted": len(file_paths),
+                "gcs_errors": len(gcs_errors),
+                "chat_sessions_deleted": db_stats['chat_sessions_deleted'],
+                "chat_messages_deleted": db_stats['chat_messages_deleted'],
+                "file_summaries_deleted": db_stats['file_summaries_deleted'],
+                "gemini_cache_deleted": db_stats['gemini_cache_deleted']
+            }
+        }
+
+        if gcs_errors:
+            result["gcs_errors"] = gcs_errors
+
+        print(f"\n✅ USER DATA DELETION COMPLETE for {canvas_user_id}")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error deleting user data: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting user data: {str(e)}")
 
 
 @app.post("/courses/{course_id}/update_canvas_ids")
