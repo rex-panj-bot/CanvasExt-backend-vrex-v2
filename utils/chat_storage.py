@@ -175,32 +175,6 @@ class ChatStorage:
                     logger.warning(f"Could not add content_hash column (may already exist): {e}")
                     conn.rollback()
 
-                # Migration: Add canvas_user_id column for user-specific data tracking
-                for table_name in ['chat_sessions', 'chat_messages', 'file_summaries', 'gemini_file_cache']:
-                    try:
-                        check_result = conn.execute(text(f"""
-                            SELECT column_name
-                            FROM information_schema.columns
-                            WHERE table_name='{table_name}'
-                            AND column_name='canvas_user_id'
-                        """))
-
-                        if not check_result.fetchone():
-                            conn.execute(text(f"""
-                                ALTER TABLE {table_name} ADD COLUMN canvas_user_id VARCHAR(255)
-                            """))
-                            logger.info(f"Added canvas_user_id column to {table_name} (PostgreSQL)")
-
-                            # Create index for faster user-specific queries
-                            conn.execute(text(f"""
-                                CREATE INDEX IF NOT EXISTS idx_{table_name}_user
-                                ON {table_name}(canvas_user_id)
-                            """))
-                            logger.info(f"Created index on canvas_user_id for {table_name}")
-                    except Exception as e:
-                        logger.warning(f"Could not add canvas_user_id column to {table_name} (may already exist): {e}")
-                        conn.rollback()
-
                 # Course metadata table (stores syllabus_id, etc.)
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS course_metadata (
@@ -254,6 +228,35 @@ class ChatStorage:
 
                 conn.commit()
                 logger.info("PostgreSQL chat storage tables initialized")
+
+                # Migration: Add canvas_user_id column for user-specific data tracking
+                # This must be done AFTER all tables are created and committed
+                for table_name in ['chat_sessions', 'chat_messages', 'file_summaries', 'gemini_file_cache']:
+                    try:
+                        check_result = conn.execute(text(f"""
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_name='{table_name}'
+                            AND column_name='canvas_user_id'
+                        """))
+
+                        if not check_result.fetchone():
+                            conn.execute(text(f"""
+                                ALTER TABLE {table_name} ADD COLUMN canvas_user_id VARCHAR(255)
+                            """))
+                            conn.commit()
+                            logger.info(f"Added canvas_user_id column to {table_name} (PostgreSQL)")
+
+                            # Create index for faster user-specific queries
+                            conn.execute(text(f"""
+                                CREATE INDEX IF NOT EXISTS idx_{table_name}_user
+                                ON {table_name}(canvas_user_id)
+                            """))
+                            conn.commit()
+                            logger.info(f"Created index on canvas_user_id for {table_name}")
+                    except Exception as e:
+                        logger.warning(f"Could not add canvas_user_id column to {table_name} (may already exist): {e}")
+
         except SQLAlchemyError as e:
             logger.error(f"Failed to initialize PostgreSQL: {e}")
             raise
