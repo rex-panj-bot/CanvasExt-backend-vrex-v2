@@ -942,7 +942,10 @@ async def check_files_exist(request: Dict):
 
 
 @app.post("/process_canvas_files")
-async def process_canvas_files(request: Dict):
+async def process_canvas_files(
+    request: Dict,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Process files from Canvas URLs - backend downloads and uploads to GCS
 
@@ -975,6 +978,7 @@ async def process_canvas_files(request: Dict):
             raise HTTPException(status_code=400, detail="course_id and files required")
 
         print(f"🌐 Process {len(files)} files for course {course_id} (skip_check: {skip_existence_check})")
+        print(f"   Canvas User ID: {x_canvas_user_id}")
 
         # Check which files already exist in GCS (skip if frontend already checked)
         existing_files = set()
@@ -1179,7 +1183,7 @@ async def process_canvas_files(request: Dict):
         if file_summarizer and chat_storage and processed > 0:
             print(f"📝 Generating summaries for {processed} uploaded files...")
             # uploaded_files already has correct format with doc_id, hash, etc.
-            asyncio.create_task(_generate_summaries_background(course_id, uploaded_files))
+            asyncio.create_task(_generate_summaries_background(course_id, uploaded_files, x_canvas_user_id))
 
         return {
             "success": True,
