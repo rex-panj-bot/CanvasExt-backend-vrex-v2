@@ -447,7 +447,7 @@ async def _generate_single_summary(
         )
 
         # Save to database (cache for future uploads) with hash
-        print(f"💾 Saving summary for {filename} with canvas_user_id: {canvas_user_id}")
+        print(f"💾 Saving summary for {filename} with canvas_user_id: {canvas_user_id}, gcs_path: {file_path}")
         success = chat_storage.save_file_summary(
             doc_id=doc_id,
             course_id=course_id,
@@ -456,7 +456,8 @@ async def _generate_single_summary(
             topics=topics,
             metadata=metadata,
             content_hash=content_hash,  # Store hash for matching
-            canvas_user_id=canvas_user_id  # Track who uploaded
+            canvas_user_id=canvas_user_id,  # Track who uploaded
+            gcs_path=file_path  # Store actual GCS path for deletion
         )
 
         if success:

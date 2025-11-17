@@ -112,6 +112,7 @@ class ChatStorage:
                         topics TEXT,
                         metadata TEXT,
                         content_hash VARCHAR(64),
+                        gcs_path TEXT,
                         canvas_user_id VARCHAR(255),
                         created_at TIMESTAMP DEFAULT NOW(),
                         updated_at TIMESTAMP DEFAULT NOW(),
@@ -215,35 +216,6 @@ class ChatStorage:
                 tables = [row[0] for row in result]
                 logger.info(f"✅ Verified tables exist: {tables}")
 
-                # Migration: Add canvas_user_id column for user-specific data tracking
-                # This is only needed for OLD tables that don't have the column
-                # New tables are created with the column already included
-                for table_name in ['chat_sessions', 'chat_messages', 'file_summaries', 'gemini_file_cache']:
-                    try:
-                        check_result = conn.execute(text(f"""
-                            SELECT column_name
-                            FROM information_schema.columns
-                            WHERE table_name='{table_name}'
-                            AND column_name='canvas_user_id'
-                        """))
-
-                        if not check_result.fetchone():
-                            conn.execute(text(f"""
-                                ALTER TABLE {table_name} ADD COLUMN canvas_user_id VARCHAR(255)
-                            """))
-                            conn.commit()
-                            logger.info(f"Added canvas_user_id column to {table_name} (PostgreSQL)")
-
-                            # Create index for faster user-specific queries
-                            conn.execute(text(f"""
-                                CREATE INDEX IF NOT EXISTS idx_{table_name}_user
-                                ON {table_name}(canvas_user_id)
-                            """))
-                            conn.commit()
-                            logger.info(f"Created index on canvas_user_id for {table_name}")
-                    except Exception as e:
-                        logger.warning(f"Could not add canvas_user_id column to {table_name} (may already exist): {e}")
-
         except SQLAlchemyError as e:
             logger.error(f"Failed to initialize PostgreSQL: {e}")
             raise
@@ -287,6 +259,9 @@ class ChatStorage:
                     summary TEXT NOT NULL,
                     topics TEXT,
                     metadata TEXT,
+                    content_hash TEXT,
+                    gcs_path TEXT,
+                    canvas_user_id TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     deleted_at TIMESTAMP NULL
@@ -784,7 +759,8 @@ class ChatStorage:
         metadata: Dict = None,
         content_hash: str = None,
         canvas_id: str = None,
-        canvas_user_id: str = None
+        canvas_user_id: str = None,
+        gcs_path: str = None
     ) -> bool:
         """
         Save or update a file summary
@@ -799,6 +775,7 @@ class ChatStorage:
             content_hash: SHA-256 hash of file content (for hash-based identification)
             canvas_id: Original Canvas file ID (if available)
             canvas_user_id: Canvas user ID who uploaded the file
+            gcs_path: Full path to file in Google Cloud Storage (e.g., "course_id/hash.ext")
 
         Returns:
             True if successful
@@ -807,13 +784,13 @@ class ChatStorage:
             topics_json = json.dumps(topics or [])
             metadata_json = json.dumps(metadata or {})
 
-            logger.info(f"save_file_summary called for {doc_id} with canvas_user_id: {canvas_user_id}")
+            logger.info(f"save_file_summary called for {doc_id} with canvas_user_id: {canvas_user_id}, gcs_path: {gcs_path}")
 
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     conn.execute(text("""
-                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, updated_at)
-                        VALUES (:doc_id, :course_id, :canvas_id, :filename, :summary, :topics, :metadata, :content_hash, :canvas_user_id, NOW())
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, updated_at)
+                        VALUES (:doc_id, :course_id, :canvas_id, :filename, :summary, :topics, :metadata, :content_hash, :canvas_user_id, :gcs_path, NOW())
                         ON CONFLICT (doc_id) DO UPDATE SET
                             summary = EXCLUDED.summary,
                             topics = EXCLUDED.topics,
@@ -821,6 +798,7 @@ class ChatStorage:
                             content_hash = EXCLUDED.content_hash,
                             canvas_id = EXCLUDED.canvas_id,
                             canvas_user_id = COALESCE(EXCLUDED.canvas_user_id, file_summaries.canvas_user_id),
+                            gcs_path = COALESCE(EXCLUDED.gcs_path, file_summaries.gcs_path),
                             updated_at = NOW()
                     """), {
                         "doc_id": doc_id,
@@ -831,16 +809,17 @@ class ChatStorage:
                         "topics": topics_json,
                         "metadata": metadata_json,
                         "content_hash": content_hash,
-                        "canvas_user_id": canvas_user_id
+                        "canvas_user_id": canvas_user_id,
+                        "gcs_path": gcs_path
                     })
                     conn.commit()
-                    logger.info(f"Successfully saved file_summary for {doc_id} with canvas_user_id: {canvas_user_id}")
+                    logger.info(f"Successfully saved file_summary for {doc_id} with canvas_user_id: {canvas_user_id}, gcs_path: {gcs_path}")
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(doc_id) DO UPDATE SET
                             summary = excluded.summary,
                             topics = excluded.topics,
@@ -848,8 +827,9 @@ class ChatStorage:
                             content_hash = excluded.content_hash,
                             canvas_id = excluded.canvas_id,
                             canvas_user_id = COALESCE(excluded.canvas_user_id, file_summaries.canvas_user_id),
+                            gcs_path = COALESCE(excluded.gcs_path, file_summaries.gcs_path),
                             updated_at = CURRENT_TIMESTAMP
-                    """, (doc_id, course_id, canvas_id, filename, summary, topics_json, metadata_json, content_hash, canvas_user_id))
+                    """, (doc_id, course_id, canvas_id, filename, summary, topics_json, metadata_json, content_hash, canvas_user_id, gcs_path))
                     conn.commit()
 
             logger.info(f"Saved file summary for {doc_id}")
@@ -1736,14 +1716,13 @@ class ChatStorage:
                 with self.engine.connect() as conn:
                     # Get file paths for GCS deletion before deleting from DB
                     result = conn.execute(text("""
-                        SELECT doc_id, course_id, filename FROM file_summaries
+                        SELECT gcs_path FROM file_summaries
                         WHERE canvas_user_id = :canvas_user_id
+                        AND gcs_path IS NOT NULL
                     """), {"canvas_user_id": canvas_user_id})
                     for row in result:
                         row_dict = dict(row._mapping)
-                        # Construct GCS path: course_id/filename
-                        file_path = f"{row_dict['course_id']}/{row_dict['filename']}"
-                        stats['file_paths'].append(file_path)
+                        stats['file_paths'].append(row_dict['gcs_path'])
 
                     # Get gemini cache paths
                     result = conn.execute(text("""
@@ -1784,12 +1763,12 @@ class ChatStorage:
 
                     # Get file paths for GCS deletion before deleting from DB
                     cursor.execute("""
-                        SELECT doc_id, course_id, filename FROM file_summaries
+                        SELECT gcs_path FROM file_summaries
                         WHERE canvas_user_id = ?
+                        AND gcs_path IS NOT NULL
                     """, (canvas_user_id,))
                     for row in cursor.fetchall():
-                        file_path = f"{row['course_id']}/{row['filename']}"
-                        stats['file_paths'].append(file_path)
+                        stats['file_paths'].append(row['gcs_path'])
 
                     # Get gemini cache paths
                     cursor.execute("""
@@ -1839,29 +1818,31 @@ class ChatStorage:
             canvas_user_id: Canvas user ID
 
         Returns:
-            List of GCS file paths (course_id/filename format)
+            List of GCS file paths (stored in gcs_path column)
         """
         file_paths = []
         try:
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     result = conn.execute(text("""
-                        SELECT course_id, filename FROM file_summaries
+                        SELECT gcs_path FROM file_summaries
                         WHERE canvas_user_id = :canvas_user_id
+                        AND gcs_path IS NOT NULL
                     """), {"canvas_user_id": canvas_user_id})
                     for row in result:
                         row_dict = dict(row._mapping)
-                        file_paths.append(f"{row_dict['course_id']}/{row_dict['filename']}")
+                        file_paths.append(row_dict['gcs_path'])
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT course_id, filename FROM file_summaries
+                        SELECT gcs_path FROM file_summaries
                         WHERE canvas_user_id = ?
+                        AND gcs_path IS NOT NULL
                     """, (canvas_user_id,))
                     for row in cursor.fetchall():
-                        file_paths.append(f"{row['course_id']}/{row['filename']}")
+                        file_paths.append(row['gcs_path'])
 
             return file_paths
 
