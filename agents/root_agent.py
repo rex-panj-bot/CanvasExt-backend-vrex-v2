@@ -290,146 +290,174 @@ class RootAgent:
                         materials_to_use.append(syllabus)
                         print(f"   ⭐ Including syllabus: {syllabus['name']}")
 
-            # No selection - use all materials
+            # No selection - act like regular Gemini (no files)
             else:
-                if not use_smart_selection:  # Only warn if not using smart selection
-                    print(f"   ⚠️  No docs selected - using ALL materials")
-                materials_to_use = all_materials
+                print(f"   ℹ️  No docs selected and smart selection off - using no materials (regular Gemini mode)")
+                materials_to_use = []
 
+            # Allow empty materials when user wants regular Gemini mode (no selection + no smart select)
             if not materials_to_use:
-                print(f"   ❌ No materials to use after filtering!")
-                yield "No documents selected. Please select at least one document."
-                return
+                # Check if this was intentional (no selection + smart select off)
+                if not use_smart_selection and not selected_docs:
+                    print(f"   ℹ️  Using Gemini in chat-only mode (no files)")
+                    # Skip to chat generation without files
+                else:
+                    print(f"   ❌ No materials to use after filtering!")
+                    yield "No documents selected. Please select at least one document or enable Smart Selection."
+                    return
 
             print(f"   📚 Final materials to use: {len(materials_to_use)} PDF files")
-            print(f"   📚 Material names: {[m['name'][:30] for m in materials_to_use[:3]]}...")
+            if materials_to_use:
+                print(f"   📚 Material names: {[m['name'][:30] for m in materials_to_use[:3]]}...")
 
-            # Step 3: Check if files already uploaded in this session
-            selected_doc_ids = set([m["id"] for m in materials_to_use])
-            session_cache = self.session_uploads.get(session_id, {})
-            cached_doc_ids = session_cache.get("doc_ids", set())
-
-            print(f"   🔍 Session check:")
-            print(f"      Session ID: {session_id}")
-            print(f"      Selected doc IDs ({len(selected_doc_ids)}): {list(selected_doc_ids)[:3]}...")
-            print(f"      Cached doc IDs ({len(cached_doc_ids)}): {list(cached_doc_ids)[:3] if cached_doc_ids else 'None'}...")
-            print(f"      IDs match: {cached_doc_ids == selected_doc_ids}")
-
-            # Verify all materials have paths
-            materials_with_paths = [m for m in materials_to_use if m.get("path")]
-            if len(materials_with_paths) < len(materials_to_use):
-                print(f"   ⚠️  WARNING: {len(materials_to_use) - len(materials_with_paths)} materials missing paths!")
-                missing_path_materials = [m for m in materials_to_use if not m.get("path")]
-                for mat in missing_path_materials[:3]:
-                    print(f"      - {mat.get('name', 'unknown')}: id={mat.get('id', 'unknown')}")
-
-            print(f"   📂 Materials to upload: {len(materials_with_paths)} with valid paths")
-
+            # Step 3: Upload files to Gemini (skip if no materials selected)
             need_upload = False
             uploaded_files = []
 
-            if session_id and cached_doc_ids == selected_doc_ids:
-                # Same files already uploaded in this session - reuse
-                print(f"   ✅ Reusing {len(materials_to_use)} files from session cache")
-                uploaded_files = session_cache.get("file_info", [])
-                print(f"   ✅ Retrieved {len(uploaded_files)} file URIs from cache")
-            else:
-                # Need to upload (new session or different file selection)
-                need_upload = True
-                print(f"   📤 Uploading {len(materials_to_use)} files to Gemini...")
+            if materials_to_use:
+                selected_doc_ids = set([m["id"] for m in materials_to_use])
+                session_cache = self.session_uploads.get(session_id, {})
+                cached_doc_ids = session_cache.get("doc_ids", set())
 
-                file_paths = [mat["path"] for mat in materials_to_use if mat.get("path")]
-                print(f"   📂 Files with paths: {len(file_paths)}/{len(materials_to_use)}")
-                print(f"   📂 Sample paths: {file_paths[:2]}...")
+                print(f"   🔍 Session check:")
+                print(f"      Session ID: {session_id}")
+                print(f"      Selected doc IDs ({len(selected_doc_ids)}): {list(selected_doc_ids)[:3]}...")
+                print(f"      Cached doc IDs ({len(cached_doc_ids)}): {list(cached_doc_ids)[:3] if cached_doc_ids else 'None'}...")
+                print(f"      IDs match: {cached_doc_ids == selected_doc_ids}")
 
-                if not file_paths:
-                    print(f"   ❌ ERROR: No valid file paths found!")
-                    yield "❌ Error: No valid file paths found in materials. Please re-scan course materials.\n\n"
-                    return
+                # Verify all materials have paths
+                materials_with_paths = [m for m in materials_to_use if m.get("path")]
+                if len(materials_with_paths) < len(materials_to_use):
+                    print(f"   ⚠️  WARNING: {len(materials_to_use) - len(materials_with_paths)} materials missing paths!")
+                    missing_path_materials = [m for m in materials_to_use if not m.get("path")]
+                    for mat in missing_path_materials[:3]:
+                        print(f"      - {mat.get('name', 'unknown')}: id={mat.get('id', 'unknown')}")
 
-                upload_result = await file_upload_manager.upload_multiple_pdfs_async(file_paths)
+                print(f"   📂 Materials to upload: {len(materials_with_paths)} with valid paths")
 
-                if not upload_result.get('success'):
-                    error_msg = upload_result.get('error', 'Unknown error')
-                    print(f"   ❌ Upload failed: {error_msg}")
-                    yield f"❌ Error uploading files: {error_msg}"
-                    return
+                if session_id and cached_doc_ids == selected_doc_ids:
+                    # Same files already uploaded in this session - reuse
+                    print(f"   ✅ Reusing {len(materials_to_use)} files from session cache")
+                    uploaded_files = session_cache.get("file_info", [])
+                    print(f"   ✅ Retrieved {len(uploaded_files)} file URIs from cache")
+                else:
+                    # Need to upload (new session or different file selection)
+                    need_upload = True
+                    print(f"   📤 Uploading {len(materials_to_use)} files to Gemini...")
 
-                uploaded_files = upload_result.get('files', [])
-                failed_files = upload_result.get('failed', [])
-                total_mb = upload_result['total_bytes'] / (1024 * 1024)
+                    file_paths = [mat["path"] for mat in materials_to_use if mat.get("path")]
+                    print(f"   📂 Files with paths: {len(file_paths)}/{len(materials_to_use)}")
+                    print(f"   📂 Sample paths: {file_paths[:2]}...")
 
-                print(f"   ✅ Uploaded {len(uploaded_files)} files (~{total_mb:.1f}MB)")
-                if failed_files:
-                    print(f"   ⚠️  Failed to upload {len(failed_files)} files:")
-                    for failed in failed_files:
-                        print(f"      - {failed.get('path', 'unknown')}: {failed.get('error', 'unknown error')}")
-                print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2]]}")
+                    if not file_paths:
+                        print(f"   ❌ ERROR: No valid file paths found!")
+                        yield "❌ Error: No valid file paths found in materials. Please re-scan course materials.\n\n"
+                        return
 
-                # Inform user if no files could be uploaded
-                if len(uploaded_files) == 0:
-                    yield "⚠️ **No files could be uploaded to Gemini.**\n\n"
+                    upload_result = await file_upload_manager.upload_multiple_pdfs_async(file_paths)
+
+                    if not upload_result.get('success'):
+                        error_msg = upload_result.get('error', 'Unknown error')
+                        print(f"   ❌ Upload failed: {error_msg}")
+                        yield f"❌ Error uploading files: {error_msg}"
+                        return
+
+                    uploaded_files = upload_result.get('files', [])
+                    failed_files = upload_result.get('failed', [])
+                    total_mb = upload_result['total_bytes'] / (1024 * 1024)
+
+                    print(f"   ✅ Uploaded {len(uploaded_files)} files (~{total_mb:.1f}MB)")
                     if failed_files:
-                        yield f"**Failed uploads ({len(failed_files)} files):**\n"
-                        for failed in failed_files[:5]:  # Show first 5
+                        print(f"   ⚠️  Failed to upload {len(failed_files)} files:")
+                        for failed in failed_files:
+                            print(f"      - {failed.get('path', 'unknown')}: {failed.get('error', 'unknown error')}")
+                    print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2]]}")
+
+                    # Inform user if no files could be uploaded
+                    if len(uploaded_files) == 0:
+                        yield "⚠️ **No files could be uploaded to Gemini.**\n\n"
+                        if failed_files:
+                            yield f"**Failed uploads ({len(failed_files)} files):**\n"
+                            for failed in failed_files[:5]:  # Show first 5
+                                path = failed.get('path', 'unknown')
+                                filename = path.split('/')[-1] if '/' in path else path
+                                error = failed.get('error', 'unknown error')
+                                yield f"- {filename}: {error}\n"
+                            if len(failed_files) > 5:
+                                yield f"- ... and {len(failed_files) - 5} more\n"
+                        yield "\n**Supported formats**: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP\n"
+                        yield "**Tip**: Convert PPTX, DOCX, XLSX files to PDF for best results\n\n"
+                        return
+
+                    # Cache for this session
+                    if session_id:
+                        self.session_uploads[session_id] = {
+                            "doc_ids": selected_doc_ids,
+                            "file_info": uploaded_files
+                        }
+                        print(f"   💾 Cached {len(uploaded_files)} files for session")
+
+                    # Yield upload status to user
+                    status_msg = f"📤 **Loaded {len(uploaded_files)} of {len(materials_to_use)} files** (~{total_mb:.1f}MB)"
+                    if failed_files:
+                        status_msg += f"\n⚠️ **{len(failed_files)} files could not be uploaded:**\n"
+                        for failed in failed_files[:3]:  # Show first 3
                             path = failed.get('path', 'unknown')
                             filename = path.split('/')[-1] if '/' in path else path
                             error = failed.get('error', 'unknown error')
-                            yield f"- {filename}: {error}\n"
-                        if len(failed_files) > 5:
-                            yield f"- ... and {len(failed_files) - 5} more\n"
-                    yield "\n**Supported formats**: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP\n"
-                    yield "**Tip**: Convert PPTX, DOCX, XLSX files to PDF for best results\n\n"
-                    return
-
-                # Cache for this session
-                if session_id:
-                    self.session_uploads[session_id] = {
-                        "doc_ids": selected_doc_ids,
-                        "file_info": uploaded_files
-                    }
-                    print(f"   💾 Cached {len(uploaded_files)} files for session")
-
-                # Yield upload status to user
-                status_msg = f"📤 **Loaded {len(uploaded_files)} of {len(materials_to_use)} files** (~{total_mb:.1f}MB)"
-                if failed_files:
-                    status_msg += f"\n⚠️ **{len(failed_files)} files could not be uploaded:**\n"
-                    for failed in failed_files[:3]:  # Show first 3
-                        path = failed.get('path', 'unknown')
-                        filename = path.split('/')[-1] if '/' in path else path
-                        error = failed.get('error', 'unknown error')
-                        # Show short error message
-                        short_error = error.split('.')[0] if '.' in error else error
-                        status_msg += f"  - {filename}: {short_error}\n"
-                    if len(failed_files) > 3:
-                        status_msg += f"  - ... and {len(failed_files) - 3} more\n"
-                yield status_msg + "\n"
+                            # Show short error message
+                            short_error = error.split('.')[0] if '.' in error else error
+                            status_msg += f"  - {filename}: {short_error}\n"
+                        if len(failed_files) > 3:
+                            status_msg += f"  - ... and {len(failed_files) - 3} more\n"
+                    yield status_msg + "\n"
 
             # Step 4: Build system instruction
             file_names = [mat['name'] for mat in materials_to_use]
 
-            # Build capabilities description
-            capabilities_text = "1. Read uploaded documents (PDFs, Word docs, images, etc.) directly"
-            if enable_web_search:
-                capabilities_text += "\n2. Perform Google searches for current information, news, or topics not in course materials"
+            # Build system instruction based on whether files are loaded
+            if materials_to_use:
+                # Build capabilities description
+                capabilities_text = "1. Read uploaded documents (PDFs, Word docs, images, etc.) directly"
+                if enable_web_search:
+                    capabilities_text += "\n2. Perform Google searches for current information, news, or topics not in course materials"
 
-            system_instruction = f"""You are an AI study assistant with access to {len(uploaded_files)} course documents{"and real-time web search" if enable_web_search else ""}.
+                system_instruction = f"""You are an AI study assistant with access to {len(uploaded_files)} course documents{"and real-time web search" if enable_web_search else ""}.
 
 Available course materials: {', '.join(file_names[:10])}{"..." if len(file_names) > 10 else ""}
 
 CAPABILITIES:
 {capabilities_text}
 
-CITATION FORMAT:
-When referencing information from course documents, use:
+CITATION FORMAT - CRITICAL:
+You MUST cite sources using this EXACT format (including brackets, comma, and capitalized "Page"):
 [Source: DocumentName, Page X]
 
-Examples:
-- According to the lecture notes [Source: Lecture_3_Algorithms, Page 12], sorting algorithms...
-- The syllabus states [Source: CS101_Syllabus, Page 3] that exams are worth 40%.
+RULES:
+- Always use square brackets: [ ]
+- Always include comma after document name
+- Always capitalize "Page" or "Pages"
+- Page numbers must be digits only
+- NO variations allowed (no "p.", "pg.", dashes instead of commas, etc.)
+
+CORRECT examples:
+✓ [Source: Lecture_3_Algorithms, Page 12]
+✓ [Source: CS101_Syllabus, Page 3]
+✓ [Source: Homework_2, Pages 5-7]
+
+INCORRECT examples (DO NOT USE):
+✗ [Source: Lecture_3_Algorithms Page 12] (missing comma)
+✗ [Source: Lecture_3_Algorithms - Page 12] (dash instead of comma)
+✗ [Source: Lecture_3_Algorithms, p. 12] (lowercase "p.")
+✗ (Lecture_3_Algorithms, Page 12) (wrong brackets)
 {"When using web search results, the sources will be automatically cited below your response." if enable_web_search else ""}
 
 {"PRIORITY: Always prioritize course materials first. Use web search only when information is not available in course materials or when user asks about current events." if enable_web_search else "Focus on providing accurate information from the course materials."}"""
+            else:
+                # No files - regular Gemini mode
+                system_instruction = f"""You are a helpful AI assistant{"with access to real-time web search" if enable_web_search else ""}.
+
+{"CAPABILITIES:\n1. Answer questions on any topic\n2. Perform Google searches for current information, news, or topics when needed\n\nWhen using web search results, the sources will be automatically cited below your response." if enable_web_search else "Provide helpful, accurate, and conversational responses to user questions."}"""
 
             # Step 5: Build conversation with file references
             contents = []
