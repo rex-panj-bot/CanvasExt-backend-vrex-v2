@@ -401,7 +401,21 @@ async def _generate_single_summary(
         # Check if summary already exists (cached in database)
         existing = chat_storage.get_file_summary(doc_id)
         if existing:
-            print(f"✅ Using cached summary for {filename}")
+            # Update canvas_user_id even for cached summaries to ensure proper user tracking
+            if canvas_user_id and not existing.get('canvas_user_id'):
+                chat_storage.save_file_summary(
+                    doc_id=doc_id,
+                    course_id=course_id,
+                    filename=filename,
+                    summary=existing['summary'],
+                    topics=existing.get('topics', []),
+                    metadata=existing.get('metadata', {}),
+                    content_hash=content_hash,
+                    canvas_user_id=canvas_user_id
+                )
+                print(f"✅ Using cached summary for {filename} (updated user tracking)")
+            else:
+                print(f"✅ Using cached summary for {filename}")
             return {"status": "cached", "filename": filename}
 
         # NEVER SKIP: Process all files, even small ones
