@@ -2691,87 +2691,50 @@ async def serve_pdf(course_id: str, doc_id: str, page: Optional[int] = None):
         GET /pdfs/12345/abc123def456...#page=5
         Opens file with hash abc123def456... at page 5
     """
-    print(f"\n{'='*80}")
-    print(f"🔍 [BACKEND] /pdfs endpoint called")
-    print(f"🔍 [BACKEND] Raw course_id: {course_id}")
-    print(f"🔍 [BACKEND] Raw doc_id: {doc_id}")
-    print(f"🔍 [BACKEND] Page parameter: {page}")
-
     try:
         # Decode URL-encoded doc_id
         doc_id = unquote(doc_id)
-        print(f"🔍 [BACKEND] Decoded doc_id: {doc_id}")
-
-        print(f"📄 [HASH-BASED] Serving file with doc_id: {doc_id}")
 
         # Try to serve from GCS
         if storage_manager:
-            print(f"✅ [BACKEND] Storage manager available")
             try:
                 # HASH-BASED: doc_id should be the content hash
                 # GCS blob name format: {course_id}/{hash}.pdf
                 blob_name = f"{course_id}/{doc_id}.pdf"
-                print(f"🔍 [BACKEND] Constructed blob_name: {blob_name}")
 
                 # Check if file exists
-                print(f"🔍 [BACKEND] Checking if file exists in GCS...")
                 file_exists = storage_manager.file_exists(blob_name)
-                print(f"🔍 [BACKEND] File exists result: {file_exists}")
 
                 if not file_exists:
-                    print(f"❌ [BACKEND] File not found in GCS: {blob_name}")
-                    print(f"❌ [BACKEND] Possible reasons:")
-                    print(f"   1. File was never uploaded to GCS")
-                    print(f"   2. File name/hash mismatch")
-                    print(f"   3. File was deleted from GCS")
-                    print(f"   4. Course ID is incorrect")
+                    logger.warning(f"File not found in GCS: {blob_name}")
                     raise HTTPException(status_code=404, detail=f"File not found: {doc_id}")
 
-                print(f"✅ [BACKEND] File exists in GCS, generating signed URL...")
                 # Generate signed URL that's valid for 1 hour
                 signed_url = storage_manager.get_signed_url(blob_name, expiration_minutes=60)
 
-                print(f"🔍 [BACKEND] Generated signed URL: {signed_url[:100]}..." if signed_url else "❌ [BACKEND] Failed to generate signed URL")
-
                 if not signed_url:
-                    print(f"❌ [BACKEND] Failed to generate signed URL for blob: {blob_name}")
                     raise HTTPException(status_code=500, detail="Failed to generate signed URL")
 
                 # Append page anchor if provided
                 if page:
                     signed_url = f"{signed_url}#page={page}"
-                    print(f"🔍 [BACKEND] Added page anchor: #page={page}")
-
-                print(f"✅ [BACKEND] Redirecting to GCS signed URL (302 redirect)")
-                print(f"{'='*80}\n")
 
                 # Redirect to GCS signed URL for browser to open
                 from fastapi.responses import RedirectResponse
                 return RedirectResponse(url=signed_url, status_code=302)
 
             except HTTPException:
-                print(f"{'='*80}\n")
                 raise
             except Exception as gcs_error:
-                print(f"❌ [BACKEND] GCS error: {gcs_error}")
-                print(f"❌ [BACKEND] Error type: {type(gcs_error).__name__}")
-                import traceback
-                print(f"❌ [BACKEND] Traceback:\n{traceback.format_exc()}")
-                print(f"{'='*80}\n")
+                logger.error(f"GCS error serving file: {gcs_error}")
                 raise HTTPException(status_code=500, detail=f"GCS error: {str(gcs_error)}")
 
         # No storage manager available
-        print(f"❌ [BACKEND] Storage manager NOT available")
-        print(f"{'='*80}\n")
         raise HTTPException(status_code=503, detail="Storage service not available")
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ [BACKEND] Unexpected error in serve_pdf: {e}")
-        print(f"❌ [BACKEND] Error type: {type(e).__name__}")
-        import traceback
-        print(f"❌ [BACKEND] Traceback:\n{traceback.format_exc()}")
-        print(f"{'='*80}\n")
+        logger.error(f"Unexpected error in serve_pdf: {e}")
         raise HTTPException(status_code=500, detail=f"Error serving file: {str(e)}")
 
 
