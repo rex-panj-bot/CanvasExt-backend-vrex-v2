@@ -113,8 +113,13 @@ class RootAgent:
             print(f"   📂 Total materials in catalog: {len(all_materials)}")
 
             # Enrich materials with canvas_id from database (for fallback matching)
+            # Priority: catalog canvas_id > summary canvas_id
             if self.chat_storage:
                 for material in all_materials:
+                    # Skip if material already has canvas_id from catalog
+                    if material.get("canvas_id"):
+                        continue
+
                     doc_id = material.get("id")
                     if doc_id:
                         file_summary = self.chat_storage.get_file_summary(doc_id)
@@ -250,10 +255,18 @@ class RootAgent:
                 available_id_set = {material["id"] for material in all_materials}
 
                 # Build canvas_id lookup map for fallback matching
+                # Key by BOTH string and numeric versions for flexible matching
                 canvas_id_map = {}
                 for material in all_materials:
                     if material.get("canvas_id"):
-                        canvas_id_map[material["canvas_id"]] = material
+                        # Store as string key
+                        canvas_id_map[str(material["canvas_id"])] = material
+                        # Also store numeric version if it's a number
+                        try:
+                            numeric_id = int(material["canvas_id"])
+                            canvas_id_map[numeric_id] = material
+                        except (ValueError, TypeError):
+                            pass
 
                 # Match selected docs using exact ID comparison
                 materials_to_use = []
@@ -269,6 +282,12 @@ class RootAgent:
                         materials_to_use.append(matched_material)
                         matched_by_canvas_id.append(selected_id)
                         print(f"   🔄 Matched by Canvas ID: {selected_id} → {matched_material['name']}")
+                    elif str(selected_id) in canvas_id_map:
+                        # Try string version if numeric didn't match
+                        matched_material = canvas_id_map[str(selected_id)]
+                        materials_to_use.append(matched_material)
+                        matched_by_canvas_id.append(selected_id)
+                        print(f"   🔄 Matched by Canvas ID (str): {selected_id} → {matched_material['name']}")
 
                 print(f"\n   ✅ Matched {len(materials_to_use)} materials from selection")
                 if matched_by_canvas_id:

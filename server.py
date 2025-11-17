@@ -997,9 +997,11 @@ async def process_canvas_files(
 
             file_name = file_info.get("name")
             file_url = file_info.get("url")
+            canvas_id = file_info.get("id")  # Canvas file ID for fallback matching
 
             if not file_name or not file_url:
-                return {"status": "skipped", "reason": "missing name or url"}
+                print(f"⏭️  Skipping {file_name or 'unnamed'}: missing name or url (canvas_id: {canvas_id})")
+                return {"status": "skipped", "reason": "missing name or url", "filename": file_name, "canvas_id": str(canvas_id) if canvas_id else None}
 
             if file_name in existing_files:
                 return {"status": "skipped", "reason": "already exists", "filename": file_name}
@@ -1081,7 +1083,8 @@ async def process_canvas_files(
                         "hash": content_hash,
                         "path": hash_blob_name,
                         "storage": "gcs",
-                        "size_bytes": len(file_content)
+                        "size_bytes": len(file_content),
+                        "canvas_id": str(canvas_id) if canvas_id else None  # Preserve Canvas file ID
                     }
 
                 if needs_conversion(safe_filename):
@@ -1126,7 +1129,8 @@ async def process_canvas_files(
                         "path": blob_name,  # GCS path
                         "size_bytes": len(file_content),
                         "mime_type": mime_type,
-                        "storage": "gcs"
+                        "storage": "gcs",
+                        "canvas_id": str(canvas_id) if canvas_id else None  # Preserve Canvas file ID
                     }
                 else:
                     failed += 1
