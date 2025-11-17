@@ -68,8 +68,10 @@ class ChatStorage:
     def _initialize_postgres(self):
         """Create PostgreSQL tables"""
         try:
+            logger.info("Starting PostgreSQL table initialization...")
             with self.engine.connect() as conn:
                 # Chat sessions table
+                logger.info("Creating chat_sessions table...")
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS chat_sessions (
                         session_id VARCHAR(255) PRIMARY KEY,
@@ -81,8 +83,10 @@ class ChatStorage:
                         message_count INTEGER DEFAULT 0
                     )
                 """))
+                logger.info("✅ chat_sessions table created")
 
                 # Chat messages table
+                logger.info("Creating chat_messages table...")
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS chat_messages (
                         id SERIAL PRIMARY KEY,
@@ -94,8 +98,10 @@ class ChatStorage:
                         FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
                     )
                 """))
+                logger.info("✅ chat_messages table created")
 
                 # File summaries table for intelligent file selection
+                logger.info("Creating file_summaries table...")
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS file_summaries (
                         doc_id VARCHAR(255) PRIMARY KEY,
@@ -112,74 +118,10 @@ class ChatStorage:
                         deleted_at TIMESTAMP NULL
                     )
                 """))
-
-                # Migration: Add deleted_at column if it doesn't exist (for existing tables)
-                # Use a separate transaction to avoid breaking the main initialization
-                try:
-                    # Check if column exists first
-                    check_result = conn.execute(text("""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_name='file_summaries'
-                        AND column_name='deleted_at'
-                    """))
-
-                    if not check_result.fetchone():
-                        # Column doesn't exist, add it
-                        conn.execute(text("""
-                            ALTER TABLE file_summaries ADD COLUMN deleted_at TIMESTAMP NULL
-                        """))
-                        logger.info("Added deleted_at column to file_summaries (PostgreSQL)")
-                except Exception as e:
-                    # If any error occurs, rollback this specific operation
-                    logger.warning(f"Could not add deleted_at column (may already exist): {e}")
-                    conn.rollback()
-                    # Continue with the rest of initialization
-
-                # Migration: Add canvas_id column if it doesn't exist (for existing tables)
-                try:
-                    check_result = conn.execute(text("""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_name='file_summaries'
-                        AND column_name='canvas_id'
-                    """))
-
-                    if not check_result.fetchone():
-                        conn.execute(text("""
-                            ALTER TABLE file_summaries ADD COLUMN canvas_id VARCHAR(255)
-                        """))
-                        logger.info("Added canvas_id column to file_summaries (PostgreSQL)")
-                except Exception as e:
-                    logger.warning(f"Could not add canvas_id column (may already exist): {e}")
-                    conn.rollback()
-
-                # Migration: Add content_hash column for hash-based file identification
-                try:
-                    check_result = conn.execute(text("""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_name='file_summaries'
-                        AND column_name='content_hash'
-                    """))
-
-                    if not check_result.fetchone():
-                        conn.execute(text("""
-                            ALTER TABLE file_summaries ADD COLUMN content_hash VARCHAR(64) NULL
-                        """))
-                        logger.info("Added content_hash column to file_summaries (PostgreSQL)")
-
-                        # Create index on content_hash for fast lookups
-                        conn.execute(text("""
-                            CREATE INDEX IF NOT EXISTS idx_file_summaries_content_hash
-                            ON file_summaries(content_hash)
-                        """))
-                        logger.info("Created index on content_hash column")
-                except Exception as e:
-                    logger.warning(f"Could not add content_hash column (may already exist): {e}")
-                    conn.rollback()
+                logger.info("✅ file_summaries table created")
 
                 # Course metadata table (stores syllabus_id, etc.)
+                logger.info("Creating course_metadata table...")
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS course_metadata (
                         course_id VARCHAR(255) PRIMARY KEY,
@@ -188,8 +130,10 @@ class ChatStorage:
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
                 """))
+                logger.info("✅ course_metadata table created")
 
                 # PHASE 3: Gemini File API URI cache (48hr expiration)
+                logger.info("Creating gemini_file_cache table...")
                 conn.execute(text("""
                     CREATE TABLE IF NOT EXISTS gemini_file_cache (
                         file_path VARCHAR(512) PRIMARY KEY,
@@ -204,8 +148,10 @@ class ChatStorage:
                         expires_at TIMESTAMP NOT NULL
                     )
                 """))
+                logger.info("✅ gemini_file_cache table created")
 
                 # Create indices for faster queries
+                logger.info("Creating indices...")
                 conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS idx_sessions_course
                     ON chat_sessions(course_id, updated_at DESC)
@@ -257,10 +203,21 @@ class ChatStorage:
                 """))
 
                 conn.commit()
+                logger.info("✅ All indices created")
                 logger.info("PostgreSQL chat storage tables initialized")
 
+                # Verify tables were created
+                result = conn.execute(text("""
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    AND table_type = 'BASE TABLE'
+                """))
+                tables = [row[0] for row in result]
+                logger.info(f"✅ Verified tables exist: {tables}")
+
                 # Migration: Add canvas_user_id column for user-specific data tracking
-                # This must be done AFTER all tables are created and committed
+                # This is only needed for OLD tables that don't have the column
+                # New tables are created with the column already included
                 for table_name in ['chat_sessions', 'chat_messages', 'file_summaries', 'gemini_file_cache']:
                     try:
                         check_result = conn.execute(text(f"""
