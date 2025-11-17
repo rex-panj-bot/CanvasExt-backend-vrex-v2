@@ -1535,9 +1535,9 @@ User question: {first_message[:200]}
 
 Title:"""
 
-            # Call Gemini Flash (fast and cheap)
+            # Call Gemini Flash (fast and cheap) - uses separate quota from main model
             response = client.models.generate_content(
-                model='gemini-2.0-flash-exp',
+                model='gemini-1.5-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.7,

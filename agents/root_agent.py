@@ -32,7 +32,7 @@ class RootAgent:
         # Initialize Gemini client
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.5-flash"
-        self.fallback_model = "gemini-2.5-flash-preview"  # Fallback for rate limits/503
+        self.fallback_model = "gemini-2.0-flash"  # Fallback for rate limits/503
 
         # Initialize File Upload Manager
         self.file_upload_manager = FileUploadManager(

@@ -23,7 +23,8 @@ class FileSelectorAgent:
             google_api_key: Google API key for Gemini
         """
         self.client = genai.Client(api_key=google_api_key)
-        self.model_id = "gemini-2.5-flash-lite"  # 3-6x cheaper, same 65K token limit
+        self.model_id = "gemini-1.5-flash"  # Separate quota from main model, lightweight task
+        self.fallback_model = "gemini-2.0-flash"  # Fallback when rate limited
 
     async def select_relevant_files(
         self,
@@ -152,10 +153,35 @@ Return empty array [] with reasoning if no files are relevant."""
                 print(f"      {response_text[:1000]}{'...' if len(response_text) > 1000 else ''}")
 
             except Exception as api_error:
-                logger.error(f"❌ Gemini API error during file selection: {api_error}")
-                import traceback
-                traceback.print_exc()
-                return []  # Graceful fallback to manual selection
+                error_str = str(api_error).lower()
+                # Check for rate limiting errors
+                if '429' in error_str or 'quota' in error_str or 'rate' in error_str or 'resource_exhausted' in error_str:
+                    logger.warning(f"⚠️ Rate limited on {self.model_id}, falling back to {self.fallback_model}")
+                    try:
+                        response = self.client.models.generate_content(
+                            model=self.fallback_model,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                temperature=0.2,
+                                max_output_tokens=16000,
+                            )
+                        )
+                        if not response or not response.text:
+                            logger.error("❌ Fallback model also failed with empty response")
+                            return []
+                        response_text = response.text.strip()
+                        print(f"   🤖 RAW API RESPONSE (fallback model):")
+                        print(f"      {response_text[:1000]}{'...' if len(response_text) > 1000 else ''}")
+                    except Exception as fallback_error:
+                        logger.error(f"❌ Fallback model also failed: {fallback_error}")
+                        import traceback
+                        traceback.print_exc()
+                        return []
+                else:
+                    logger.error(f"❌ Gemini API error during file selection: {api_error}")
+                    import traceback
+                    traceback.print_exc()
+                    return []  # Graceful fallback to manual selection
 
             # Parse JSON response
             try:
