@@ -386,6 +386,7 @@ async def _generate_single_summary(
 ) -> Dict:
     """Generate summary for a single file (optimized with thread pools)"""
     try:
+        print(f"📄 _generate_single_summary called for {file_info.get('filename')} with canvas_user_id: {canvas_user_id}")
         # HASH-BASED: Use doc_id from upload result (format: {course_id}_{hash})
         doc_id = file_info.get("doc_id")
         content_hash = file_info.get("hash")
@@ -446,6 +447,7 @@ async def _generate_single_summary(
         )
 
         # Save to database (cache for future uploads) with hash
+        print(f"💾 Saving summary for {filename} with canvas_user_id: {canvas_user_id}")
         success = chat_storage.save_file_summary(
             doc_id=doc_id,
             course_id=course_id,
@@ -539,6 +541,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
     Background task to generate summaries for uploaded files in parallel
     """
     try:
+        print(f"📝 _generate_summaries_background called with canvas_user_id: {canvas_user_id}")
         from utils.file_upload_manager import FileUploadManager
 
         # Use default API key for summary generation

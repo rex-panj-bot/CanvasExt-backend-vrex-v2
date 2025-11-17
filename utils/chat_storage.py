@@ -75,6 +75,7 @@ class ChatStorage:
                         session_id VARCHAR(255) PRIMARY KEY,
                         course_id VARCHAR(255) NOT NULL,
                         title TEXT,
+                        canvas_user_id VARCHAR(255),
                         created_at TIMESTAMP DEFAULT NOW(),
                         updated_at TIMESTAMP DEFAULT NOW(),
                         message_count INTEGER DEFAULT 0
@@ -88,6 +89,7 @@ class ChatStorage:
                         session_id VARCHAR(255) NOT NULL,
                         role VARCHAR(50) NOT NULL,
                         content TEXT NOT NULL,
+                        canvas_user_id VARCHAR(255),
                         timestamp TIMESTAMP DEFAULT NOW(),
                         FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
                     )
@@ -103,6 +105,8 @@ class ChatStorage:
                         summary TEXT NOT NULL,
                         topics TEXT,
                         metadata TEXT,
+                        content_hash VARCHAR(64),
+                        canvas_user_id VARCHAR(255),
                         created_at TIMESTAMP DEFAULT NOW(),
                         updated_at TIMESTAMP DEFAULT NOW(),
                         deleted_at TIMESTAMP NULL
@@ -195,6 +199,7 @@ class ChatStorage:
                         gemini_name TEXT NOT NULL,
                         mime_type VARCHAR(100),
                         size_bytes BIGINT,
+                        canvas_user_id VARCHAR(255),
                         uploaded_at TIMESTAMP DEFAULT NOW(),
                         expires_at TIMESTAMP NOT NULL
                     )
@@ -217,6 +222,16 @@ class ChatStorage:
                 """))
 
                 conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_file_summaries_content_hash
+                    ON file_summaries(content_hash)
+                """))
+
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_file_summaries_user
+                    ON file_summaries(canvas_user_id)
+                """))
+
+                conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS idx_gemini_cache_course
                     ON gemini_file_cache(course_id)
                 """))
@@ -224,6 +239,21 @@ class ChatStorage:
                 conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS idx_gemini_cache_expires
                     ON gemini_file_cache(expires_at)
+                """))
+
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_gemini_cache_user
+                    ON gemini_file_cache(canvas_user_id)
+                """))
+
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_sessions_user
+                    ON chat_sessions(canvas_user_id)
+                """))
+
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_messages_user
+                    ON chat_messages(canvas_user_id)
                 """))
 
                 conn.commit()
@@ -820,6 +850,8 @@ class ChatStorage:
             topics_json = json.dumps(topics or [])
             metadata_json = json.dumps(metadata or {})
 
+            logger.info(f"save_file_summary called for {doc_id} with canvas_user_id: {canvas_user_id}")
+
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     conn.execute(text("""
@@ -845,6 +877,7 @@ class ChatStorage:
                         "canvas_user_id": canvas_user_id
                     })
                     conn.commit()
+                    logger.info(f"Successfully saved file_summary for {doc_id} with canvas_user_id: {canvas_user_id}")
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
