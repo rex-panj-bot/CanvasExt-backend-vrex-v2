@@ -43,15 +43,17 @@ class StorageManager:
 
         logger.info(f"StorageManager initialized with bucket: {bucket_name}")
 
-    def upload_pdf(self, course_id: str, filename: str, file_content: bytes, content_type: Optional[str] = None) -> str:
+    def upload_pdf(self, course_id: str, filename: str, file_content: bytes, content_type: Optional[str] = None, original_filename: Optional[str] = None) -> str:
         """
         Upload a file to GCS (supports PDFs and other file types)
 
         Args:
             course_id: Course identifier
-            filename: Original filename
+            filename: Storage filename (could be hash-based like "abc123.pdf")
             file_content: File content as bytes
             content_type: MIME type (auto-detected from filename if not provided)
+            original_filename: Original human-readable filename (e.g., "Lecture 1.pdf")
+                              Stored in GCS metadata for catalog reconstruction
 
         Returns:
             GCS blob name (path in bucket)
@@ -85,6 +87,14 @@ class StorageManager:
                     content_type = 'application/octet-stream'
                     logger.warning(f"Unknown file type for {filename}, using {content_type}")
 
+            # Store original filename in GCS custom metadata
+            # This allows catalog reconstruction to map hash-based filenames back to original names
+            if original_filename:
+                blob.metadata = {
+                    'original_filename': original_filename,
+                    'canvas_id': ''  # Can be set later if needed
+                }
+
             # Upload with metadata
             blob.upload_from_string(
                 file_content,
@@ -97,6 +107,8 @@ class StorageManager:
 
             ext = get_file_extension(filename) or 'file'
             logger.info(f"✅ Uploaded {blob_name} ({len(file_content)} bytes, {ext.upper()}, {content_type})")
+            if original_filename:
+                logger.info(f"   📝 Original filename stored: {original_filename}")
             return blob_name
 
         except Exception as e:
@@ -283,6 +295,7 @@ class StorageManager:
 
         Returns:
             Dictionary with metadata (size, created, updated, content_type, etc.)
+            Also includes custom metadata like original_filename if stored
         """
         try:
             blob = self.bucket.blob(blob_name)
@@ -292,7 +305,7 @@ class StorageManager:
 
             blob.reload()  # Fetch metadata from GCS
 
-            return {
+            metadata = {
                 'name': blob.name,
                 'size': blob.size,
                 'content_type': blob.content_type,
@@ -302,9 +315,52 @@ class StorageManager:
                 'public_url': blob.public_url if blob.public_url else None
             }
 
+            # Include custom metadata (original_filename, canvas_id, etc.)
+            if blob.metadata:
+                metadata['custom_metadata'] = blob.metadata
+                # Convenience access for original_filename
+                if 'original_filename' in blob.metadata:
+                    metadata['original_filename'] = blob.metadata['original_filename']
+
+            return metadata
+
         except Exception as e:
             logger.error(f"Failed to get metadata for {blob_name}: {e}")
             raise
+
+    def update_blob_metadata(self, blob_name: str, metadata: dict) -> bool:
+        """
+        Update custom metadata for a blob
+
+        Args:
+            blob_name: Full path in bucket
+            metadata: Dictionary of metadata key-value pairs to update
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            blob = self.bucket.blob(blob_name)
+
+            if not blob.exists():
+                raise FileNotFoundError(f"Blob {blob_name} not found")
+
+            blob.reload()  # Fetch current metadata
+
+            # Merge new metadata with existing
+            current_metadata = blob.metadata or {}
+            current_metadata.update(metadata)
+            blob.metadata = current_metadata
+
+            # Patch the blob to update metadata
+            blob.patch()
+
+            logger.info(f"Updated metadata for {blob_name}: {metadata}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to update metadata for {blob_name}: {e}")
+            return False
 
     def get_signed_url(self, blob_name: str, expiration_minutes: int = 60) -> str:
         """

@@ -1073,7 +1073,6 @@ async def process_canvas_files(
                 hash_blob_name = f"{course_id}/{content_hash}.pdf"
                 if storage_manager and storage_manager.file_exists(hash_blob_name):
                     print(f"⏭️  {file_name} already exists in GCS (hash: {content_hash[:16]}...)")
-                    # File exists - return metadata so it can be added to catalog
                     doc_id = f"{course_id}_{content_hash}"
                     return {
                         "status": "skipped",
@@ -1084,7 +1083,7 @@ async def process_canvas_files(
                         "path": hash_blob_name,
                         "storage": "gcs",
                         "size_bytes": len(file_content),
-                        "canvas_id": str(canvas_id) if canvas_id else None  # Preserve Canvas file ID
+                        "canvas_id": str(canvas_id) if canvas_id else None
                     }
 
                 if needs_conversion(safe_filename):
@@ -1112,7 +1111,8 @@ async def process_canvas_files(
                         course_id,
                         hash_filename,
                         file_content,
-                        mime_type
+                        mime_type,
+                        original_filename=original_filename  # Store original name in GCS metadata
                     )
                     processed += 1
                     print(f"✅ {original_filename}")
@@ -1163,6 +1163,7 @@ async def process_canvas_files(
         # Count results and collect file metadata with hashes
         uploaded_files = []
         skipped_files = []
+        skipped_no_url = 0
         for result in results:
             if isinstance(result, Exception):
                 failed += 1
@@ -1170,9 +1171,17 @@ async def process_canvas_files(
                 if result.get("status") == "uploaded":
                     uploaded_files.append(result)  # Full result with hash metadata
                 elif result.get("status") == "skipped":
-                    skipped_files.append(result)  # Skipped files also have hash metadata
+                    reason = result.get("reason", "")
+                    if "already exists" in reason:
+                        # File exists in GCS (by hash or name)
+                        skipped_files.append(result)  # Skipped files also have hash metadata
+                        skipped += 1  # Count hash-based skips
+                    elif "missing name or url" in reason:
+                        skipped_no_url += 1
+                    else:
+                        skipped_files.append(result)
 
-        print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed")
+        print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed, {skipped_no_url} missing URLs")
 
         # Add uploaded AND skipped files to catalog with hash-based metadata
         files_for_catalog = uploaded_files + skipped_files

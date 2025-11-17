@@ -66,19 +66,38 @@ class DocumentManager:
                         metadata = self.storage_manager.get_file_metadata(blob_name)
                         size_mb = metadata['size'] / (1024 * 1024)
 
-                        # Use full filename with extension in document ID
-                        doc_id = f"{course_id}_{filename}"
+                        # HASH-BASED: Check for original filename in custom metadata
+                        # This allows displaying human-readable names while using hash IDs internally
+                        display_name = original_name
+                        content_hash = None
+                        if 'original_filename' in metadata:
+                            display_name = metadata['original_filename']
+                            # Extract hash from filename (e.g., "abc123def.pdf" → "abc123def")
+                            content_hash = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                            print(f"   📝 Found original filename: {display_name} (hash: {content_hash[:16]}...)")
+
+                        # HASH-BASED: doc_id format
+                        # For hash-based files: filename is "abc123.pdf", doc_id = "course_abc123"
+                        # For legacy files: filename is "lecture.pdf", doc_id = "course_lecture.pdf"
+                        if content_hash and len(content_hash) == 64:
+                            # SHA-256 hash is 64 characters - this is a hash-based file
+                            doc_id = f"{course_id}_{content_hash}"
+                        else:
+                            # Legacy format: use full filename
+                            doc_id = f"{course_id}_{filename}"
+
                         catalog[course_id].append({
                             "id": doc_id,
-                            "name": original_name,
-                            "filename": filename,
+                            "name": display_name,  # Original filename for display and frontend matching
+                            "filename": filename,  # Storage filename (hash-based or original)
+                            "hash": content_hash,  # Content hash (for hash-based files)
                             "path": blob_name,  # GCS blob path
                             "size_mb": round(size_mb, 2),
                             "num_pages": None,  # Skip page counting for GCS
-                            "type": self._infer_type(original_name),
+                            "type": self._infer_type(display_name),
                             "storage": "gcs"
                         })
-                        print(f"   📄 Cataloged: {filename} → ID: {doc_id}")
+                        print(f"   📄 Cataloged: {display_name} → ID: {doc_id}")
                     except Exception as e:
                         print(f"Error getting metadata for {blob_name}: {e}")
 
