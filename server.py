@@ -560,9 +560,9 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             chat_storage=chat_storage  # PHASE 3: Enable database caching
         )
 
-        # Semaphore to limit concurrent processing (max 50 at a time)
-        # Summaries are I/O bound (Gemini API calls), can handle higher concurrency
-        semaphore = asyncio.Semaphore(50)
+        # Semaphore to limit concurrent processing (max 10 at a time)
+        # Keep low to avoid Gemini API rate limits on free tier
+        semaphore = asyncio.Semaphore(10)
 
         async def process_with_limit(file_info):
             """Wrapper to apply semaphore limit"""
@@ -571,7 +571,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                     file_info, course_id, file_uploader, file_summarizer, chat_storage, canvas_user_id
                 )
 
-        print(f"📝 Generating summaries for {len(successful_uploads)} files (max 20 concurrent)...")
+        print(f"📝 Generating summaries for {len(successful_uploads)} files (max 10 concurrent)...")
 
         # Generate summaries with concurrency limit
         tasks = [process_with_limit(file_info) for file_info in successful_uploads]
@@ -1537,7 +1537,7 @@ Title:"""
 
             # Call Gemini Flash (fast and cheap) - uses separate quota from main model
             response = client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-2.0-flash-lite',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.7,

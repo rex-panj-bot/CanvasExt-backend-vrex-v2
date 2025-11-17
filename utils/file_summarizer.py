@@ -24,7 +24,7 @@ class FileSummarizer:
         """
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.0-flash"  # Stable model for summaries
-        self.fallback_model = "gemini-1.5-flash"  # Fallback when rate limited (separate quota)
+        self.fallback_model = "gemini-2.0-flash-lite"  # Fallback when rate limited (lighter model)
 
     async def summarize_file(
         self,

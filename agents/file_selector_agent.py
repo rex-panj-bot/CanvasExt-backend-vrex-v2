@@ -23,7 +23,7 @@ class FileSelectorAgent:
             google_api_key: Google API key for Gemini
         """
         self.client = genai.Client(api_key=google_api_key)
-        self.model_id = "gemini-1.5-flash"  # Separate quota from main model, lightweight task
+        self.model_id = "gemini-2.0-flash-lite"  # Lightweight, separate quota from main model
         self.fallback_model = "gemini-2.0-flash"  # Fallback when rate limited
 
     async def select_relevant_files(
