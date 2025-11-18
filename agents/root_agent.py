@@ -392,7 +392,7 @@ class RootAgent:
                         print(f"   ⚠️  Failed to upload {len(failed_files)} files:")
                         for failed in failed_files:
                             print(f"      - {failed.get('path', 'unknown')}: {failed.get('error', 'unknown error')}")
-                    print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2]]}")
+                    print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2] if f.get('uri')]}")
 
                     # Inform user if no files could be uploaded
                     if len(uploaded_files) == 0:
@@ -510,7 +510,10 @@ INCORRECT examples (DO NOT USE):
                 # Attach file URIs (PDFs, images, etc.)
                 if file_uri_files:
                     for file_info in file_uri_files:
-                        parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
+                        if file_info.get('uri'):  # Safety check: ensure URI exists
+                            parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
+                        else:
+                            print(f"      ⚠️  Skipping file without URI: {file_info.get('display_name', 'unknown')}")
                     print(f"      ✅ Attached {len(file_uri_files)} file URIs (PDFs, images, etc.)")
 
                 # Attach text content inline (assignments, pages)
@@ -533,7 +536,7 @@ INCORRECT examples (DO NOT USE):
                         text_len = len(f.get('text_content', ''))
                         print(f"         - {display_name}: [TEXT, {text_len} chars]")
                     else:
-                        uri = f['uri'][:60] + '...'
+                        uri = (f['uri'][:60] + '...') if f.get('uri') else 'None'
                         print(f"         - {display_name}: {uri}")
                 if len(uploaded_files) > 3:
                     print(f"         ... and {len(uploaded_files) - 3} more")
