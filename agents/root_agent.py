@@ -495,16 +495,46 @@ INCORRECT examples (DO NOT USE):
             print(f"   📎 Attaching files to API call:")
             print(f"      materials_to_use: {len(materials_to_use)} files")
             print(f"      uploaded_files: {len(uploaded_files)} files successfully uploaded")
+
+            # Separate text files from regular files
+            text_files = []
+            file_uri_files = []
+
             if uploaded_files:
-                # Attach PDF file URIs
-                for i, file_info in enumerate(uploaded_files):
-                    parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
-                print(f"      ✅ Attached {len(uploaded_files)} file URIs to message")
-                print(f"      Sample URIs:")
+                for file_info in uploaded_files:
+                    if file_info.get('is_text'):
+                        text_files.append(file_info)
+                    else:
+                        file_uri_files.append(file_info)
+
+                # Attach file URIs (PDFs, images, etc.)
+                if file_uri_files:
+                    for file_info in file_uri_files:
+                        parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
+                    print(f"      ✅ Attached {len(file_uri_files)} file URIs (PDFs, images, etc.)")
+
+                # Attach text content inline (assignments, pages)
+                if text_files:
+                    text_content_parts = []
+                    for file_info in text_files:
+                        display_name = file_info.get('display_name', file_info.get('name', 'unknown'))
+                        text_content = file_info.get('text_content', '')
+                        text_content_parts.append(f"**{display_name}:**\n\n{text_content}")
+
+                    # Combine all text files into one text part
+                    combined_text = "\n\n---\n\n".join(text_content_parts)
+                    parts.append(types.Part(text=f"**Course Materials (Text Files):**\n\n{combined_text}\n\n---\n\n"))
+                    print(f"      ✅ Attached {len(text_files)} text files inline (assignments, pages)")
+
+                print(f"      Sample materials:")
                 for f in uploaded_files[:3]:
                     display_name = f.get('display_name', 'unknown')
-                    uri = f['uri'][:60] + '...'
-                    print(f"         - {display_name}: {uri}")
+                    if f.get('is_text'):
+                        text_len = len(f.get('text_content', ''))
+                        print(f"         - {display_name}: [TEXT, {text_len} chars]")
+                    else:
+                        uri = f['uri'][:60] + '...'
+                        print(f"         - {display_name}: {uri}")
                 if len(uploaded_files) > 3:
                     print(f"         ... and {len(uploaded_files) - 3} more")
             else:

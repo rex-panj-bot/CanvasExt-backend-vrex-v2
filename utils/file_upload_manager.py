@@ -134,6 +134,32 @@ class FileUploadManager:
                     print(f"    Will try uploading original format")
 
             ext = get_file_extension(filename) or 'file'
+
+            # SPECIAL HANDLING: Text files (assignments/pages) should NOT be uploaded as files
+            # Gemini File API expects documents with pages (PDFs, images), not plain text
+            # Instead, return the text content directly for inline use
+            if mime_type == 'text/plain' or filename.endswith('.txt'):
+                print(f"📝 [TXT FILE] Skipping Gemini upload for {filename} - will use text content directly")
+                try:
+                    text_content = file_bytes.decode('utf-8')
+                    result = {
+                        'file': None,
+                        'uri': None,
+                        'text_content': text_content,  # Return text instead of file URI
+                        'name': filename,
+                        'display_name': display_name or original_filename,
+                        'size_bytes': len(file_bytes),
+                        'mime_type': mime_type,
+                        'upload_time': time.time(),
+                        'is_text': True  # Flag to indicate this is text content, not a file
+                    }
+                    # Cache in memory for this session
+                    self._file_cache[file_path] = result
+                    return result
+                except UnicodeDecodeError as e:
+                    print(f"❌ Failed to decode text file {filename}: {e}")
+                    # Fall through to try file upload anyway
+
             print(f"📤 [CACHE MISS] Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API (~5-10s)...")
             if conversion_attempted and filename.endswith('.pdf'):
                 print(f"    (Converted from {original_filename})")
