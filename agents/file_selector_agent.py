@@ -17,12 +17,6 @@ logger = logging.getLogger(__name__)
 class FileSelectorAgent:
     """Selects relevant files using Anchor Cluster pattern"""
 
-    # High-authority file type indicators
-    ANCHOR_KEYWORDS = [
-        'study guide', 'review', 'recap', 'rubric', 'study_guide',
-        'exam review', 'test review', 'practice', 'summary', 'overview'
-    ]
-
     def __init__(self, google_api_key: str):
         """
         Initialize File Selector Agent
@@ -104,10 +98,10 @@ class FileSelectorAgent:
         """
         Scenario 1: Global Discovery (user has NOT manually selected files)
 
-        Flow:
-        1. Parse query + syllabus to extract event/date range/topics
-        2. Identify "Anchor" files (Study Guide, Review, etc.)
-        3. Extract keywords from anchor files
+        AI-Driven Flow:
+        1. AI analyzes query intent (topic, type, scope)
+        2. AI identifies anchor files based on summaries (not filenames)
+        3. Extract keywords from AI-selected anchors
         4. Score all files using anchor keywords
         5. Return top matches
 
@@ -121,42 +115,50 @@ class FileSelectorAgent:
             List of selected file dicts
         """
         try:
-            print(f"\n   📍 GLOBAL DISCOVERY FLOW")
+            print(f"\n   📍 GLOBAL DISCOVERY FLOW (AI-Driven)")
 
-            # Step 1: Parse query intent and extract event info
-            event_info = await self._parse_event_from_query(user_query, syllabus_summary)
-            event_name = event_info.get('event')
-            print(f"      Event: {event_name or 'N/A'}")
-            print(f"      Topics: {event_info.get('topics', [])[:3]}")
-            print(f"      Date range: {event_info.get('date_range', 'N/A')}")
+            # Step 1: AI analyzes query intent
+            query_intent = await self._analyze_query_intent(user_query, syllabus_summary)
+            print(f"      Main Topic: {query_intent.get('main_topic', 'N/A')}")
+            print(f"      Query Type: {query_intent.get('query_type', 'N/A')}")
+            print(f"      Scope: {query_intent.get('scope', 'N/A')}")
+            print(f"      Context Hints: {query_intent.get('context_hints', [])[:5]}")
 
-            # Step 2: Identify global anchor files FILTERED BY EVENT
-            anchors = self._identify_anchor_files(
+            # Step 2: AI identifies anchor files based on content
+            anchors = await self._identify_anchors_ai(
+                query_intent,
                 file_summaries,
-                event_info.get('date_range'),
-                scope='global',
-                event_filter=event_name  # CRITICAL: Only select anchors for this specific event
+                syllabus_summary,
+                max_anchors=5
             )
-            print(f"      Found {len(anchors)} anchor files for '{event_name or 'all'}'")
+            print(f"      AI selected {len(anchors)} anchor files")
             for anchor in anchors[:3]:
+                reasoning = anchor.get('_anchor_reasoning', 'N/A')
                 print(f"         🎯 {anchor['filename']}")
+                print(f"            → {reasoning}")
+
+            # Fallback: If AI selection fails, use legacy heuristics
+            if not anchors:
+                print(f"      ⚠️  AI anchor selection failed, using fallback heuristics")
+                anchors = self._identify_anchor_files(file_summaries)
+                print(f"      Found {len(anchors)} anchor files via fallback")
 
             # Step 3: Extract keywords from anchors
             anchor_keywords = await self._extract_anchor_keywords(anchors, user_query)
             print(f"      Extracted {len(anchor_keywords)} keywords from anchors")
             print(f"         Keywords: {anchor_keywords[:10]}")
 
-            # Step 4: Score all files using anchor keywords + query
+            # Step 4: Score all files using anchor keywords + query intent
             scored_files = await self._score_files_with_anchors(
                 file_summaries,
                 user_query,
                 anchor_keywords,
-                event_info.get('topics', [])
+                query_intent.get('context_hints', [])
             )
 
             # Step 5: Return top matches
             selected = scored_files[:max_files]
-            print(f"   ✅ Selected {len(selected)} files from global discovery")
+            print(f"   ✅ Selected {len(selected)} files from AI-driven global discovery")
             for file in selected[:5]:
                 print(f"      📄 {file.get('filename')} (score: {file.get('_score', 0):.2f})")
 
@@ -180,14 +182,13 @@ class FileSelectorAgent:
         """
         Scenario 2: Scoped Refinement (user HAS manually selected files)
 
-        Flow:
-        1. Parse query
-        2. ALWAYS retrieve syllabus for ground truth (even if not in selection)
-        3. Filter file_summaries to only user's selection
-        4. Identify anchors WITHIN selection
-        5. Extract keywords from scoped anchors (or fallback to syllabus topics)
-        6. Score and prune the selection
-        7. Return pruned subset
+        AI-Driven Flow:
+        1. AI analyzes query intent
+        2. Filter to user's selection
+        3. AI identifies anchors WITHIN selection based on content
+        4. Extract keywords from AI-selected anchors
+        5. Score and prune the selection
+        6. Return pruned subset
 
         Args:
             user_query: User's question
@@ -201,14 +202,14 @@ class FileSelectorAgent:
             Pruned list of selected file dicts (subset of user's selection)
         """
         try:
-            print(f"\n   🔬 SCOPED REFINEMENT FLOW")
+            print(f"\n   🔬 SCOPED REFINEMENT FLOW (AI-Driven)")
             print(f"      User selected {len(selected_docs)} files")
 
-            # Step 1: Parse query (but ALWAYS use syllabus for ground truth)
-            event_info = await self._parse_event_from_query(user_query, syllabus_summary)
-            event_name = event_info.get('event')
-            print(f"      Event: {event_name or 'N/A'}")
-            print(f"      Syllabus topics: {event_info.get('topics', [])[:3]}")
+            # Step 1: AI analyzes query intent
+            query_intent = await self._analyze_query_intent(user_query, syllabus_summary)
+            print(f"      Main Topic: {query_intent.get('main_topic', 'N/A')}")
+            print(f"      Query Type: {query_intent.get('query_type', 'N/A')}")
+            print(f"      Context Hints: {query_intent.get('context_hints', [])[:5]}")
 
             # Step 2: Filter to only user's selection
             selected_set = set(selected_docs)
@@ -224,24 +225,32 @@ class FileSelectorAgent:
                     # But use its summary for context
                     print(f"      ✅ Retrieved syllabus: {syllabus_file.get('filename')}")
 
-            # Step 3: Identify anchors WITHIN user's selection FILTERED BY EVENT
-            anchors = self._identify_anchor_files(
+            # Step 3: AI identifies anchors WITHIN user's selection
+            anchors = await self._identify_anchors_ai(
+                query_intent,
                 scoped_summaries,
-                event_info.get('date_range'),
-                scope='scoped',
-                event_filter=event_name  # CRITICAL: Only use anchors for this specific event
+                syllabus_summary,
+                max_anchors=3
             )
-            print(f"      Found {len(anchors)} anchor files for '{event_name or 'all'}' in selection")
+            print(f"      AI selected {len(anchors)} anchor files in selection")
             for anchor in anchors[:3]:
+                reasoning = anchor.get('_anchor_reasoning', 'N/A')
                 print(f"         🎯 {anchor['filename']}")
+                print(f"            → {reasoning}")
 
-            # Step 4: Extract keywords from scoped anchors (or fallback to syllabus)
+            # Fallback: If AI selection fails, use legacy heuristics
+            if not anchors:
+                print(f"      ⚠️  AI anchor selection failed, using fallback heuristics")
+                anchors = self._identify_anchor_files(scoped_summaries)
+                print(f"      Found {len(anchors)} anchor files via fallback")
+
+            # Step 4: Extract keywords from anchors (or fallback to query intent)
             if anchors:
                 anchor_keywords = await self._extract_anchor_keywords(anchors, user_query)
                 print(f"      Extracted {len(anchor_keywords)} keywords from scoped anchors")
             else:
-                print(f"      ⚠️  No anchors in selection, using syllabus topics as fallback")
-                anchor_keywords = event_info.get('topics', [])
+                print(f"      ⚠️  No anchors in selection, using query context hints as fallback")
+                anchor_keywords = query_intent.get('context_hints', [])
                 print(f"      Fallback keywords: {anchor_keywords[:5]}")
 
             # Step 5: Score ONLY the user's selection
@@ -249,7 +258,7 @@ class FileSelectorAgent:
                 scoped_summaries,
                 user_query,
                 anchor_keywords,
-                event_info.get('topics', [])
+                query_intent.get('context_hints', [])
             )
 
             # Step 6: Prune - return only relevant files (may be < user's selection)
@@ -343,187 +352,226 @@ Return ONLY the JSON, no other text."""
         except Exception as e:
             logger.error(f"Error parsing event: {e}")
             return {
-                'event': self._extract_event_name(user_query),
+                'event': None,
                 'topics': [],
                 'date_range': None
             }
 
-    def _extract_event_name(self, query: str) -> Optional[str]:
-        """Simple regex-based event extraction from query"""
-        query_lower = query.lower()
-
-        # Match patterns like "exam 1", "midterm 2", "final exam"
-        patterns = [
-            r'(exam\s+\d+)',
-            r'(midterm\s*\d*)',
-            r'(final\s*exam)',
-            r'(test\s+\d+)',
-            r'(quiz\s+\d+)'
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, query_lower)
-            if match:
-                return match.group(1).title()
-
-        return None
-
-    def _matches_event(self, filename: str, event: str) -> bool:
+    async def _analyze_query_intent(
+        self,
+        user_query: str,
+        syllabus_summary: Optional[str]
+    ) -> Dict:
         """
-        Check if filename matches the specific event
-
-        Examples:
-        - "Exam 1" matches: "exam 1 study guide", "e1_review.pdf", "exam1notes.pdf"
-        - "Exam 1" does NOT match: "exam 2 study guide", "exam 3 review"
-        - "Midterm" matches: "midterm study guide", "mid-term review", "mt_notes.pdf"
-        - "Final" matches: "final exam study guide", "final review"
+        AI analyzes user query to understand intent
 
         Args:
-            filename: Filename to check (lowercase)
-            event: Event name (e.g., "Exam 1", "Midterm", "Final Exam")
+            user_query: The user's question
+            syllabus_summary: Course syllabus summary for context
 
         Returns:
-            True if filename matches this specific event
+            Dict with:
+                - main_topic: Primary subject of query
+                - query_type: Type of query (exam_prep, conceptual, assignment_help, logistics)
+                - scope: Level of detail needed (overview, detailed, specific)
+                - context_hints: List of related keywords/concepts
         """
-        if not event:
-            return True  # No filter, accept all
+        try:
+            syllabus_context = ""
+            if syllabus_summary:
+                syllabus_context = f"\n**Course Syllabus Context:**\n{syllabus_summary[:800]}...\n"
 
-        filename_lower = filename.lower()
-        event_lower = event.lower()
+            prompt = f"""Analyze this student's query to understand their intent and needs.
 
-        # Extract event type and number
-        # Examples: "Exam 1" → type="exam", num="1"
-        #           "Midterm" → type="midterm", num=None
-        #           "Final Exam" → type="final", num=None
+**Student Query:**
+{user_query}
+{syllabus_context}
 
-        # Pattern 1: "exam N" or "test N" or "quiz N"
-        numbered_match = re.search(r'(exam|test|quiz)\s*(\d+)', event_lower)
-        if numbered_match:
-            event_type = numbered_match.group(1)
-            event_num = numbered_match.group(2)
+**Task:**
+Analyze the query and extract:
+1. **main_topic**: The primary subject/concept being asked about
+2. **query_type**: The type of query - choose one:
+   - "exam_prep": Preparing for an exam/test/quiz
+   - "assignment_help": Working on homework/project/assignment
+   - "conceptual": Understanding concepts/theories
+   - "logistics": Course logistics (dates, policies, requirements)
+   - "general": General question about course content
+3. **scope**: Level of detail needed - choose one:
+   - "overview": High-level understanding needed
+   - "detailed": In-depth explanation needed
+   - "specific": Specific answer to narrow question
+4. **context_hints**: List of 5-10 related keywords, concepts, or topics that would be relevant
 
-            # Check for direct matches
-            # "exam 1", "exam1", "e1", "exam_1"
-            patterns = [
-                f'{event_type}\\s*{event_num}',       # "exam 1", "exam1"
-                f'{event_type}_{event_num}',          # "exam_1"
-                f'{event_type}-{event_num}',          # "exam-1"
-                f'{event_type[0]}{event_num}',        # "e1", "t1", "q1"
-                f'{event_type[0]}\\s*{event_num}',    # "e 1"
-            ]
+Return ONLY valid JSON in this format:
+{{
+  "main_topic": "string",
+  "query_type": "exam_prep|assignment_help|conceptual|logistics|general",
+  "scope": "overview|detailed|specific",
+  "context_hints": ["keyword1", "keyword2", ...]
+}}"""
 
-            for pattern in patterns:
-                if re.search(pattern, filename_lower):
-                    # Found match - now verify it's NOT a different number
-                    # Check if filename contains other exam numbers
-                    all_nums = re.findall(r'(exam|test|quiz)\s*(\d+)', filename_lower)
-                    if all_nums:
-                        # Only match if this specific number appears
-                        for found_type, found_num in all_nums:
-                            if found_num == event_num:
-                                return True  # Correct exam number
-                            else:
-                                return False  # Different exam number (e.g., exam 2 when looking for exam 1)
-                    return True
+            response = await self._call_ai_with_fallback(prompt, max_tokens=500)
+            if not response:
+                return {
+                    'main_topic': user_query[:100],
+                    'query_type': 'general',
+                    'scope': 'detailed',
+                    'context_hints': []
+                }
 
-            return False  # Numbered event but no match found
+            # Parse JSON
+            response_text = response.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text.split("```json")[1].split("```")[0]
+            elif response_text.startswith("```"):
+                response_text = response_text.split("```")[1].split("```")[0]
 
-        # Pattern 2: "midterm" (with optional number)
-        if 'midterm' in event_lower or 'mid-term' in event_lower:
-            # Extract number if present
-            midterm_num_match = re.search(r'midterm\s*(\d*)', event_lower)
-            if midterm_num_match and midterm_num_match.group(1):
-                # Numbered midterm (e.g., "Midterm 2")
-                num = midterm_num_match.group(1)
-                patterns = [
-                    f'midterm\\s*{num}',
-                    f'mid-term\\s*{num}',
-                    f'mt\\s*{num}',
-                    f'mt{num}',
-                ]
-                for pattern in patterns:
-                    if re.search(pattern, filename_lower):
-                        # Verify not a different midterm number
-                        all_midterms = re.findall(r'(midterm|mid-term|mt)\s*(\d+)', filename_lower)
-                        if all_midterms:
-                            for _, found_num in all_midterms:
-                                if found_num == num:
-                                    return True
-                                else:
-                                    return False
-                        return True
-                return False
-            else:
-                # Generic "midterm" - match any midterm
-                if re.search(r'(midterm|mid-term|mt)(?!\d)', filename_lower):
-                    return True
-                return False
+            intent = json.loads(response_text.strip())
+            return intent
 
-        # Pattern 3: "final" or "final exam"
-        if 'final' in event_lower:
-            if re.search(r'final', filename_lower):
-                return True
-            return False
+        except Exception as e:
+            logger.error(f"Error analyzing query intent: {e}")
+            return {
+                'main_topic': user_query[:100],
+                'query_type': 'general',
+                'scope': 'detailed',
+                'context_hints': []
+            }
 
-        # Fallback: simple substring match
-        return event_lower in filename_lower
+    async def _identify_anchors_ai(
+        self,
+        query_intent: Dict,
+        file_summaries: List[Dict],
+        syllabus_summary: Optional[str],
+        max_anchors: int = 5
+    ) -> List[Dict]:
+        """
+        AI identifies most authoritative/useful anchor files based on query intent
+
+        Args:
+            query_intent: Output from _analyze_query_intent()
+            file_summaries: All available file summaries
+            syllabus_summary: Course syllabus summary
+            max_anchors: Maximum number of anchors to return
+
+        Returns:
+            List of selected anchor file dicts with reasoning
+        """
+        try:
+            if not file_summaries:
+                return []
+
+            # Build files context
+            files_context = self._build_files_context(file_summaries)
+
+            # Build syllabus context
+            syllabus_context = ""
+            if syllabus_summary:
+                syllabus_context = f"\n**Course Syllabus:**\n{syllabus_summary[:600]}...\n"
+
+            prompt = f"""Select 3-5 "anchor" files that would be most useful for answering the student's query.
+
+**Query Analysis:**
+- Main Topic: {query_intent.get('main_topic')}
+- Query Type: {query_intent.get('query_type')}
+- Scope: {query_intent.get('scope')}
+- Context Hints: {', '.join(query_intent.get('context_hints', [])[:10])}
+{syllabus_context}
+
+**Available Files:**
+{files_context}
+
+**Task:**
+Identify {max_anchors} "anchor" files that would provide the MOST useful context. Prioritize files that:
+1. **Provide structure/overview** (syllabus, module overviews, outlines, study guides)
+2. **Define scope** (rubrics, review sheets, exam guides, assignment descriptions)
+3. **Are comprehensive** on the main topic (lectures, textbook chapters covering the topic)
+4. **Match the specific assessment** if query is about exam/assignment (e.g., "Exam 1 Study Guide" for Exam 1 questions)
+
+Return ONLY valid JSON array of doc_ids with reasoning:
+[
+  {{
+    "doc_id": "string",
+    "filename": "string",
+    "reasoning": "why this is a good anchor (1 sentence)"
+  }},
+  ...
+]
+
+Select up to {max_anchors} files. Return ONLY the JSON array."""
+
+            response = await self._call_ai_with_fallback(prompt, max_tokens=1000)
+            if not response:
+                return []
+
+            # Parse JSON
+            response_text = response.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text.split("```json")[1].split("```")[0]
+            elif response_text.startswith("```"):
+                response_text = response_text.split("```")[1].split("```")[0]
+
+            selected_anchors = json.loads(response_text.strip())
+
+            # Map back to full file objects
+            anchor_files = []
+            selected_doc_ids = [a.get('doc_id') for a in selected_anchors if isinstance(a, dict)]
+
+            for file_info in file_summaries:
+                if file_info.get('doc_id') in selected_doc_ids:
+                    # Find reasoning
+                    reasoning = next(
+                        (a.get('reasoning', '') for a in selected_anchors if a.get('doc_id') == file_info.get('doc_id')),
+                        ''
+                    )
+                    file_info['_anchor_reasoning'] = reasoning
+                    file_info['_anchor_score'] = 1.0
+                    anchor_files.append(file_info)
+
+            return anchor_files[:max_anchors]
+
+        except Exception as e:
+            logger.error(f"Error identifying AI anchors: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
     def _identify_anchor_files(
         self,
         file_summaries: List[Dict],
         date_range: Optional[str] = None,
-        scope: str = 'global',
-        event_filter: Optional[str] = None
+        scope: str = 'global'
     ) -> List[Dict]:
         """
-        Identify high-authority "anchor" files
+        DEPRECATED: Legacy method for backwards compatibility
+        Now only used as fallback if AI anchor selection fails
 
-        Priority:
-        1. Files with anchor keywords in filename (Study Guide, Review, etc.)
-        2. Files matching the specific event (e.g., "Exam 1" only, not "Exam 2")
-        3. Files within specified date range (if provided)
+        Identify high-authority "anchor" files based on simple heuristics
 
         Args:
             file_summaries: Files to search
-            date_range: Optional date range from syllabus
-            scope: 'global' or 'scoped'
-            event_filter: Optional event name to filter anchors (e.g., "Exam 1")
+            date_range: Optional date range from syllabus (unused)
+            scope: 'global' or 'scoped' (unused)
 
         Returns:
             List of anchor file dicts
         """
-        anchors = []
+        # Simple heuristic: look for files with authoritative keywords
+        anchor_keywords = [
+            'study guide', 'review', 'recap', 'rubric', 'study_guide',
+            'exam review', 'test review', 'practice', 'summary', 'overview',
+            'syllabus', 'outline'
+        ]
 
+        anchors = []
         for file_info in file_summaries:
             filename = file_info.get('filename', '').lower()
-            metadata = file_info.get('metadata', {})
+            if any(keyword in filename for keyword in anchor_keywords):
+                file_info['_anchor_score'] = 1.0
+                anchors.append(file_info)
 
-            # Parse metadata if string
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except:
-                    metadata = {}
-
-            # Check for anchor keywords in filename
-            is_anchor = any(keyword in filename for keyword in self.ANCHOR_KEYWORDS)
-
-            if not is_anchor:
-                continue
-
-            # CRITICAL: If event filter is provided, ONLY include anchors for that specific event
-            if event_filter:
-                if not self._matches_event(filename, event_filter):
-                    continue  # Skip anchors for different events (e.g., skip "Exam 2" when looking for "Exam 1")
-
-            # Add score for anchor priority
-            file_info['_anchor_score'] = 1.0
-            anchors.append(file_info)
-
-        # Sort by anchor score (most authoritative first)
         anchors.sort(key=lambda x: x.get('_anchor_score', 0), reverse=True)
-
-        return anchors
+        return anchors[:5]
 
     async def _extract_anchor_keywords(
         self,
