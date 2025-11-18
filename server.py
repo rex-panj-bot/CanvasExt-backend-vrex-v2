@@ -300,13 +300,16 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         if storage_manager:
             # Run synchronous GCS upload in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            # HASH-BASED: Use hash for GCS path instead of filename
-            hash_filename = f"{content_hash}.pdf"
+            # HASH-BASED: Use hash for GCS path with correct extension
+            # Extract extension from actual_filename to preserve file type (.txt, .pdf, etc.)
+            import os
+            file_ext = os.path.splitext(actual_filename)[1] or '.pdf'  # Default to .pdf if no extension
+            hash_filename = f"{content_hash}{file_ext}"
             blob_name = await loop.run_in_executor(
                 None,
                 storage_manager.upload_pdf,
                 course_id,
-                hash_filename,  # Use hash-based filename
+                hash_filename,  # Use hash-based filename with correct extension
                 content,
                 mime_type  # Pass MIME type
             )
@@ -327,8 +330,10 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
             return result
         else:
             # Fallback to local storage
-            # HASH-BASED: Use hash for local path instead of filename
-            hash_filename = f"{content_hash}.pdf"
+            # HASH-BASED: Use hash for local path with correct extension
+            import os
+            file_ext = os.path.splitext(actual_filename)[1] or '.pdf'  # Default to .pdf if no extension
+            hash_filename = f"{content_hash}{file_ext}"
             file_path = UPLOAD_DIR / f"{course_id}_{hash_filename}"
 
             # Run file write in thread pool to avoid blocking
@@ -904,12 +909,21 @@ async def check_files_exist(request: Dict):
                 missing.append(file_info)
                 continue
 
-            # Build the GCS blob path: course_id/hash.pdf
-            blob_name = f"{course_id}/{file_hash}.pdf"
+            # Build the GCS blob path: course_id/hash.ext
+            # Try multiple extensions since we don't know what was uploaded
+            # Priority: .txt (assignments), .pdf (most common), no extension
+            possible_extensions = ['.txt', '.pdf', '']
+            blob_exists = False
+            blob_name = None
 
             # Check if blob exists in GCS
             try:
-                blob_exists = storage_manager.file_exists(blob_name)
+                for ext in possible_extensions:
+                    test_blob_name = f"{course_id}/{file_hash}{ext}"
+                    if storage_manager.file_exists(test_blob_name):
+                        blob_exists = True
+                        blob_name = test_blob_name
+                        break
 
                 if blob_exists:
                     doc_id = f"{course_id}_{file_hash}"
@@ -1070,8 +1084,21 @@ async def process_canvas_files(
                 print(f"🔑 Content hash: {content_hash[:16]}...")
 
                 # Check if this file (by hash) already exists in GCS
-                hash_blob_name = f"{course_id}/{content_hash}.pdf"
-                if storage_manager and storage_manager.file_exists(hash_blob_name):
+                # Try multiple extensions since we don't know what was uploaded
+                import os
+                file_ext = os.path.splitext(actual_filename)[1] or '.pdf'
+                hash_blob_name = f"{course_id}/{content_hash}{file_ext}"
+                # Also check .pdf and .txt as fallback (for legacy files)
+                possible_extensions = [file_ext, '.txt', '.pdf', '']
+                hash_blob_exists = False
+                for test_ext in possible_extensions:
+                    test_blob_name = f"{course_id}/{content_hash}{test_ext}"
+                    if storage_manager and storage_manager.file_exists(test_blob_name):
+                        hash_blob_name = test_blob_name
+                        hash_blob_exists = True
+                        break
+
+                if hash_blob_exists:
                     print(f"⏭️  {file_name} already exists in GCS (hash: {content_hash[:16]}...)")
                     doc_id = f"{course_id}_{content_hash}"
                     return {
@@ -1105,8 +1132,10 @@ async def process_canvas_files(
                             mime_type = 'application/pdf'
 
                 if storage_manager:
-                    # HASH-BASED: Use hash for GCS filename
-                    hash_filename = f"{content_hash}.pdf"
+                    # HASH-BASED: Use hash for GCS filename with correct extension
+                    import os
+                    file_ext = os.path.splitext(actual_filename)[1] or '.pdf'  # Default to .pdf if no extension
+                    hash_filename = f"{content_hash}{file_ext}"
                     blob_name = storage_manager.upload_pdf(
                         course_id,
                         hash_filename,
