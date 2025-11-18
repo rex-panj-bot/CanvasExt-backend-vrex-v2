@@ -133,11 +133,11 @@ class RootAgent:
             # Step 2: Filter based on selection (manual or AI-powered)
             materials_to_use = []
 
-            # If smart selection is enabled, use AI to select relevant files
+            # ANCHOR CLUSTER: Smart selection with Global Discovery or Scoped Refinement
             if use_smart_selection and self.chat_storage:
-                yield "📋 Analyzing your question and selecting relevant materials..."
-                print(f"\n   🤖 SMART SELECTION ENABLED")
+                print(f"\n   🤖 ANCHOR CLUSTER SMART SELECTION ENABLED")
                 print(f"   ❓ User query: {user_message[:200]}{'...' if len(user_message) > 200 else ''}")
+                print(f"   📋 Manual selection provided: {len(selected_docs) if selected_docs else 0} files")
 
                 # Get file summaries from database
                 file_summaries = self.chat_storage.get_all_summaries_for_course(course_id)
@@ -148,41 +148,32 @@ class RootAgent:
                     yield "\n⚠️ No file summaries available. Using all materials.\n"
                     materials_to_use = all_materials
                 else:
-                    # Use AI to decide if we need syllabus for this query
-                    print(f"   🤔 Analyzing if query needs course structure context...")
-                    needs_syllabus = await self.file_selector_agent.should_use_syllabus(user_message)
+                    # ALWAYS fetch syllabus for ground truth (needed for both scenarios)
+                    # Try to get stored syllabus_id from database first
+                    if not syllabus_id and self.chat_storage:
+                        syllabus_id = self.chat_storage.get_course_syllabus(course_id)
+                        if syllabus_id:
+                            print(f"      ✅ Found stored syllabus_id in database: {syllabus_id}")
 
                     syllabus_summary = None
-                    if needs_syllabus:
-                        print(f"   📚 AI determined syllabus needed, fetching...")
-
-                        # Try to get stored syllabus_id from database first
-                        if not syllabus_id and self.chat_storage:
-                            syllabus_id = self.chat_storage.get_course_syllabus(course_id)
-                            if syllabus_id:
-                                print(f"      ✅ Found stored syllabus_id in database: {syllabus_id}")
-
-                        if syllabus_id:
-                            print(f"      Using syllabus_id: {syllabus_id}")
-                        else:
-                            print(f"      No syllabus_id stored, searching for 'syllabus' in filenames...")
-
+                    if syllabus_id:
+                        print(f"      Fetching syllabus for ground truth: {syllabus_id}")
                         syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
                             syllabus_id, file_summaries
                         )
-
                         if syllabus_summary:
-                            print(f"   ✅ Found syllabus ({len(syllabus_summary)} chars)")
-                            print(f"      Preview: {syllabus_summary[:150]}...")
+                            print(f"   ✅ Syllabus found ({len(syllabus_summary)} chars)")
                         else:
-                            print(f"   ⚠️  No syllabus found - proceeding without course structure")
+                            print(f"   ⚠️  Syllabus not found")
                     else:
-                        print(f"   ⏭️  AI determined syllabus not needed (topic-based query)")
+                        print(f"      No syllabus_id stored, searching for 'syllabus' in filenames...")
+                        syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
+                            None, file_summaries
+                        )
 
                     # Determine max_files based on user query or use default
-                    # Extract number if user asks for specific amount (e.g., "give me 7 files")
                     import re
-                    max_files = 15  # Default increased from 5 to 15 (we have 16K output tokens now)
+                    max_files = 15  # Default
 
                     # Check if user specifies a number in their query
                     number_patterns = [
@@ -195,15 +186,20 @@ class RootAgent:
                         match = re.search(pattern, user_message.lower())
                         if match:
                             requested = int(match.group(1))
-                            max_files = min(requested, 30)  # Cap at 30 for performance
+                            max_files = min(requested, 30)  # Cap at 30
                             print(f"   📊 User requested {requested} files, using max_files={max_files}")
                             break
 
-                    # Use file selector agent to intelligently choose files
+                    # Route to Anchor Cluster file selector
+                    # Pass selected_docs if user made manual selection (Scoped Refinement)
+                    # Pass None if no selection (Global Discovery)
+                    yield "📋 Analyzing your question and selecting relevant materials..."
                     selected_files = await self.file_selector_agent.select_relevant_files(
                         user_query=user_message,
                         file_summaries=file_summaries,
                         syllabus_summary=syllabus_summary,
+                        syllabus_doc_id=syllabus_id,
+                        selected_docs=selected_docs,  # NEW: Pass user's manual selection
                         max_files=max_files
                     )
 
@@ -214,22 +210,28 @@ class RootAgent:
                     else:
                         # Get the actual materials based on selected doc_ids
                         selected_doc_ids = [f.get("doc_id") for f in selected_files]
-                        print(f"   🔍 DEBUG: Selected doc IDs from AI: {selected_doc_ids[:5]}...")
-                        print(f"   🔍 DEBUG: Available material IDs: {[m['id'] for m in all_materials[:5]]}...")
+                        print(f"   🔍 Selected doc IDs from Anchor Cluster: {selected_doc_ids[:5]}...")
                         materials_to_use = [m for m in all_materials if m["id"] in selected_doc_ids]
-                        print(f"   🔍 DEBUG: Matched {len(materials_to_use)} materials from {len(selected_doc_ids)} selected IDs")
+                        print(f"   🔍 Matched {len(materials_to_use)} materials from {len(selected_doc_ids)} selected IDs")
 
-                        # Always include syllabus if available
+                        # Always include syllabus if available (anchor doc)
                         if syllabus_id and syllabus_id not in selected_doc_ids:
                             syllabus = next((m for m in all_materials if m["id"] == syllabus_id), None)
                             if syllabus:
                                 materials_to_use.append(syllabus)
+                                print(f"   📌 Added syllabus as anchor doc")
 
                         # Show selected files to user
                         file_names = [f.get("filename", "unknown") for f in selected_files[:3]]
-                        yield f"\n✅ Selected {len(materials_to_use)} relevant files: {', '.join(file_names)}{'...' if len(file_names) > 3 else ''}\n\n"
+                        if selected_docs:
+                            # Scoped Refinement - show pruning
+                            yield f"\n✅ Pruned selection: {len(selected_docs)} → {len(materials_to_use)} relevant files\n"
+                            yield f"   Files: {', '.join(file_names)}{'...' if len(file_names) > 3 else ''}\n\n"
+                        else:
+                            # Global Discovery - show selection
+                            yield f"\n✅ Selected {len(materials_to_use)} relevant files: {', '.join(file_names)}{'...' if len(file_names) > 3 else ''}\n\n"
 
-                        print(f"   ✅ Smart selection chose {len(materials_to_use)} files:")
+                        print(f"   ✅ Anchor Cluster selected {len(materials_to_use)} files:")
                         for file in selected_files[:5]:
                             print(f"      📄 {file.get('filename')}")
 
