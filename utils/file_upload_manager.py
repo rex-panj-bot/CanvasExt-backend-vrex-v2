@@ -113,6 +113,15 @@ class FileUploadManager:
                 with open(file_path, 'rb') as f:
                     file_bytes = f.read()
 
+            # Validate file is not empty
+            if not file_bytes or len(file_bytes) == 0:
+                print(f"⚠️  File is empty (0 bytes): {filename}")
+                return {
+                    'error': f'File is empty (0 bytes)',
+                    'filename': filename,
+                    'skipped': True
+                }
+
             # Convert Office files to PDF if needed
             original_filename = filename
             conversion_attempted = False
@@ -142,6 +151,16 @@ class FileUploadManager:
                 print(f"📝 [TXT FILE] Skipping Gemini upload for {filename} - will use text content directly")
                 try:
                     text_content = file_bytes.decode('utf-8')
+
+                    # Validate text content is not empty
+                    if not text_content or not text_content.strip():
+                        print(f"⚠️  [TXT FILE] Skipping empty text file: {filename}")
+                        return {
+                            'error': f'Text file is empty: {filename}',
+                            'filename': filename,
+                            'skipped': True
+                        }
+
                     result = {
                         'file': None,
                         'uri': None,
