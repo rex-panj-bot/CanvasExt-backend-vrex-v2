@@ -39,17 +39,21 @@ def convert_office_to_pdf(file_bytes: bytes, filename: str) -> Optional[bytes]:
 
     try:
         # Try LibreOffice conversion (most reliable)
+        logger.info(f"🔄 Attempting LibreOffice conversion for {filename}")
         pdf_bytes = _convert_with_libreoffice(file_bytes, filename, ext)
         if pdf_bytes:
+            logger.info(f"✅ Successfully converted {filename} using LibreOffice")
             return pdf_bytes
 
         # Fallback: Try python-pptx/docx for text extraction as PDF
-        logger.info(f"LibreOffice not available, trying Python library extraction for {filename}")
+        logger.warning(f"⚠️ LibreOffice conversion failed for {filename}, falling back to text extraction")
         pdf_bytes = _extract_text_as_pdf(file_bytes, ext)
+        if pdf_bytes:
+            logger.warning(f"⚠️ Using text-only PDF for {filename} (formatting and images lost)")
         return pdf_bytes
 
     except Exception as e:
-        logger.error(f"Failed to convert {filename} to PDF: {e}")
+        logger.error(f"❌ Failed to convert {filename} to PDF: {e}")
         return None
 
 
@@ -83,8 +87,10 @@ def _convert_with_libreoffice(file_bytes: bytes, filename: str, ext: str) -> Opt
             continue
 
     if not soffice_path:
-        print("LibreOffice not found on system")
+        logger.warning("⚠️ LibreOffice not found on system - will fall back to text extraction")
         return None
+
+    logger.info(f"✅ Found LibreOffice at: {soffice_path}")
 
     # Create temp directory for conversion
     with tempfile.TemporaryDirectory() as tmpdir:
