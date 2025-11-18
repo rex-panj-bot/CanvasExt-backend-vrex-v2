@@ -125,17 +125,19 @@ class FileSelectorAgent:
 
             # Step 1: Parse query intent and extract event info
             event_info = await self._parse_event_from_query(user_query, syllabus_summary)
-            print(f"      Event: {event_info.get('event', 'N/A')}")
+            event_name = event_info.get('event')
+            print(f"      Event: {event_name or 'N/A'}")
             print(f"      Topics: {event_info.get('topics', [])[:3]}")
             print(f"      Date range: {event_info.get('date_range', 'N/A')}")
 
-            # Step 2: Identify global anchor files
+            # Step 2: Identify global anchor files FILTERED BY EVENT
             anchors = self._identify_anchor_files(
                 file_summaries,
                 event_info.get('date_range'),
-                scope='global'
+                scope='global',
+                event_filter=event_name  # CRITICAL: Only select anchors for this specific event
             )
-            print(f"      Found {len(anchors)} anchor files globally")
+            print(f"      Found {len(anchors)} anchor files for '{event_name or 'all'}'")
             for anchor in anchors[:3]:
                 print(f"         🎯 {anchor['filename']}")
 
@@ -204,7 +206,8 @@ class FileSelectorAgent:
 
             # Step 1: Parse query (but ALWAYS use syllabus for ground truth)
             event_info = await self._parse_event_from_query(user_query, syllabus_summary)
-            print(f"      Event: {event_info.get('event', 'N/A')}")
+            event_name = event_info.get('event')
+            print(f"      Event: {event_name or 'N/A'}")
             print(f"      Syllabus topics: {event_info.get('topics', [])[:3]}")
 
             # Step 2: Filter to only user's selection
@@ -221,13 +224,14 @@ class FileSelectorAgent:
                     # But use its summary for context
                     print(f"      ✅ Retrieved syllabus: {syllabus_file.get('filename')}")
 
-            # Step 3: Identify anchors WITHIN user's selection
+            # Step 3: Identify anchors WITHIN user's selection FILTERED BY EVENT
             anchors = self._identify_anchor_files(
                 scoped_summaries,
                 event_info.get('date_range'),
-                scope='scoped'
+                scope='scoped',
+                event_filter=event_name  # CRITICAL: Only use anchors for this specific event
             )
-            print(f"      Found {len(anchors)} anchor files in selection")
+            print(f"      Found {len(anchors)} anchor files for '{event_name or 'all'}' in selection")
             for anchor in anchors[:3]:
                 print(f"         🎯 {anchor['filename']}")
 
@@ -364,23 +368,126 @@ Return ONLY the JSON, no other text."""
 
         return None
 
+    def _matches_event(self, filename: str, event: str) -> bool:
+        """
+        Check if filename matches the specific event
+
+        Examples:
+        - "Exam 1" matches: "exam 1 study guide", "e1_review.pdf", "exam1notes.pdf"
+        - "Exam 1" does NOT match: "exam 2 study guide", "exam 3 review"
+        - "Midterm" matches: "midterm study guide", "mid-term review", "mt_notes.pdf"
+        - "Final" matches: "final exam study guide", "final review"
+
+        Args:
+            filename: Filename to check (lowercase)
+            event: Event name (e.g., "Exam 1", "Midterm", "Final Exam")
+
+        Returns:
+            True if filename matches this specific event
+        """
+        if not event:
+            return True  # No filter, accept all
+
+        filename_lower = filename.lower()
+        event_lower = event.lower()
+
+        # Extract event type and number
+        # Examples: "Exam 1" → type="exam", num="1"
+        #           "Midterm" → type="midterm", num=None
+        #           "Final Exam" → type="final", num=None
+
+        # Pattern 1: "exam N" or "test N" or "quiz N"
+        numbered_match = re.search(r'(exam|test|quiz)\s*(\d+)', event_lower)
+        if numbered_match:
+            event_type = numbered_match.group(1)
+            event_num = numbered_match.group(2)
+
+            # Check for direct matches
+            # "exam 1", "exam1", "e1", "exam_1"
+            patterns = [
+                f'{event_type}\\s*{event_num}',       # "exam 1", "exam1"
+                f'{event_type}_{event_num}',          # "exam_1"
+                f'{event_type}-{event_num}',          # "exam-1"
+                f'{event_type[0]}{event_num}',        # "e1", "t1", "q1"
+                f'{event_type[0]}\\s*{event_num}',    # "e 1"
+            ]
+
+            for pattern in patterns:
+                if re.search(pattern, filename_lower):
+                    # Found match - now verify it's NOT a different number
+                    # Check if filename contains other exam numbers
+                    all_nums = re.findall(r'(exam|test|quiz)\s*(\d+)', filename_lower)
+                    if all_nums:
+                        # Only match if this specific number appears
+                        for found_type, found_num in all_nums:
+                            if found_num == event_num:
+                                return True  # Correct exam number
+                            else:
+                                return False  # Different exam number (e.g., exam 2 when looking for exam 1)
+                    return True
+
+            return False  # Numbered event but no match found
+
+        # Pattern 2: "midterm" (with optional number)
+        if 'midterm' in event_lower or 'mid-term' in event_lower:
+            # Extract number if present
+            midterm_num_match = re.search(r'midterm\s*(\d*)', event_lower)
+            if midterm_num_match and midterm_num_match.group(1):
+                # Numbered midterm (e.g., "Midterm 2")
+                num = midterm_num_match.group(1)
+                patterns = [
+                    f'midterm\\s*{num}',
+                    f'mid-term\\s*{num}',
+                    f'mt\\s*{num}',
+                    f'mt{num}',
+                ]
+                for pattern in patterns:
+                    if re.search(pattern, filename_lower):
+                        # Verify not a different midterm number
+                        all_midterms = re.findall(r'(midterm|mid-term|mt)\s*(\d+)', filename_lower)
+                        if all_midterms:
+                            for _, found_num in all_midterms:
+                                if found_num == num:
+                                    return True
+                                else:
+                                    return False
+                        return True
+                return False
+            else:
+                # Generic "midterm" - match any midterm
+                if re.search(r'(midterm|mid-term|mt)(?!\d)', filename_lower):
+                    return True
+                return False
+
+        # Pattern 3: "final" or "final exam"
+        if 'final' in event_lower:
+            if re.search(r'final', filename_lower):
+                return True
+            return False
+
+        # Fallback: simple substring match
+        return event_lower in filename_lower
+
     def _identify_anchor_files(
         self,
         file_summaries: List[Dict],
         date_range: Optional[str] = None,
-        scope: str = 'global'
+        scope: str = 'global',
+        event_filter: Optional[str] = None
     ) -> List[Dict]:
         """
         Identify high-authority "anchor" files
 
         Priority:
         1. Files with anchor keywords in filename (Study Guide, Review, etc.)
-        2. Files within specified date range (if provided)
+        2. Files matching the specific event (e.g., "Exam 1" only, not "Exam 2")
+        3. Files within specified date range (if provided)
 
         Args:
             file_summaries: Files to search
             date_range: Optional date range from syllabus
             scope: 'global' or 'scoped'
+            event_filter: Optional event name to filter anchors (e.g., "Exam 1")
 
         Returns:
             List of anchor file dicts
@@ -401,14 +508,17 @@ Return ONLY the JSON, no other text."""
             # Check for anchor keywords in filename
             is_anchor = any(keyword in filename for keyword in self.ANCHOR_KEYWORDS)
 
-            # Check if file falls in date range (if provided)
-            # TODO: Implement date matching logic if needed
-            # For now, prioritize by keyword only
+            if not is_anchor:
+                continue
 
-            if is_anchor:
-                # Add score for anchor priority
-                file_info['_anchor_score'] = 1.0
-                anchors.append(file_info)
+            # CRITICAL: If event filter is provided, ONLY include anchors for that specific event
+            if event_filter:
+                if not self._matches_event(filename, event_filter):
+                    continue  # Skip anchors for different events (e.g., skip "Exam 2" when looking for "Exam 1")
+
+            # Add score for anchor priority
+            file_info['_anchor_score'] = 1.0
+            anchors.append(file_info)
 
         # Sort by anchor score (most authoritative first)
         anchors.sort(key=lambda x: x.get('_anchor_score', 0), reverse=True)
