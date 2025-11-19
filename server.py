@@ -615,31 +615,6 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         traceback.print_exc()
 
 
-async def _summarize_then_cache(course_id: str, successful_uploads: List[Dict], canvas_user_id: Optional[str] = None):
-    """
-    Sequential wrapper: Generate summaries first, then pre-warm cache
-    This ensures summarization (priority) completes before cache warming
-    """
-    try:
-        # STEP 1: Generate summaries (priority operation)
-        if file_summarizer and chat_storage and successful_uploads:
-            print(f"📝 [Sequential] Step 1/2: Generating summaries for {len(successful_uploads)} files...")
-            await _generate_summaries_background(course_id, successful_uploads, canvas_user_id)
-            print(f"✅ [Sequential] Step 1/2 complete: Summaries done")
-
-        # STEP 2: Pre-warm Gemini cache (runs after summaries)
-        if successful_uploads and chat_storage:
-            print(f"🔥 [Sequential] Step 2/2: Pre-warming Gemini cache for {len(successful_uploads)} files...")
-            await _upload_to_gemini_background(course_id, successful_uploads, canvas_user_id)
-            print(f"✅ [Sequential] Step 2/2 complete: Cache pre-warmed")
-
-        print(f"✅ [Sequential] All background tasks complete for course {course_id}")
-    except Exception as e:
-        print(f"❌ Error in sequential background processing: {e}")
-        import traceback
-        traceback.print_exc()
-
-
 async def _proactive_cache_refresh_loop():
     """
     PHASE 4: Proactive cache refresh background task
@@ -800,6 +775,18 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
                 else:
                     processed_results.append(result)
 
+            # Progressive summarization: Start summaries for this batch immediately
+            successful_batch = [r for r in batch_results
+                               if isinstance(r, dict) and r.get("status") == "uploaded"]
+
+            if successful_batch and file_summarizer and chat_storage:
+                print(f"📝 [Progressive] Starting summaries for batch {batch_num}/{total_batches} ({len(successful_batch)} files)...")
+                asyncio.create_task(
+                    _generate_summaries_background(
+                        course_id, successful_batch, canvas_user_id
+                    )
+                )
+
         # Count results
         successful = [r for r in processed_results if r["status"] == "uploaded"]
         failed = [r for r in processed_results if r["status"] == "failed"]
@@ -815,13 +802,8 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             document_manager.add_files_to_catalog_with_metadata(files_for_catalog)
             print(f"✅ Catalog updated")
 
-        # PHASE 3 & 4: Sequential background processing (summaries → cache)
-        if successful and chat_storage:
-            print(f"🔄 Starting sequential background processing for {len(successful)} files...")
-            asyncio.create_task(_summarize_then_cache(course_id, successful, canvas_user_id))
-
         print(f"✅ BACKGROUND PROCESSING COMPLETE for course {course_id}")
-        print(f"   Files are now available for queries!")
+        print(f"   Files uploaded successfully. Summaries are being generated progressively.")
 
     except Exception as e:
         print(f"❌ Critical error in background upload processing: {e}")
@@ -1233,7 +1215,7 @@ async def process_canvas_files(
         import asyncio
 
         # Create semaphore to limit concurrent operations
-        semaphore = asyncio.Semaphore(8)
+        semaphore = asyncio.Semaphore(16)  # Increased for faster Canvas downloads
 
         async def process_with_semaphore(file_info, session):
             async with semaphore:
