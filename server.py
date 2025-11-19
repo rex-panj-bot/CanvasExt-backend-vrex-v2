@@ -1234,7 +1234,7 @@ async def process_canvas_files(
         import asyncio
 
         # Create semaphore to limit concurrent operations
-        semaphore = asyncio.Semaphore(16)  # Increased for faster Canvas downloads
+        semaphore = asyncio.Semaphore(24)  # Optimized for speed (24 concurrent downloads)
 
         async def process_with_semaphore(file_info, session):
             async with semaphore:

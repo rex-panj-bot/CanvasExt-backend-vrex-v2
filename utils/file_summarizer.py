@@ -24,7 +24,7 @@ class FileSummarizer:
         """
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.0-flash-lite"  # Higher RPM (30) for batch summarization
-        self.fallback_model = "gemini-2.5-flash-lite"  # Lowest tier model fallback
+        self.fallback_model = "gemini-2.0-flash"  # Valid fallback model
 
     async def summarize_file(
         self,
@@ -121,9 +121,10 @@ Format as JSON:
                 return summary, topics, metadata
 
             except json.JSONDecodeError as e:
-                # Fallback: use raw response as summary
-                logger.warning(f"Could not parse JSON response for {filename}, using raw text: {e}")
-                return response_text, [], {"doc_type": "unknown", "time_references": ""}
+                # Invalid JSON response - raise error instead of saving raw text
+                logger.error(f"Could not parse JSON response for {filename}: {e}")
+                logger.error(f"Raw response: {response_text[:200]}")
+                raise ValueError(f"Invalid JSON response from Gemini API: {response_text[:200]}")
 
         except Exception as e:
             logger.error(f"Error generating summary for {filename}: {e}")
@@ -224,10 +225,11 @@ Format your response as JSON:
                 logger.info(f"✅ Generated summary for {filename}: {len(summary)} chars, {len(topics)} topics")
                 return summary, topics, metadata
 
-            except json.JSONDecodeError:
-                # Fallback
-                logger.warning(f"Could not parse JSON for {filename}, using raw text")
-                return response_text, [], {"doc_type": "page", "time_references": ""}
+            except json.JSONDecodeError as e:
+                # Invalid JSON response - raise error instead of saving raw text
+                logger.error(f"Could not parse JSON for {filename}: {e}")
+                logger.error(f"Raw response: {response_text[:200]}")
+                raise ValueError(f"Invalid JSON response from Gemini API: {response_text[:200]}")
 
         except Exception as e:
             logger.error(f"Error generating summary for {filename}: {e}")
