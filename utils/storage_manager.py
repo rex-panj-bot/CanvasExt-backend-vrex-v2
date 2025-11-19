@@ -83,9 +83,9 @@ class StorageManager:
             if not content_type:
                 content_type = get_mime_type(filename)
                 if not content_type:
-                    # Default to binary if unknown
-                    content_type = 'application/octet-stream'
-                    logger.warning(f"Unknown file type for {filename}, using {content_type}")
+                    # Treat unknown files as PDFs for Gemini compatibility
+                    content_type = 'application/pdf'
+                    logger.warning(f"Unknown file type for {filename}, treating as PDF")
 
             # Store original filename in GCS custom metadata
             # This allows catalog reconstruction to map hash-based filenames back to original names

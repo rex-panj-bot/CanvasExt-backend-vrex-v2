@@ -51,11 +51,11 @@ class FileUploadManager:
         if not mime_type:
             mime_type = get_mime_type(filename)
             if not mime_type:
-                # Try to upload anyway - let Gemini reject it if unsupported
+                # Treat unknown files as PDFs for Gemini compatibility
                 ext = get_file_extension(filename) or 'unknown'
-                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), will attempt upload anyway")
-                # Use a generic MIME type as fallback
-                mime_type = 'application/octet-stream'
+                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), treating as PDF")
+                # Use PDF as fallback - Gemini can read PDFs but not octet-stream
+                mime_type = 'application/pdf'
 
         # PHASE 3: Check database cache first (persistent across server restarts)
         if self.chat_storage:
