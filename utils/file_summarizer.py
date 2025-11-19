@@ -127,8 +127,8 @@ Format as JSON:
 
         except Exception as e:
             logger.error(f"Error generating summary for {filename}: {e}")
-            # Return empty summary on error
-            return f"Error generating summary: {str(e)}", [], {"doc_type": "unknown", "error": str(e)}
+            # Re-raise exception so it's handled properly upstream (not saved as summary)
+            raise
 
     async def summarize_text_content(
         self,
@@ -231,4 +231,5 @@ Format your response as JSON:
 
         except Exception as e:
             logger.error(f"Error generating summary for {filename}: {e}")
-            return f"Error: {str(e)}", [], {"doc_type": "page", "error": str(e)}
+            # Re-raise exception so it's handled properly upstream (not saved as summary)
+            raise

@@ -454,13 +454,19 @@ async def _generate_single_summary(
         mime_type = upload_result["mime_type"]
 
         # Generate summary (run in thread pool - BLOCKING LLM call)
-        summary, topics, metadata = await asyncio.to_thread(
-            _sync_summarize_file,
-            file_summarizer,
-            file_uri,
-            filename,
-            mime_type
-        )
+        try:
+            summary, topics, metadata = await asyncio.to_thread(
+                _sync_summarize_file,
+                file_summarizer,
+                file_uri,
+                filename,
+                mime_type
+            )
+        except Exception as e:
+            # Don't save errors as summaries - return error status for retry later
+            error_msg = str(e)
+            print(f"❌ Failed to generate summary for {filename}: {error_msg[:100]}")
+            return {"status": "error", "filename": filename, "error": error_msg}
 
         # Save to database (cache for future uploads) with hash
         summary_preview = summary[:50] + "..." if len(summary) > 50 else summary
@@ -511,9 +517,9 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
             chat_storage=chat_storage
         )
 
-        # PHASE 4: Priority upload queue - Moderate concurrency for new uploads (10)
-        # Reduced to avoid competing with summarization for quota
-        semaphore = asyncio.Semaphore(10)
+        # PHASE 4: Priority upload queue - Reduced concurrency to prevent rate limits
+        # Matches summarization semaphore (5) to avoid API quota conflicts
+        semaphore = asyncio.Semaphore(5)
 
         async def upload_single_file(file_info):
             async with semaphore:
@@ -577,16 +583,20 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             chat_storage=chat_storage  # PHASE 3: Enable database caching
         )
 
-        # Semaphore to limit concurrent processing (max 10 at a time)
-        # Keep low to avoid Gemini API rate limits on free tier
-        semaphore = asyncio.Semaphore(10)
+        # Semaphore to limit concurrent processing (reduced to 5 to prevent rate limit bursts)
+        # Keep low to avoid Gemini API rate limits on free tier (30 RPM for gemini-2.0-flash-lite)
+        semaphore = asyncio.Semaphore(5)
 
         async def process_with_limit(file_info):
-            """Wrapper to apply semaphore limit"""
+            """Wrapper to apply semaphore limit and rate pacing"""
             async with semaphore:
-                return await _generate_single_summary(
+                result = await _generate_single_summary(
                     file_info, course_id, file_uploader, file_summarizer, chat_storage, canvas_user_id
                 )
+                # Add delay to pace requests at ~25 RPM (2.4s between requests)
+                # This prevents bursts that trigger rate limiting
+                await asyncio.sleep(2.4)
+                return result
 
         filenames_preview = ", ".join([f['filename'][:20] for f in successful_uploads[:3]])
         more = f" +{len(successful_uploads)-3} more" if len(successful_uploads) > 3 else ""

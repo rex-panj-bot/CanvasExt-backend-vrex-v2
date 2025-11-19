@@ -64,17 +64,15 @@ class FileUploadManager:
                 # Reconstruct file object from cached data
                 try:
                     file_obj = self.client.files.get(name=db_cached['gemini_name'])
-                    # Fix old octet-stream mime types from cache
-                    cached_mime = db_cached.get('mime_type', mime_type)
-                    if cached_mime == 'application/octet-stream':
-                        cached_mime = 'application/pdf'  # Override old cached value
+                    # Use Gemini's actual MIME type from the file object
+                    actual_mime_type = file_obj.mime_type or mime_type
                     result = {
                         'file': file_obj,
                         'uri': db_cached['gemini_uri'],
                         'name': db_cached['gemini_name'],
                         'display_name': db_cached['filename'],
                         'size_bytes': db_cached.get('size_bytes', 0),
-                        'mime_type': cached_mime,
+                        'mime_type': actual_mime_type,  # Use actual MIME type from Gemini
                         'upload_time': time.time(),
                         'from_cache': True
                     }
@@ -106,7 +104,6 @@ class FileUploadManager:
             file_bytes = None
             if is_gcs and self.storage_manager:
                 # Download from GCS
-                print(f"📤 Downloading {filename} from GCS...")
                 file_bytes = self.storage_manager.download_pdf(file_path)
             else:
                 # Local file
@@ -130,7 +127,6 @@ class FileUploadManager:
             conversion_attempted = False
             if needs_conversion(filename):
                 ext = get_file_extension(filename) or 'unknown'
-                print(f"🔄 Converting {filename} ({ext.upper()}) to PDF...")
                 conversion_attempted = True
                 try:
                     pdf_bytes = convert_office_to_pdf(file_bytes, filename)
@@ -138,7 +134,6 @@ class FileUploadManager:
                         file_bytes = pdf_bytes
                         filename = filename.rsplit('.', 1)[0] + '.pdf'
                         mime_type = 'application/pdf'
-                        print(f"✅ Converted {original_filename} to PDF ({len(pdf_bytes):,} bytes)")
                     else:
                         print(f"⚠️  Conversion failed for {filename}, will try uploading original format")
                 except Exception as conv_error:
@@ -215,7 +210,7 @@ class FileUploadManager:
                     'name': file_obj.name,
                     'display_name': file_obj.display_name,
                     'size_bytes': file_obj.size_bytes,
-                    'mime_type': mime_type,
+                    'mime_type': file_obj.mime_type or mime_type,  # Use Gemini's actual MIME type
                     'upload_time': time.time()
                 }
 
