@@ -50,6 +50,9 @@ chat_storage = None
 storage_manager = None
 file_summarizer = None
 
+# Global semaphore for file conversions (limit concurrency to prevent memory overload)
+conversion_semaphore = asyncio.Semaphore(3)  # 3 concurrent conversions (optimized for speed+memory)
+
 # Store active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
 
@@ -270,16 +273,17 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                         "unreadable": True
                     }
             else:
-                # Convert Office/OpenDocument formats to PDF
+                # Convert Office/OpenDocument formats to PDF (with concurrency limit)
                 print(f"🔄 Converting {file.filename} ({ext.upper()}) to PDF before upload...")
                 try:
                     loop = asyncio.get_event_loop()
-                    pdf_bytes = await loop.run_in_executor(
-                        None,
-                        convert_office_to_pdf,
-                        content,
-                        file.filename
-                    )
+                    async with conversion_semaphore:  # Limit concurrent conversions
+                        pdf_bytes = await loop.run_in_executor(
+                            None,
+                            convert_office_to_pdf,
+                            content,
+                            file.filename
+                        )
 
                     if pdf_bytes:
                         content = pdf_bytes
@@ -1178,13 +1182,17 @@ async def process_canvas_files(
                     is_web_format = ext.lower() in web_formats
 
                     if is_web_format:
-                        text_bytes = convert_to_text(file_content, safe_filename)
+                        async with conversion_semaphore:  # Limit concurrent conversions
+                            loop = asyncio.get_event_loop()
+                            text_bytes = await loop.run_in_executor(None, convert_to_text, file_content, safe_filename)
                         if text_bytes:
                             file_content = text_bytes
                             actual_filename = safe_filename.rsplit('.', 1)[0] + '.txt'
                             mime_type = 'text/plain'
                     else:
-                        pdf_bytes = convert_office_to_pdf(file_content, safe_filename)
+                        async with conversion_semaphore:  # Limit concurrent conversions
+                            loop = asyncio.get_event_loop()
+                            pdf_bytes = await loop.run_in_executor(None, convert_office_to_pdf, file_content, safe_filename)
                         if pdf_bytes:
                             file_content = pdf_bytes
                             actual_filename = safe_filename.rsplit('.', 1)[0] + '.pdf'
