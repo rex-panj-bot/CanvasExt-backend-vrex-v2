@@ -402,7 +402,7 @@ async def _generate_single_summary(
 ) -> Dict:
     """Generate summary for a single file (optimized with thread pools)"""
     try:
-        print(f"📄 _generate_single_summary called for {file_info.get('filename')} with canvas_user_id: {canvas_user_id}")
+        # Removed verbose log - batch summary shows progress
         # HASH-BASED: Use doc_id from upload result (format: {course_id}_{hash})
         doc_id = file_info.get("doc_id")
         content_hash = file_info.get("hash")
@@ -463,7 +463,8 @@ async def _generate_single_summary(
         )
 
         # Save to database (cache for future uploads) with hash
-        print(f"💾 Saving summary for {filename} with canvas_user_id: {canvas_user_id}, gcs_path: {file_path}")
+        summary_preview = summary[:50] + "..." if len(summary) > 50 else summary
+        print(f"✅ Summary: {filename[:40]}... → \"{summary_preview}\"")
         success = chat_storage.save_file_summary(
             doc_id=doc_id,
             course_id=course_id,
@@ -587,7 +588,9 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                     file_info, course_id, file_uploader, file_summarizer, chat_storage, canvas_user_id
                 )
 
-        print(f"📝 Generating summaries for {len(successful_uploads)} files (max 10 concurrent)...")
+        filenames_preview = ", ".join([f['filename'][:20] for f in successful_uploads[:3]])
+        more = f" +{len(successful_uploads)-3} more" if len(successful_uploads) > 3 else ""
+        print(f"\n📝 SUMMARIZING {len(successful_uploads)} files: {filenames_preview}{more}")
 
         # Generate summaries with concurrency limit
         tasks = [process_with_limit(file_info) for file_info in successful_uploads]
@@ -600,14 +603,14 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         error_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error")
         exception_count = sum(1 for r in results if isinstance(r, Exception))
 
-        print(f"✅ Summary generation complete: {success_count} new, {cached_count} cached, {skipped_count} skipped, {error_count + exception_count} errors")
+        print(f"✅ BATCH COMPLETE: {success_count} new, {cached_count} cached, {error_count + exception_count} errors\n")
 
-        # Log errors
+        # Log errors only
         for result in results:
             if isinstance(result, Exception):
                 print(f"❌ Exception: {result}")
             elif isinstance(result, dict) and result.get("status") == "error":
-                print(f"❌ Error for {result['filename']}: {result.get('error')}")
+                print(f"❌ Error: {result['filename']}: {result.get('error')}")
 
     except Exception as e:
         print(f"❌ Critical error in summary generation: {e}")
@@ -754,7 +757,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             batch_hashes = file_hashes[i:i + BATCH_SIZE]  # Corresponding hashes
             batch_num = (i // BATCH_SIZE) + 1
             total_batches = (len(upload_files) + BATCH_SIZE - 1) // BATCH_SIZE
-            print(f"   Batch {batch_num}/{total_batches}: Processing {len(batch)} files...")
+            print(f"\n📤 BATCH {batch_num}/{total_batches}: Uploading {len(batch)} files to GCS...")
 
             # Pass pre-computed hashes to avoid re-computation
             upload_tasks = [
@@ -775,12 +778,18 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
                 else:
                     processed_results.append(result)
 
+            # Count batch results
+            batch_successful = sum(1 for r in batch_results if isinstance(r, dict) and r.get("status") == "uploaded")
+            batch_skipped = sum(1 for r in batch_results if isinstance(r, dict) and r.get("status") == "skipped")
+            batch_failed = sum(1 for r in batch_results if isinstance(r, Exception) or (isinstance(r, dict) and r.get("status") == "failed"))
+            print(f"✅ Batch complete: {batch_successful} uploaded, {batch_skipped} skipped, {batch_failed} failed")
+
             # Progressive summarization: Start summaries for this batch immediately
             successful_batch = [r for r in batch_results
                                if isinstance(r, dict) and r.get("status") == "uploaded"]
 
             if successful_batch and file_summarizer and chat_storage:
-                print(f"📝 [Progressive] Starting summaries for batch {batch_num}/{total_batches} ({len(successful_batch)} files)...")
+                print(f"   ➜ Starting summaries for {len(successful_batch)} new files...")
                 asyncio.create_task(
                     _generate_summaries_background(
                         course_id, successful_batch, canvas_user_id

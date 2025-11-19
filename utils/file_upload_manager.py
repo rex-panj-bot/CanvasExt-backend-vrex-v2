@@ -61,17 +61,20 @@ class FileUploadManager:
         if self.chat_storage:
             db_cached = self.chat_storage.get_gemini_uri(file_path)
             if db_cached:
-                print(f"✅ [CACHE HIT] Database: {filename} (saved ~5-10s upload time)")
                 # Reconstruct file object from cached data
                 try:
                     file_obj = self.client.files.get(name=db_cached['gemini_name'])
+                    # Fix old octet-stream mime types from cache
+                    cached_mime = db_cached.get('mime_type', mime_type)
+                    if cached_mime == 'application/octet-stream':
+                        cached_mime = 'application/pdf'  # Override old cached value
                     result = {
                         'file': file_obj,
                         'uri': db_cached['gemini_uri'],
                         'name': db_cached['gemini_name'],
                         'display_name': db_cached['filename'],
                         'size_bytes': db_cached.get('size_bytes', 0),
-                        'mime_type': db_cached.get('mime_type', mime_type),
+                        'mime_type': cached_mime,
                         'upload_time': time.time(),
                         'from_cache': True
                     }
@@ -79,7 +82,7 @@ class FileUploadManager:
                     self._file_cache[file_path] = result
                     return result
                 except Exception as e:
-                    print(f"⚠️  [CACHE MISS] Cached file not accessible in Gemini, will re-upload: {e}")
+                    # Cache miss - will re-upload silently
 
         # Check in-memory cache
         if file_path in self._file_cache:
@@ -88,11 +91,10 @@ class FileUploadManager:
 
             # If cache still valid (under 48 hours), return cached
             if age_hours < self.cache_duration_hours:
-                print(f"✅ [CACHE HIT] Memory: {filename} (age: {age_hours:.1f}h, saved ~5-10s)")
+                # Silently use cache
                 return cached
 
             # Cache expired, remove it
-            print(f"⚠️  [CACHE MISS] Expired: {filename} (age: {age_hours:.1f}h), re-uploading...")
             del self._file_cache[file_path]
 
         # Determine if this is a GCS blob or local file
@@ -179,9 +181,7 @@ class FileUploadManager:
                     print(f"❌ Failed to decode text file {filename}: {e}")
                     # Fall through to try file upload anyway
 
-            print(f"📤 [CACHE MISS] Uploading {filename} ({ext.upper()}, {mime_type}) to Gemini File API (~5-10s)...")
-            if conversion_attempted and filename.endswith('.pdf'):
-                print(f"    (Converted from {original_filename})")
+            # Silently upload - batch summary will show totals
 
             # Upload from bytes
             import io
@@ -236,8 +236,7 @@ class FileUploadManager:
                         expires_hours=self.cache_duration_hours
                     )
 
-                ext = get_file_extension(filename) or 'file'
-                print(f"✅ Uploaded {filename} ({ext.upper()}, {file_obj.size_bytes:,} bytes) - URI: {file_obj.uri[:60]}...")
+                # Silently uploaded - batch summary will show totals
 
                 return result
             except Exception as upload_error:
