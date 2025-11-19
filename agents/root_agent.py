@@ -9,6 +9,7 @@ from google.genai import types
 from typing import List, Dict, AsyncGenerator, Optional
 from utils.file_upload_manager import FileUploadManager
 from agents.file_selector_agent import FileSelectorAgent
+import asyncio
 
 
 class RootAgent:
@@ -33,6 +34,7 @@ class RootAgent:
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.5-flash"
         self.fallback_model = "gemini-2.0-flash"  # Fallback for rate limits/503
+        self.fallback_model_2 = "gemini-2.0-flash-lite"  # Second fallback tier
 
         # Initialize File Upload Manager
         self.file_upload_manager = FileUploadManager(
@@ -584,12 +586,31 @@ INCORRECT examples (DO NOT USE):
                     '503' in error_str or 'overload' in error_str or 'resource_exhausted' in error_str):
                     print(f"⚠️ Rate limited/overloaded on {model_to_use}, falling back to {self.fallback_model}")
                     model_to_use = self.fallback_model
-                    # Retry with fallback model
-                    response_stream = await api_client.aio.models.generate_content_stream(
-                        model=model_to_use,
-                        contents=contents,
-                        config=config
-                    )
+                    # Small delay before retry
+                    await asyncio.sleep(2)
+                    try:
+                        # Retry with fallback model
+                        response_stream = await api_client.aio.models.generate_content_stream(
+                            model=model_to_use,
+                            contents=contents,
+                            config=config
+                        )
+                    except Exception as e2:
+                        error_str2 = str(e2).lower()
+                        # If fallback also rate limited, try second fallback
+                        if ('429' in error_str2 or 'quota' in error_str2 or 'rate' in error_str2 or
+                            '503' in error_str2 or 'overload' in error_str2 or 'resource_exhausted' in error_str2):
+                            print(f"⚠️ Rate limited/overloaded on {model_to_use}, falling back to {self.fallback_model_2}")
+                            model_to_use = self.fallback_model_2
+                            await asyncio.sleep(2)
+                            # Final retry with second fallback
+                            response_stream = await api_client.aio.models.generate_content_stream(
+                                model=model_to_use,
+                                contents=contents,
+                                config=config
+                            )
+                        else:
+                            raise  # Re-raise if not a rate limit error
                 else:
                     raise  # Re-raise if not a rate limit/overload error
 

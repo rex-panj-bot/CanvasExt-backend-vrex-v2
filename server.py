@@ -510,9 +510,9 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
             chat_storage=chat_storage
         )
 
-        # PHASE 4: Priority upload queue - Higher concurrency for new uploads (20 vs 10)
-        # This makes new study bots ready faster
-        semaphore = asyncio.Semaphore(20)
+        # PHASE 4: Priority upload queue - Moderate concurrency for new uploads (10)
+        # Reduced to avoid competing with summarization for quota
+        semaphore = asyncio.Semaphore(10)
 
         async def upload_single_file(file_info):
             async with semaphore:
@@ -540,7 +540,7 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
                     print(f"❌ Gemini pre-warm error for {file_info.get('filename')}: {e}")
                     return {"status": "error", "filename": file_info.get("filename")}
 
-        print(f"🔥 Pre-warming Gemini cache for {len(successful_uploads)} files (priority queue, 20 concurrent)...")
+        print(f"🔥 Pre-warming Gemini cache for {len(successful_uploads)} files (priority queue, 10 concurrent)...")
         tasks = [upload_single_file(file_info) for file_info in successful_uploads]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -611,6 +611,31 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
 
     except Exception as e:
         print(f"❌ Critical error in summary generation: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def _summarize_then_cache(course_id: str, successful_uploads: List[Dict], canvas_user_id: Optional[str] = None):
+    """
+    Sequential wrapper: Generate summaries first, then pre-warm cache
+    This ensures summarization (priority) completes before cache warming
+    """
+    try:
+        # STEP 1: Generate summaries (priority operation)
+        if file_summarizer and chat_storage and successful_uploads:
+            print(f"📝 [Sequential] Step 1/2: Generating summaries for {len(successful_uploads)} files...")
+            await _generate_summaries_background(course_id, successful_uploads, canvas_user_id)
+            print(f"✅ [Sequential] Step 1/2 complete: Summaries done")
+
+        # STEP 2: Pre-warm Gemini cache (runs after summaries)
+        if successful_uploads and chat_storage:
+            print(f"🔥 [Sequential] Step 2/2: Pre-warming Gemini cache for {len(successful_uploads)} files...")
+            await _upload_to_gemini_background(course_id, successful_uploads, canvas_user_id)
+            print(f"✅ [Sequential] Step 2/2 complete: Cache pre-warmed")
+
+        print(f"✅ [Sequential] All background tasks complete for course {course_id}")
+    except Exception as e:
+        print(f"❌ Error in sequential background processing: {e}")
         import traceback
         traceback.print_exc()
 
@@ -790,15 +815,10 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             document_manager.add_files_to_catalog_with_metadata(files_for_catalog)
             print(f"✅ Catalog updated")
 
-        # PHASE 3: Pre-warm Gemini cache (background within background!)
+        # PHASE 3 & 4: Sequential background processing (summaries → cache)
         if successful and chat_storage:
-            print(f"🔥 Starting Gemini pre-warm for {len(successful)} files...")
-            asyncio.create_task(_upload_to_gemini_background(course_id, successful, canvas_user_id))
-
-        # PHASE 4: Generate summaries
-        if file_summarizer and chat_storage and successful:
-            print(f"📝 Generating summaries for {len(successful)} files...")
-            asyncio.create_task(_generate_summaries_background(course_id, successful, canvas_user_id))
+            print(f"🔄 Starting sequential background processing for {len(successful)} files...")
+            asyncio.create_task(_summarize_then_cache(course_id, successful, canvas_user_id))
 
         print(f"✅ BACKGROUND PROCESSING COMPLETE for course {course_id}")
         print(f"   Files are now available for queries!")
@@ -1615,9 +1635,9 @@ User question: {first_message[:200]}
 
 Title:"""
 
-            # Call Gemini Flash (fast and cheap) - uses separate quota from main model
+            # Call Gemini Flash-Lite (fast and cheap) - uses separate quota from main model
             response = client.models.generate_content(
-                model='gemini-2.0-flash-lite',
+                model='gemini-2.5-flash-lite',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.7,
