@@ -173,8 +173,14 @@ async def root():
     }
 
 
-async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
-    """Process a single file upload (for parallel execution)"""
+async def _process_single_upload(course_id: str, file: UploadFile, precomputed_hash: Optional[str] = None) -> Dict:
+    """Process a single file upload (for parallel execution)
+
+    Args:
+        course_id: Course identifier
+        file: File to process
+        precomputed_hash: Optional pre-computed SHA-256 hash (for optimization)
+    """
     try:
         from utils.file_converter import convert_office_to_pdf, needs_conversion
 
@@ -198,7 +204,7 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
             mime_type = ext_to_mime.get(ext.lower(), 'application/octet-stream')
             print(f"⚠️  Unknown file type for {file.filename}, using inferred MIME: {mime_type}")
 
-        print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
+        print(f"📥 Processing: {file.filename} ({ext.UPPER()}, {mime_type})")
 
         # Read file content
         content = await file.read()
@@ -206,11 +212,16 @@ async def _process_single_upload(course_id: str, file: UploadFile) -> Dict:
         actual_filename = file.filename
         conversion_info = None
 
-        # CRITICAL: Compute SHA-256 hash of ORIGINAL content (before conversion)
-        # This ensures same file = same hash even after PPTX→PDF conversion
-        import hashlib
-        content_hash = hashlib.sha256(content).hexdigest()
-        print(f"🔑 Content hash: {content_hash[:16]}...")
+        # Use pre-computed hash if available, otherwise compute it
+        if precomputed_hash:
+            content_hash = precomputed_hash
+            print(f"🔑 Using pre-computed hash: {content_hash[:16]}... (optimization)")
+        else:
+            # CRITICAL: Compute SHA-256 hash of ORIGINAL content (before conversion)
+            # This ensures same file = same hash even after PPTX→PDF conversion
+            import hashlib
+            content_hash = hashlib.sha256(content).hexdigest()
+            print(f"🔑 Content hash: {content_hash[:16]}...")
 
         # PHASE 1: Convert files to AI-readable formats before uploading to GCS
         # This ensures all files stored in GCS are readable by Gemini
@@ -704,6 +715,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
         from io import BytesIO
 
         upload_files = []
+        file_hashes = []  # Track pre-computed hashes
         for file_data in files_in_memory:
             # Create a file-like object from bytes
             file_obj = BytesIO(file_data['content'])
@@ -715,6 +727,9 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
                 file=file_obj
             )
             upload_files.append(upload_file)
+
+            # Store pre-computed hash (if available)
+            file_hashes.append(file_data.get('hash'))
 
         # PHASE 1: Process files in parallel (GCS upload + conversion)
         # Dynamic batch sizing: Adjust based on average file size to prevent Railway memory spikes
@@ -736,11 +751,16 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
         processed_results = []
         for i in range(0, len(upload_files), BATCH_SIZE):
             batch = upload_files[i:i + BATCH_SIZE]
+            batch_hashes = file_hashes[i:i + BATCH_SIZE]  # Corresponding hashes
             batch_num = (i // BATCH_SIZE) + 1
             total_batches = (len(upload_files) + BATCH_SIZE - 1) // BATCH_SIZE
             print(f"   Batch {batch_num}/{total_batches}: Processing {len(batch)} files...")
 
-            upload_tasks = [_process_single_upload(course_id, file) for file in batch]
+            # Pass pre-computed hashes to avoid re-computation
+            upload_tasks = [
+                _process_single_upload(course_id, file, precomputed_hash=batch_hashes[j])
+                for j, file in enumerate(batch)
+            ]
             batch_results = await asyncio.gather(*upload_tasks, return_exceptions=True)
 
             # Handle exceptions
@@ -828,27 +848,45 @@ async def upload_pdfs(
         print(f"   Storage manager available: {storage_manager is not None}")
         print(f"{'='*80}")
 
-        # Read all files into memory IMMEDIATELY (before background processing)
-        # This is fast (<100ms) and allows us to return response instantly
+        # Read all files into memory and compute hashes IMMEDIATELY
+        # Hash computation is fast (~10ms per MB) and critical for file identification
         files_in_memory = []
+        files_metadata = []
+
         for file in files:
             content = await file.read()
+
+            # Compute hash immediately (needed for IndexedDB and file opening)
+            import hashlib
+            content_hash = hashlib.sha256(content).hexdigest()
+            doc_id = f"{course_id}_{content_hash}"
+
             files_in_memory.append({
                 'filename': file.filename,
                 'content': content,
-                'content_type': file.content_type
+                'content_type': file.content_type,
+                'hash': content_hash,  # Pre-computed hash for background processing
+                'doc_id': doc_id
             })
 
-        print(f"✅ Files accepted ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
+            files_metadata.append({
+                'filename': file.filename,
+                'hash': content_hash,  # Return hash to frontend
+                'doc_id': doc_id,      # Return doc_id to frontend
+                'status': 'processing'
+            })
+
+        print(f"✅ Files accepted and hashed ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
+        print(f"   Sample hashes: {[f['hash'][:16] + '...' for f in files_in_memory[:3]]}")
 
         # Start background processing (non-blocking)
         asyncio.create_task(_process_uploads_background(course_id, files_in_memory, x_canvas_user_id))
 
-        # INSTANT RESPONSE - User sees chat immediately!
+        # FAST RESPONSE with hash data - User can open files immediately!
         return {
             "success": True,
             "message": f"Processing {len(files)} files in background",
-            "files": [{"filename": f['filename'], "status": "processing"} for f in files_in_memory],
+            "files": files_metadata,  # Include hash and doc_id
             "uploaded_count": len(files_in_memory),
             "failed_count": 0,
             "instant_mode": True
