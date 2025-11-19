@@ -204,7 +204,7 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
             mime_type = ext_to_mime.get(ext.lower(), 'application/octet-stream')
             print(f"⚠️  Unknown file type for {file.filename}, using inferred MIME: {mime_type}")
 
-        print(f"📥 Processing: {file.filename} ({ext.UPPER()}, {mime_type})")
+        print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
 
         # Read file content
         content = await file.read()
