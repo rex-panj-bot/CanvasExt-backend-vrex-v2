@@ -83,6 +83,7 @@ class FileUploadManager:
                     return result
                 except Exception as e:
                     # Cache miss - will re-upload silently
+                    pass
 
         # Check in-memory cache
         if file_path in self._file_cache:
