@@ -2222,6 +2222,59 @@ async def get_course_cache_status(course_id: str):
         }
 
 
+@app.get("/courses/{course_id}/summary-status")
+async def get_course_summary_status(course_id: str):
+    """
+    Get summary generation status for a specific course
+
+    Returns:
+        JSON with summary statistics for the course:
+        - summaries_ready: Number of files with summaries
+        - total_files: Total number of files in course
+        - summaries_pending: Number of files without summaries
+        - completion_percent: Percentage of summaries complete
+        - is_ready: Whether all summaries are ready
+        - estimated_time_seconds: Estimated seconds until all summaries ready
+    """
+    try:
+        if not chat_storage:
+            return {
+                "success": False,
+                "error": "Chat storage not available"
+            }
+
+        # Get all files for this course from catalog
+        catalog = document_manager.get_material_catalog(course_id)
+        total_files = catalog.get("total_documents", 0)
+
+        # Count summaries for this course
+        summaries_ready = chat_storage.count_summaries_for_course(course_id)
+        summaries_pending = max(0, total_files - summaries_ready)
+        completion_percent = (summaries_ready / total_files * 100) if total_files > 0 else 0
+
+        # Estimate time until all summaries are ready (3 seconds per summary average)
+        # This accounts for: 3 concurrent + 3.0s delay = ~3s per file average
+        estimated_ready_time = summaries_pending * 3
+
+        return {
+            "success": True,
+            "course_id": course_id,
+            "summaries_ready": summaries_ready,
+            "total_files": total_files,
+            "summaries_pending": summaries_pending,
+            "completion_percent": round(completion_percent, 1),
+            "is_ready": summaries_pending == 0,
+            "estimated_time_seconds": estimated_ready_time,
+            "message": "All summaries ready!" if summaries_pending == 0 else f"Generating {summaries_pending} summaries..."
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.get("/cache-stats")
 async def get_global_cache_stats():
     """

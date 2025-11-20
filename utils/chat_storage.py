@@ -550,7 +550,7 @@ class ChatStorage:
                     SELECT role, content, timestamp
                     FROM chat_messages
                     WHERE session_id = :session_id
-                    ORDER BY timestamp ASC
+                    ORDER BY id ASC
                 """), {"session_id": session_id})
 
                 messages = []
@@ -591,7 +591,7 @@ class ChatStorage:
                     SELECT role, content, timestamp
                     FROM chat_messages
                     WHERE session_id = ?
-                    ORDER BY timestamp ASC
+                    ORDER BY id ASC
                 """, (session_id,))
 
                 messages = []
@@ -908,6 +908,29 @@ class ChatStorage:
         except Exception as e:
             logger.error(f"Error retrieving summaries for course: {e}")
             return []
+
+    def count_summaries_for_course(self, course_id: str) -> int:
+        """Count number of file summaries for a course (excludes soft-deleted files)"""
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT COUNT(*) as count FROM file_summaries
+                        WHERE course_id = :course_id AND deleted_at IS NULL
+                    """), {"course_id": course_id})
+                    return result.scalar() or 0
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM file_summaries
+                        WHERE course_id = ? AND deleted_at IS NULL
+                    """, (course_id,))
+                    return cursor.fetchone()[0]
+
+        except Exception as e:
+            logger.error(f"Error counting summaries for course: {e}")
+            return 0
 
     # ========== PHASE 3: Gemini File API URI Cache ==========
 
