@@ -70,6 +70,88 @@ filename_cache: Dict[tuple, str] = {}
 UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# ========== Summary Retry System ==========
+from collections import deque
+import time
+
+# Failed summary queue: {course_id: [{"file_id": ..., "filename": ..., "attempts": 0, "last_error": ...}]}
+failed_summary_queue: Dict[str, List[Dict]] = {}
+
+# Rate limit tracking: rolling window of last 20 API calls (True=success, False=failure)
+recent_api_results = deque(maxlen=20)
+
+# Adaptive delay state
+current_delay = 2.0  # Start with 2 seconds
+rate_limit_cooldown_until = 0  # Timestamp when cooldown ends
+
+# Background retry worker state
+retry_worker_task = None
+
+
+async def _summary_retry_worker():
+    """Background worker that retries failed summaries every 10 minutes"""
+    while True:
+        try:
+            await asyncio.sleep(600)  # Wait 10 minutes between retry cycles
+
+            if not failed_summary_queue:
+                continue
+
+            print(f"🔄 Summary retry worker: checking {sum(len(v) for v in failed_summary_queue.values())} failed summaries...")
+
+            for course_id, failed_items in list(failed_summary_queue.items()):
+                if not failed_items:
+                    continue
+
+                print(f"   Retrying {len(failed_items)} summaries for course {course_id}")
+
+                # Retry each failed item
+                retry_results = []
+                for item in failed_items[:]:  # Copy list to allow modification
+                    item["attempts"] += 1
+
+                    # Max 3 background retries per file
+                    if item["attempts"] > 3:
+                        print(f"   ❌ Max retries reached for {item['filename']}, removing from queue")
+                        failed_items.remove(item)
+                        continue
+
+                    # Retry summary generation
+                    try:
+                        from utils.file_upload_manager import FileUploadManager
+                        api_key = os.getenv("GOOGLE_API_KEY")
+                        file_upload_client = genai.Client(api_key=api_key)
+                        file_uploader = FileUploadManager(
+                            file_upload_client,
+                            cache_duration_hours=48,
+                            storage_manager=storage_manager,
+                            chat_storage=chat_storage
+                        )
+
+                        result = await _generate_single_summary(
+                            item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None
+                        )
+
+                        if result.get("status") in ["success", "cached"]:
+                            print(f"   ✅ Retry successful for {item['filename']}")
+                            failed_items.remove(item)
+                        else:
+                            print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
+                            item["last_error"] = result.get('error', 'Unknown')[:200]
+
+                    except Exception as e:
+                        print(f"   ❌ Retry exception for {item['filename']}: {e}")
+                        item["last_error"] = str(e)[:200]
+
+                # Clean up empty course entries
+                if not failed_items:
+                    del failed_summary_queue[course_id]
+
+        except Exception as e:
+            print(f"❌ Error in retry worker: {e}")
+            import traceback
+            traceback.print_exc()
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -162,6 +244,14 @@ async def startup_event():
             print(f"🔄 Proactive cache refresh loop started")
         except Exception as e:
             print(f"⚠️  Failed to start cache refresh loop: {e}")
+
+    # Start background retry worker for failed summaries
+    global retry_worker_task
+    try:
+        retry_worker_task = asyncio.create_task(_summary_retry_worker())
+        print(f"🔄 Summary retry worker started")
+    except Exception as e:
+        print(f"⚠️  Failed to start retry worker: {e}")
 
     print("🎉 Backend ready!")
 
@@ -597,14 +687,43 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         semaphore = asyncio.Semaphore(3)
 
         async def process_with_limit(file_info):
-            """Wrapper to apply semaphore limit and rate pacing"""
+            """Wrapper to apply semaphore limit, adaptive rate pacing, and cooldown"""
+            global current_delay, rate_limit_cooldown_until, recent_api_results
+
             async with semaphore:
+                # Check if we're in cooldown period
+                if time.time() < rate_limit_cooldown_until:
+                    wait_time = rate_limit_cooldown_until - time.time()
+                    print(f"   ⏸️  Rate limit cooldown: waiting {wait_time:.1f}s...")
+                    await asyncio.sleep(wait_time)
+
                 result = await _generate_single_summary(
                     file_info, course_id, file_uploader, file_summarizer, chat_storage, canvas_user_id
                 )
-                # Add delay to pace requests at ~20 RPM (3.0s between requests)
-                # This prevents bursts that trigger rate limiting
-                await asyncio.sleep(3.0)
+
+                # Track API success/failure for adaptive rate limiting
+                is_success = isinstance(result, dict) and result.get("status") in ["success", "cached", "skipped"]
+                recent_api_results.append(is_success)
+
+                # If rate limited, trigger cooldown
+                if isinstance(result, dict) and result.get("status") == "error":
+                    error_msg = result.get("error", "").lower()
+                    if '429' in error_msg or 'rate limit' in error_msg or 'quota' in error_msg:
+                        print(f"   ⚠️  Rate limit detected! Entering 30s cooldown...")
+                        rate_limit_cooldown_until = time.time() + 30
+                        current_delay = 5.0  # Increase delay after rate limit
+
+                # Adaptive delay based on recent success rate
+                if len(recent_api_results) >= 10:
+                    failure_rate = recent_api_results.count(False) / len(recent_api_results)
+                    if failure_rate > 0.3:  # >30% failures
+                        current_delay = 5.0
+                    elif failure_rate > 0.1:  # >10% failures
+                        current_delay = 3.5
+                    else:  # Low failure rate
+                        current_delay = max(2.0, current_delay - 0.2)  # Gradually decrease
+
+                await asyncio.sleep(current_delay)
                 return result
 
         filenames_preview = ", ".join([f['filename'][:20] for f in successful_uploads[:3]])
@@ -624,12 +743,37 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
 
         print(f"✅ BATCH COMPLETE: {success_count} new, {cached_count} cached, {error_count + exception_count} errors\n")
 
-        # Log errors only
-        for result in results:
+        # Add failed summaries to retry queue
+        if course_id not in failed_summary_queue:
+            failed_summary_queue[course_id] = []
+
+        for i, result in enumerate(results):
             if isinstance(result, Exception):
                 print(f"❌ Exception: {result}")
+                # Add to failed queue
+                file_info = successful_uploads[i]
+                failed_summary_queue[course_id].append({
+                    "file_id": file_info.get("file_id"),
+                    "filename": file_info.get("filename"),
+                    "attempts": 0,
+                    "last_error": str(result)[:200],
+                    "file_info": file_info  # Keep full info for retry
+                })
             elif isinstance(result, dict) and result.get("status") == "error":
                 print(f"❌ Error: {result['filename']}: {result.get('error')}")
+                # Add to failed queue
+                file_info = successful_uploads[i]
+                failed_summary_queue[course_id].append({
+                    "file_id": file_info.get("file_id"),
+                    "filename": result['filename'],
+                    "attempts": 0,
+                    "last_error": result.get('error', '')[:200],
+                    "file_info": file_info
+                })
+
+        # Log failed queue status
+        if failed_summary_queue[course_id]:
+            print(f"📋 Added {len(failed_summary_queue[course_id])} failed summaries to retry queue for course {course_id}")
 
     except Exception as e:
         print(f"❌ Critical error in summary generation: {e}")
@@ -2258,6 +2402,20 @@ async def get_course_summary_status(course_id: str):
         # This accounts for: 3 concurrent + 3.0s delay = ~3s per file average
         estimated_ready_time = summaries_pending * 3
 
+        # Get failed summary info from retry queue
+        failed_items = failed_summary_queue.get(course_id, [])
+        failed_count = len(failed_items)
+        retry_queue_count = sum(1 for item in failed_items if item["attempts"] < 3)
+
+        # Get error details for failed summaries
+        error_details = []
+        for item in failed_items[:5]:  # Limit to first 5 for response size
+            error_details.append({
+                "filename": item["filename"],
+                "attempts": item["attempts"],
+                "last_error": item["last_error"]
+            })
+
         return {
             "success": True,
             "course_id": course_id,
@@ -2265,9 +2423,13 @@ async def get_course_summary_status(course_id: str):
             "total_files": total_files,
             "summaries_pending": summaries_pending,
             "completion_percent": round(completion_percent, 1),
-            "is_ready": summaries_pending == 0,
+            "is_ready": summaries_pending == 0 and failed_count == 0,
             "estimated_time_seconds": estimated_ready_time,
-            "message": "All summaries ready!" if summaries_pending == 0 else f"Generating {summaries_pending} summaries..."
+            "failed_count": failed_count,
+            "retry_queue_count": retry_queue_count,
+            "error_details": error_details,
+            "message": "All summaries ready!" if (summaries_pending == 0 and failed_count == 0) else
+                      f"Generating {summaries_pending} summaries... ({failed_count} failed, {retry_queue_count} retrying)"
         }
 
     except Exception as e:
@@ -2275,6 +2437,100 @@ async def get_course_summary_status(course_id: str):
             "success": False,
             "error": str(e)
         }
+
+
+@app.post("/courses/{course_id}/regenerate-failed-summaries")
+async def regenerate_failed_summaries(course_id: str):
+    """
+    Manually trigger retry for all failed summaries in a course
+
+    Returns:
+        JSON with:
+        - success: Whether the regeneration was triggered
+        - files_retrying: List of files being retried
+        - retry_count: Number of files being retried
+    """
+    try:
+        if course_id not in failed_summary_queue or not failed_summary_queue[course_id]:
+            return {
+                "success": True,
+                "message": "No failed summaries to retry",
+                "retry_count": 0,
+                "files_retrying": []
+            }
+
+        failed_items = failed_summary_queue[course_id]
+        files_retrying = [{"filename": item["filename"], "attempts": item["attempts"]} for item in failed_items]
+
+        # Reset attempts to give fresh retry budget
+        for item in failed_items:
+            item["attempts"] = 0
+
+        print(f"🔄 Manual regeneration triggered for {len(failed_items)} failed summaries in course {course_id}")
+
+        # Trigger immediate retry in background
+        asyncio.create_task(_retry_failed_summaries_once(course_id))
+
+        return {
+            "success": True,
+            "message": f"Retrying {len(failed_items)} failed summaries",
+            "retry_count": len(failed_items),
+            "files_retrying": files_retrying
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def _retry_failed_summaries_once(course_id: str):
+    """Helper to retry failed summaries immediately (called by manual regeneration)"""
+    try:
+        if course_id not in failed_summary_queue:
+            return
+
+        failed_items = failed_summary_queue[course_id]
+        print(f"   Retrying {len(failed_items)} summaries for course {course_id}")
+
+        from utils.file_upload_manager import FileUploadManager
+        api_key = os.getenv("GOOGLE_API_KEY")
+        file_upload_client = genai.Client(api_key=api_key)
+        file_uploader = FileUploadManager(
+            file_upload_client,
+            cache_duration_hours=48,
+            storage_manager=storage_manager,
+            chat_storage=chat_storage
+        )
+
+        for item in failed_items[:]:  # Copy to allow modification
+            try:
+                result = await _generate_single_summary(
+                    item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None
+                )
+
+                if result.get("status") in ["success", "cached"]:
+                    print(f"   ✅ Retry successful for {item['filename']}")
+                    failed_items.remove(item)
+                else:
+                    print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
+                    item["last_error"] = result.get('error', 'Unknown')[:200]
+                    item["attempts"] += 1
+
+            except Exception as e:
+                print(f"   ❌ Retry exception for {item['filename']}: {e}")
+                item["last_error"] = str(e)[:200]
+                item["attempts"] += 1
+
+        # Clean up if no items left
+        if not failed_items:
+            del failed_summary_queue[course_id]
+
+    except Exception as e:
+        print(f"❌ Error in manual retry: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @app.get("/cache-stats")
