@@ -2252,6 +2252,8 @@ async def get_course_summary_status(course_id: str):
         summaries_pending = max(0, total_files - summaries_ready)
         completion_percent = (summaries_ready / total_files * 100) if total_files > 0 else 0
 
+        print(f"📊 Summary status for {course_id}: {summaries_ready}/{total_files} ready ({completion_percent:.1f}%)")
+
         # Estimate time until all summaries are ready (3 seconds per summary average)
         # This accounts for: 3 concurrent + 3.0s delay = ~3s per file average
         estimated_ready_time = summaries_pending * 3
