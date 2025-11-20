@@ -26,7 +26,7 @@ class FileSelectorAgent:
         """
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.0-flash-lite"  # Lightweight, separate quota
-        self.fallback_model = "gemini-2.5-flash-lite"  # Lowest tier model fallback
+        self.fallback_model = "gemini-2.0-flash-lite"  # Valid fallback model
 
     async def select_relevant_files(
         self,

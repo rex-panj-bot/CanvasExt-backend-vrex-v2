@@ -51,8 +51,7 @@ class FileSummarizer:
 
 Document: {filename}
 
-Format as JSON:
-{{"summary": "...", "topics": ["topic1", "topic2", "topic3"]}}"""
+Return ONLY valid JSON with no explanatory text."""
 
             # Try with primary model first, fallback to 2.5 if rate limited
             model_to_use = self.model_id
@@ -66,9 +65,25 @@ Format as JSON:
                     ],
                     config=types.GenerateContentConfig(
                         temperature=0.1,  # Lower = faster, more deterministic
-                        max_output_tokens=500,  # Increased from 200 for more detailed topics
+                        max_output_tokens=1500,  # Increased from 500 to prevent truncation
                         top_p=0.8,  # Reduce token sampling
-                        top_k=20    # Reduce token candidates
+                        top_k=20,    # Reduce token candidates
+                        response_mime_type="application/json",
+                        response_schema={
+                            "type": "object",
+                            "properties": {
+                                "summary": {
+                                    "type": "string",
+                                    "description": "A concise 40-50 word summary"
+                                },
+                                "topics": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "3 most important topics"
+                                }
+                            },
+                            "required": ["summary", "topics"]
+                        }
                     )
                 )
             except Exception as e:
@@ -86,9 +101,25 @@ Format as JSON:
                         ],
                         config=types.GenerateContentConfig(
                             temperature=0.1,
-                            max_output_tokens=500,
+                            max_output_tokens=1500,
                             top_p=0.8,
-                            top_k=20
+                            top_k=20,
+                            response_mime_type="application/json",
+                            response_schema={
+                                "type": "object",
+                                "properties": {
+                                    "summary": {
+                                        "type": "string",
+                                        "description": "A concise 40-50 word summary"
+                                    },
+                                    "topics": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "3 most important topics"
+                                    }
+                                },
+                                "required": ["summary", "topics"]
+                            }
                         )
                     )
                 else:
@@ -160,19 +191,13 @@ Title: {filename}
 Content:
 {content}
 
-Please provide:
+Provide:
 1. **Summary**: A concise 150-200 word summary capturing the main content and purpose
-2. **Topics**: 5-10 key topics, concepts, or keywords (comma-separated list)
+2. **Topics**: 5-10 key topics, concepts, or keywords
 3. **Content Type**: (e.g., assignment description, course page, syllabus, schedule, etc.)
 4. **Time/Date References**: Any specific dates, weeks, or time periods mentioned
 
-Format your response as JSON:
-{{
-  "summary": "...",
-  "topics": ["topic1", "topic2", ...],
-  "doc_type": "...",
-  "time_references": "..."
-}}"""
+Return ONLY valid JSON with no explanatory text."""
 
             # Try with primary model first, fallback to 2.5 if rate limited
             model_to_use = self.model_id
@@ -182,7 +207,31 @@ Format your response as JSON:
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.3,
-                        max_output_tokens=2000,  # Increased from 800 for richer summaries
+                        max_output_tokens=2500,  # Increased from 2000 for richer summaries
+                        response_mime_type="application/json",
+                        response_schema={
+                            "type": "object",
+                            "properties": {
+                                "summary": {
+                                    "type": "string",
+                                    "description": "A concise 150-200 word summary"
+                                },
+                                "topics": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "5-10 key topics, concepts, or keywords"
+                                },
+                                "doc_type": {
+                                    "type": "string",
+                                    "description": "Content type (assignment, page, syllabus, etc.)"
+                                },
+                                "time_references": {
+                                    "type": "string",
+                                    "description": "Specific dates, weeks, or time periods"
+                                }
+                            },
+                            "required": ["summary", "topics", "doc_type", "time_references"]
+                        }
                     )
                 )
             except Exception as e:
@@ -197,7 +246,31 @@ Format your response as JSON:
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             temperature=0.3,
-                            max_output_tokens=2000,
+                            max_output_tokens=2500,
+                            response_mime_type="application/json",
+                            response_schema={
+                                "type": "object",
+                                "properties": {
+                                    "summary": {
+                                        "type": "string",
+                                        "description": "A concise 150-200 word summary"
+                                    },
+                                    "topics": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "5-10 key topics, concepts, or keywords"
+                                    },
+                                    "doc_type": {
+                                        "type": "string",
+                                        "description": "Content type (assignment, page, syllabus, etc.)"
+                                    },
+                                    "time_references": {
+                                        "type": "string",
+                                        "description": "Specific dates, weeks, or time periods"
+                                    }
+                                },
+                                "required": ["summary", "topics", "doc_type", "time_references"]
+                            }
                         )
                     )
                 else:

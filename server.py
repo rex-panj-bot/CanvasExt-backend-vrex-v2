@@ -522,8 +522,8 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
         )
 
         # PHASE 4: Priority upload queue - Reduced concurrency to prevent rate limits
-        # Matches summarization semaphore (5) to avoid API quota conflicts
-        semaphore = asyncio.Semaphore(5)
+        # Low concurrency (2) to avoid API quota conflicts during pre-warming
+        semaphore = asyncio.Semaphore(2)
 
         async def upload_single_file(file_info):
             async with semaphore:
@@ -587,9 +587,9 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             chat_storage=chat_storage  # PHASE 3: Enable database caching
         )
 
-        # Semaphore to limit concurrent processing (reduced to 5 to prevent rate limit bursts)
+        # Semaphore to limit concurrent processing (reduced to 3 to prevent rate limit bursts)
         # Keep low to avoid Gemini API rate limits on free tier (30 RPM for gemini-2.0-flash-lite)
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(3)
 
         async def process_with_limit(file_info):
             """Wrapper to apply semaphore limit and rate pacing"""
@@ -597,9 +597,9 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                 result = await _generate_single_summary(
                     file_info, course_id, file_uploader, file_summarizer, chat_storage, canvas_user_id
                 )
-                # Add delay to pace requests at ~25 RPM (2.4s between requests)
+                # Add delay to pace requests at ~20 RPM (3.0s between requests)
                 # This prevents bursts that trigger rate limiting
-                await asyncio.sleep(2.4)
+                await asyncio.sleep(3.0)
                 return result
 
         filenames_preview = ", ".join([f['filename'][:20] for f in successful_uploads[:3]])
@@ -1646,7 +1646,7 @@ Title:"""
 
             # Call Gemini Flash-Lite (fast and cheap) - uses separate quota from main model
             response = client.models.generate_content(
-                model='gemini-2.5-flash-lite',
+                model='gemini-2.0-flash-lite',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.7,
