@@ -1,6 +1,11 @@
 """
 FastAPI Server for AI Study Assistant
 Handles WebSocket connections, PDF uploads, and agent coordination
+
+Latest updates:
+- JSON mode for guaranteed valid summaries
+- Correct Gemini model names (gemini-2.0-flash-lite)
+- Optimized rate limiting (3 concurrent, 3.0s delay)
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header
