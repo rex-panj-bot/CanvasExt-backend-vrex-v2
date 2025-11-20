@@ -1282,7 +1282,7 @@ async def process_canvas_files(
 
         # Create single aiohttp session for all requests with timeout and connector config
         timeout = aiohttp.ClientTimeout(total=300, connect=30, sock_read=60)
-        connector = aiohttp.TCPConnector(limit=24, force_close=True, enable_cleanup_closed=True)
+        connector = aiohttp.TCPConnector(limit=24)  # Removed force_close to prevent incomplete transfers
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             # Create tasks for all files
             tasks = [process_with_semaphore(file_info, session) for file_info in files]
