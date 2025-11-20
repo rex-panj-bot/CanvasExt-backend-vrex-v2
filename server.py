@@ -1099,20 +1099,25 @@ async def process_canvas_files(
                         base_url = file_url.split('/api/v1/')[0]
                         download_url = f"{base_url}/files/{file_id}/download?download_frd=1"
 
-                # Download file from Canvas
+                # Download file from Canvas with retry logic
                 headers = {}
                 if canvas_cookies:
                     headers['Cookie'] = canvas_cookies
 
-                async with session.get(download_url, headers=headers, allow_redirects=True) as response:
-                    if response.status != 200:
-                        print(f"❌ {file_name}: HTTP {response.status}")
+                try:
+                    file_content, status, content_type_header = await download_with_retry(
+                        session, download_url, headers, file_name
+                    )
+
+                    if status != 200:
+                        print(f"❌ {file_name}: HTTP {status}")
                         failed += 1
-                        return {"status": "failed", "error": f"HTTP {response.status}", "filename": file_name}
-
-                    file_content = await response.read()
-
-                    content_type_header = response.headers.get('Content-Type', '').split(';')[0].strip()
+                        return {"status": "failed", "error": f"HTTP {status}", "filename": file_name}
+                except Exception as e:
+                    # DNS/connection failure after retries
+                    print(f"❌ {file_name}: {str(e)}")
+                    failed += 1
+                    return {"status": "failed", "error": str(e), "filename": file_name}
 
                 # Process and upload (same logic as before)
                 from utils.file_converter import convert_office_to_pdf, needs_conversion
@@ -1249,12 +1254,36 @@ async def process_canvas_files(
         # Create semaphore to limit concurrent operations
         semaphore = asyncio.Semaphore(24)  # Optimized for speed (24 concurrent downloads)
 
+        async def download_with_retry(session, url, headers, filename, max_retries=3):
+            """Download file with retry logic for DNS/connection failures"""
+            for attempt in range(max_retries):
+                try:
+                    async with session.get(url, headers=headers, allow_redirects=True) as response:
+                        if response.status != 200:
+                            return None, response.status, None
+                        content = await response.read()
+                        content_type = response.headers.get('Content-Type', '').split(';')[0].strip()
+                        return content, 200, content_type
+                except (aiohttp.ClientConnectorError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+                    error_msg = str(e)
+                    if attempt < max_retries - 1:
+                        wait = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        print(f"   ⚠️  {filename}: DNS/connection error, retry {attempt+2}/{max_retries} in {wait}s...")
+                        await asyncio.sleep(wait)
+                    else:
+                        # Final attempt failed
+                        print(f"   ❌ {filename}: Failed after {max_retries} retries: {error_msg}")
+                        raise
+            return None, None, None
+
         async def process_with_semaphore(file_info, session):
             async with semaphore:
                 return await process_single_file(file_info, session)
 
-        # Create single aiohttp session for all requests
-        async with aiohttp.ClientSession() as session:
+        # Create single aiohttp session for all requests with timeout and connector config
+        timeout = aiohttp.ClientTimeout(total=300, connect=30, sock_read=60)
+        connector = aiohttp.TCPConnector(limit=24, force_close=True, enable_cleanup_closed=True)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             # Create tasks for all files
             tasks = [process_with_semaphore(file_info, session) for file_info in files]
 
