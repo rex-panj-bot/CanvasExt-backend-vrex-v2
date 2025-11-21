@@ -519,6 +519,9 @@ async def _generate_single_summary(
             if len(parts) == 2:
                 content_hash = parts[1]
 
+        # DEBUG: Log canvas_user_id to track propagation
+        print(f"🔍 DEBUG _generate_single_summary for {filename}: canvas_user_id={canvas_user_id}")
+
         # CRITICAL: doc_id and hash are required for hash-based system
         if not doc_id or not content_hash:
             error_msg = f"Missing doc_id or hash for {filename} - upload may have failed"
@@ -581,6 +584,7 @@ async def _generate_single_summary(
         # Save to database (cache for future uploads) with hash
         summary_preview = summary[:50] + "..." if len(summary) > 50 else summary
         print(f"✅ Summary: {filename[:40]}... → \"{summary_preview}\"")
+        print(f"🔍 DEBUG Saving summary with canvas_user_id={canvas_user_id}, gcs_path={file_path}")
         success = chat_storage.save_file_summary(
             doc_id=doc_id,
             course_id=course_id,
