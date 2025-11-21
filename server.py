@@ -686,6 +686,44 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         # Keep low to avoid Gemini API rate limits on free tier (30 RPM for gemini-2.0-flash-lite)
         semaphore = asyncio.Semaphore(3)
 
+        # Check ALL files in catalog for missing summaries (not just newly uploaded)
+        files_to_summarize = []
+        catalog = document_manager.get_material_catalog(course_id)
+        all_materials = catalog.get("materials", [])
+
+        print(f"🔍 Checking {len(all_materials)} files for missing summaries...")
+
+        for material in all_materials:
+            file_id = material.get('id')
+            if not file_id:
+                continue
+
+            # Check if summary exists in database
+            existing_summary = chat_storage.get_file_summary(file_id)
+            if not existing_summary:
+                # Find matching upload info from this batch, or create minimal info
+                upload_info = next(
+                    (f for f in successful_uploads if f.get('file_id') == file_id),
+                    {
+                        'file_id': file_id,
+                        'filename': material['filename'],
+                        'path': material['path'],
+                        'gcs_path': f"{course_id}/{material['filename']}",
+                        'size_mb': material.get('size_mb', 0),
+                        'num_pages': material.get('num_pages', 0)
+                    }
+                )
+                files_to_summarize.append(upload_info)
+
+        if not files_to_summarize:
+            print("✅ All files already have summaries!")
+            return
+
+        print(f"📝 Found {len(files_to_summarize)} files missing summaries")
+
+        # Replace successful_uploads with files that need summaries
+        successful_uploads = files_to_summarize
+
         async def process_with_limit(file_info):
             """Wrapper to apply semaphore limit, adaptive rate pacing, and cooldown"""
             global current_delay, rate_limit_cooldown_until, recent_api_results
