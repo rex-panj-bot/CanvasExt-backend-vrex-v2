@@ -508,6 +508,17 @@ async def _generate_single_summary(
         filename = file_info.get("filename")  # Original filename for display
         file_path = file_info["path"]
 
+        # Handle reconstructed upload_info from catalog (missing doc_id/hash)
+        # Extract from file_id which has format: {course_id}_{hash}
+        if not doc_id:
+            doc_id = file_info.get("file_id")
+
+        if not content_hash and doc_id:
+            # Extract hash from doc_id (format: {course_id}_{hash})
+            parts = doc_id.split('_', 1)
+            if len(parts) == 2:
+                content_hash = parts[1]
+
         # CRITICAL: doc_id and hash are required for hash-based system
         if not doc_id or not content_hash:
             error_msg = f"Missing doc_id or hash for {filename} - upload may have failed"
@@ -706,7 +717,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                     (f for f in successful_uploads if f.get('file_id') == file_id),
                     {
                         'file_id': file_id,
-                        'filename': material['filename'],
+                        'filename': material['name'],  # Use original display name, not hash-based filename
                         'path': material['path'],
                         'gcs_path': f"{course_id}/{material['filename']}",
                         'size_mb': material.get('size_mb', 0),
