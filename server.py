@@ -81,7 +81,7 @@ failed_summary_queue: Dict[str, List[Dict]] = {}
 recent_api_results = deque(maxlen=20)
 
 # Adaptive delay state
-current_delay = 1.5  # Start with 1.5 seconds (optimized for faster processing)
+current_delay = 2.0  # Start with 2 seconds
 rate_limit_cooldown_until = 0  # Timestamp when cooldown ends
 
 # Background retry worker state
@@ -105,55 +105,43 @@ async def _summary_retry_worker():
 
                 print(f"   Retrying {len(failed_items)} summaries for course {course_id}")
 
-                # Setup file uploader for this retry batch
-                from utils.file_upload_manager import FileUploadManager
-                api_key = os.getenv("GOOGLE_API_KEY")
-                file_upload_client = genai.Client(api_key=api_key)
-                file_uploader = FileUploadManager(
-                    file_upload_client,
-                    cache_duration_hours=48,
-                    storage_manager=storage_manager,
-                    chat_storage=chat_storage
-                )
-
-                # Retry failed items in parallel (faster than sequential)
-                async def retry_single_item(item):
+                # Retry each failed item
+                retry_results = []
+                for item in failed_items[:]:  # Copy list to allow modification
                     item["attempts"] += 1
 
                     # Max 3 background retries per file
                     if item["attempts"] > 3:
                         print(f"   ❌ Max retries reached for {item['filename']}, removing from queue")
-                        return {"action": "remove", "item": item}
+                        failed_items.remove(item)
+                        continue
 
                     # Retry summary generation
                     try:
+                        from utils.file_upload_manager import FileUploadManager
+                        api_key = os.getenv("GOOGLE_API_KEY")
+                        file_upload_client = genai.Client(api_key=api_key)
+                        file_uploader = FileUploadManager(
+                            file_upload_client,
+                            cache_duration_hours=48,
+                            storage_manager=storage_manager,
+                            chat_storage=chat_storage
+                        )
+
                         result = await _generate_single_summary(
                             item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None
                         )
 
                         if result.get("status") in ["success", "cached"]:
                             print(f"   ✅ Retry successful for {item['filename']}")
-                            return {"action": "remove", "item": item}
+                            failed_items.remove(item)
                         else:
                             print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
                             item["last_error"] = result.get('error', 'Unknown')[:200]
-                            return {"action": "keep", "item": item}
 
                     except Exception as e:
                         print(f"   ❌ Retry exception for {item['filename']}: {e}")
                         item["last_error"] = str(e)[:200]
-                        return {"action": "keep", "item": item}
-
-                # Process all retries in parallel with same semaphore limit
-                retry_tasks = [retry_single_item(item) for item in failed_items[:]]
-                retry_results = await asyncio.gather(*retry_tasks, return_exceptions=True)
-
-                # Update failed_items list based on results
-                for result in retry_results:
-                    if isinstance(result, dict) and result.get("action") == "remove":
-                        item = result["item"]
-                        if item in failed_items:
-                            failed_items.remove(item)
 
                 # Clean up empty course entries
                 if not failed_items:
@@ -503,18 +491,6 @@ def _sync_summarize_file(summarizer, file_uri, filename, mime_type):
         loop.close()
 
 
-def _sync_summarize_text_content(summarizer, text_content, filename):
-    """Synchronous wrapper for text content summarization - runs in thread pool"""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(
-            summarizer.summarize_text_content(text_content, filename)
-        )
-    finally:
-        loop.close()
-
-
 async def _generate_single_summary(
     file_info: Dict,
     course_id: str,
@@ -587,42 +563,23 @@ async def _generate_single_summary(
         if "error" in upload_result:
             return {"status": "error", "filename": filename, "error": upload_result["error"]}
 
-        # Check if this is a text file (assignments/pages)
-        if upload_result.get("is_text"):
-            # Text file - use text content directly for summarization
-            text_content = upload_result.get("text_content")
-            if not text_content:
-                return {"status": "error", "filename": filename, "error": "No text content found"}
+        file_uri = upload_result["file"].uri
+        mime_type = upload_result["mime_type"]
 
-            mime_type = upload_result["mime_type"]
-
-            # Generate summary from text content (async call - more efficient than thread pool)
-            try:
-                summary, topics, metadata = await file_summarizer.summarize_text_content(
-                    text_content,
-                    filename
-                )
-            except Exception as e:
-                error_msg = str(e)
-                print(f"❌ Failed to generate summary for text file {filename}: {error_msg[:100]}")
-                return {"status": "error", "filename": filename, "error": error_msg}
-        else:
-            # Regular file with Gemini File API URI
-            file_uri = upload_result["file"].uri
-            mime_type = upload_result["mime_type"]
-
-            # Generate summary (async call - more efficient than thread pool wrapper)
-            try:
-                summary, topics, metadata = await file_summarizer.summarize_file(
-                    file_uri,
-                    filename,
-                    mime_type
-                )
-            except Exception as e:
-                # Don't save errors as summaries - return error status for retry later
-                error_msg = str(e)
-                print(f"❌ Failed to generate summary for {filename}: {error_msg[:100]}")
-                return {"status": "error", "filename": filename, "error": error_msg}
+        # Generate summary (run in thread pool - BLOCKING LLM call)
+        try:
+            summary, topics, metadata = await asyncio.to_thread(
+                _sync_summarize_file,
+                file_summarizer,
+                file_uri,
+                filename,
+                mime_type
+            )
+        except Exception as e:
+            # Don't save errors as summaries - return error status for retry later
+            error_msg = str(e)
+            print(f"❌ Failed to generate summary for {filename}: {error_msg[:100]}")
+            return {"status": "error", "filename": filename, "error": error_msg}
 
         # Save to database (cache for future uploads) with hash
         summary_preview = summary[:50] + "..." if len(summary) > 50 else summary
@@ -740,10 +697,9 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             chat_storage=chat_storage  # PHASE 3: Enable database caching
         )
 
-        # Semaphore to limit concurrent processing
-        # Increased to 5 for faster processing while staying within Gemini API rate limits
-        # With 5 concurrent + 1.5s delays = ~3.3 req/sec = 200 req/min (well within 30 RPM limit with bursts)
-        semaphore = asyncio.Semaphore(5)
+        # Semaphore to limit concurrent processing (reduced to 3 to prevent rate limit bursts)
+        # Keep low to avoid Gemini API rate limits on free tier (30 RPM for gemini-2.0-flash-lite)
+        semaphore = asyncio.Semaphore(3)
 
         # Check ALL files in catalog for missing summaries (not just newly uploaded)
         files_to_summarize = []
