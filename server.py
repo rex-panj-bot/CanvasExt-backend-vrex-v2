@@ -129,7 +129,7 @@ async def _summary_retry_worker():
                         )
 
                         result = await _generate_single_summary(
-                            item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None,
+                            item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, item.get("canvas_user_id"),
                             document_manager=document_manager, storage_manager=storage_manager
                         )
 
@@ -1128,7 +1128,8 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                             "filename": result['filename'],
                             "attempts": 0,
                             "last_error": result.get('error', '')[:200],
-                            "file_info": file_info
+                            "file_info": file_info,
+                            "canvas_user_id": canvas_user_id  # Preserve user ID for retries
                         })
 
         # Log failed queue status
@@ -2872,7 +2873,7 @@ async def _retry_failed_summaries_once(course_id: str):
         for item in failed_items[:]:  # Copy to allow modification
             try:
                 result = await _generate_single_summary(
-                    item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None,
+                    item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, item.get("canvas_user_id"),
                     document_manager=document_manager, storage_manager=storage_manager
                 )
 
@@ -3212,7 +3213,7 @@ async def update_canvas_ids(course_id: str, updates: Dict):
             # Get existing file summary
             file_summary = chat_storage.get_file_summary(doc_id)
             if file_summary:
-                # Update with canvas_id
+                # Update with canvas_id (preserve existing canvas_user_id)
                 chat_storage.save_file_summary(
                     doc_id=doc_id,
                     course_id=course_id,
@@ -3221,7 +3222,8 @@ async def update_canvas_ids(course_id: str, updates: Dict):
                     topics=file_summary.get("topics"),
                     metadata=file_summary.get("metadata"),
                     content_hash=file_summary.get("content_hash"),
-                    canvas_id=canvas_id
+                    canvas_id=canvas_id,
+                    canvas_user_id=file_summary.get("canvas_user_id")  # Preserve existing user ID
                 )
                 updated_count += 1
                 print(f"   ✅ Updated {doc_id[:24]}... with canvas_id: {canvas_id}")
