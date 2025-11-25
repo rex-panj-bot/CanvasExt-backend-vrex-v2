@@ -7,7 +7,7 @@ Provides tools for the agentic system to load complete documents
 from pathlib import Path
 from typing import List, Dict, Optional
 import json
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 import re
 from io import BytesIO
 
