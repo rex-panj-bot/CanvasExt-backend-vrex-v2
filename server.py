@@ -774,7 +774,7 @@ async def _generate_batch_summaries(
 
             # Save to database
             success = chat_storage.save_file_summary(
-                file_id=file_id,
+                doc_id=file_id,
                 course_id=course_id,
                 filename=filename,
                 summary=summary,
@@ -946,7 +946,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         # PHASE 2: BATCH SUMMARIZATION
         # Initialize rate limiting variables for batch processing
         rate_limit_cooldown_until = 0.0  # Timestamp when cooldown ends
-        current_delay = 2.0  # Initial delay between batches
+        current_delay = 3.0  # Initial delay between batches (increased to avoid rate limits)
 
         # Step 1: Upload all files to Gemini to get URIs (pre-warming phase)
         print(f"\n📤 PHASE 1: Uploading {len(successful_uploads)} files to Gemini...")
@@ -1001,27 +1001,38 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
 
         # Separate uploaded files from failed uploads
         uploaded_files = []
-        for result in upload_results:
+        removed_files = []
+        upload_errors = []
+
+        for i, result in enumerate(upload_results):
             if isinstance(result, dict) and result.get("status") == "uploaded":
                 uploaded_files.append(result["file_info"])
             elif isinstance(result, dict) and result.get("status") == "removed":
-                # File was removed due to validation - skip it
-                pass
-            else:
-                # Upload error - will be added to retry queue below
-                pass
+                # File was removed due to validation - track it
+                removed_files.append(result)
+            elif isinstance(result, dict) and result.get("status") == "upload_error":
+                # Upload error - track for retry queue
+                upload_errors.append((successful_uploads[i], result.get("error", "Unknown error")))
+            elif isinstance(result, Exception):
+                # Exception during upload
+                upload_errors.append((successful_uploads[i], str(result)))
 
-        print(f"✅ UPLOAD PHASE COMPLETE: {len(uploaded_files)} files uploaded to Gemini\n")
+        print(f"✅ UPLOAD PHASE COMPLETE: {len(uploaded_files)} uploaded, {len(removed_files)} removed (validation), {len(upload_errors)} errors\n")
+
+        if removed_files:
+            print(f"🗑️  Removed {len(removed_files)} invalid files:")
+            for removed in removed_files[:3]:  # Show first 3
+                print(f"   - {removed['file_info'].get('filename')}: {removed['error'][:100]}")
 
         if not uploaded_files:
             print("⚠️  No files to summarize (all failed validation or upload)")
             return
 
         # Step 2: Group files into batches and summarize
-        BATCH_SIZE = 12  # Optimal batch size (12 files per request)
+        BATCH_SIZE = 5  # Small batch size to avoid rate limits and minimize 400 error impact
         batches = [uploaded_files[i:i + BATCH_SIZE] for i in range(0, len(uploaded_files), BATCH_SIZE)]
 
-        print(f"📝 PHASE 2: Summarizing {len(uploaded_files)} files in {len(batches)} batches (12 files per batch)...\n")
+        print(f"📝 PHASE 2: Summarizing {len(uploaded_files)} files in {len(batches)} batches ({BATCH_SIZE} files per batch)...\n")
 
         all_results = []
         for batch_num, batch in enumerate(batches, 1):

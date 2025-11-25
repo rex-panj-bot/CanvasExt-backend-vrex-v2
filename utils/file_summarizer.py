@@ -32,6 +32,10 @@ class FileSummarizer:
         """Check if an error is retryable (rate limit, server error, timeout)"""
         error_str = str(error).lower()
 
+        # Non-retryable errors: 400 errors indicate bad input (don't retry)
+        if '400' in error_str or 'invalid_argument' in error_str or 'no pages' in error_str:
+            return False
+
         # Retryable errors: rate limits, server errors, timeouts
         retryable_indicators = [
             '429',  # Rate limit
