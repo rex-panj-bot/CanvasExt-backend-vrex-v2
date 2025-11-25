@@ -944,6 +944,10 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         successful_uploads = files_to_summarize
 
         # PHASE 2: BATCH SUMMARIZATION
+        # Initialize rate limiting variables for batch processing
+        rate_limit_cooldown_until = 0.0  # Timestamp when cooldown ends
+        current_delay = 2.0  # Initial delay between batches
+
         # Step 1: Upload all files to Gemini to get URIs (pre-warming phase)
         print(f"\n📤 PHASE 1: Uploading {len(successful_uploads)} files to Gemini...")
 
