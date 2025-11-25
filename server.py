@@ -491,6 +491,18 @@ def _sync_summarize_file(summarizer, file_uri, filename, mime_type):
         loop.close()
 
 
+def _sync_summarize_text_content(summarizer, text_content, filename):
+    """Synchronous wrapper for text content summarization - runs in thread pool"""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            summarizer.summarize_text_content(text_content, filename)
+        )
+    finally:
+        loop.close()
+
+
 async def _generate_single_summary(
     file_info: Dict,
     course_id: str,
@@ -563,23 +575,46 @@ async def _generate_single_summary(
         if "error" in upload_result:
             return {"status": "error", "filename": filename, "error": upload_result["error"]}
 
-        file_uri = upload_result["file"].uri
-        mime_type = upload_result["mime_type"]
+        # Check if this is a text file (assignments/pages)
+        if upload_result.get("is_text"):
+            # Text file - use text content directly for summarization
+            text_content = upload_result.get("text_content")
+            if not text_content:
+                return {"status": "error", "filename": filename, "error": "No text content found"}
 
-        # Generate summary (run in thread pool - BLOCKING LLM call)
-        try:
-            summary, topics, metadata = await asyncio.to_thread(
-                _sync_summarize_file,
-                file_summarizer,
-                file_uri,
-                filename,
-                mime_type
-            )
-        except Exception as e:
-            # Don't save errors as summaries - return error status for retry later
-            error_msg = str(e)
-            print(f"❌ Failed to generate summary for {filename}: {error_msg[:100]}")
-            return {"status": "error", "filename": filename, "error": error_msg}
+            mime_type = upload_result["mime_type"]
+
+            # Generate summary from text content (run in thread pool - BLOCKING LLM call)
+            try:
+                summary, topics, metadata = await asyncio.to_thread(
+                    _sync_summarize_text_content,
+                    file_summarizer,
+                    text_content,
+                    filename
+                )
+            except Exception as e:
+                error_msg = str(e)
+                print(f"❌ Failed to generate summary for text file {filename}: {error_msg[:100]}")
+                return {"status": "error", "filename": filename, "error": error_msg}
+        else:
+            # Regular file with Gemini File API URI
+            file_uri = upload_result["file"].uri
+            mime_type = upload_result["mime_type"]
+
+            # Generate summary (run in thread pool - BLOCKING LLM call)
+            try:
+                summary, topics, metadata = await asyncio.to_thread(
+                    _sync_summarize_file,
+                    file_summarizer,
+                    file_uri,
+                    filename,
+                    mime_type
+                )
+            except Exception as e:
+                # Don't save errors as summaries - return error status for retry later
+                error_msg = str(e)
+                print(f"❌ Failed to generate summary for {filename}: {error_msg[:100]}")
+                return {"status": "error", "filename": filename, "error": error_msg}
 
         # Save to database (cache for future uploads) with hash
         summary_preview = summary[:50] + "..." if len(summary) > 50 else summary
