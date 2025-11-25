@@ -345,6 +345,33 @@ class DocumentManager:
         return scored[:max_results]
 
 
+    def remove_material(self, course_id: str, doc_id: str) -> bool:
+        """
+        Remove a material from the catalog
+
+        Args:
+            course_id: Course identifier
+            doc_id: Document ID to remove
+
+        Returns:
+            True if removed successfully, False if not found
+        """
+        if course_id not in self.catalog:
+            return False
+
+        materials = self.catalog[course_id]
+        original_count = len(materials)
+
+        # Filter out the material
+        self.catalog[course_id] = [m for m in materials if m['id'] != doc_id]
+
+        removed = len(self.catalog[course_id]) < original_count
+        if removed:
+            print(f"🗑️  Removed {doc_id} from catalog for course {course_id}")
+
+        return removed
+
+
     def get_full_document_text(self, course_id: str, doc_id: str) -> Optional[Dict]:
         """
         Extract full text from a PDF document

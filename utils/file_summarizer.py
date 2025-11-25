@@ -197,6 +197,205 @@ Return ONLY valid JSON with no explanatory text."""
         # Should never reach here
         raise Exception(f"Failed to generate summary for {filename} after {max_attempts} attempts")
 
+    async def summarize_files_batch(
+        self,
+        files: List[Dict]
+    ) -> Dict:
+        """
+        Generate summaries for multiple files in a single API request
+
+        Gemini supports up to 3,000 files per request. We'll batch 10-15 files at a time
+        for optimal performance while staying within context limits.
+
+        Args:
+            files: List of dicts with keys:
+                - uri: Gemini File API URI
+                - filename: Original filename
+                - mime_type: MIME type
+                - file_id: File ID for matching responses
+                - text_content: Optional text content (for text files)
+
+        Returns:
+            Dict with:
+                - summaries: List of dicts with file_id, summary, topics, metadata
+                - failed: List of dicts with file_id, error
+                - success_count: Number of successful summaries
+                - failed_count: Number of failed summaries
+        """
+        logger.info(f"Generating batch summaries for {len(files)} files")
+
+        # Build batch prompt with all files
+        file_parts = []
+        file_mapping = {}  # Map index to file_id for matching responses
+
+        for idx, file_info in enumerate(files):
+            file_id = file_info.get('file_id')
+            filename = file_info.get('filename', f'file_{idx}')
+            mime_type = file_info.get('mime_type', 'application/pdf')
+
+            # Store mapping for response matching
+            file_mapping[idx] = {
+                'file_id': file_id,
+                'filename': filename
+            }
+
+            # Add file to batch (either as URI or text content)
+            if file_info.get('text_content'):
+                # Text content - include inline
+                text_content = file_info['text_content']
+                # Truncate if too long
+                if len(text_content) > 8000:
+                    text_content = text_content[:8000] + "...[truncated]"
+                file_parts.append(f"FILE {idx}: {filename}\nContent:\n{text_content}\n\n")
+            else:
+                # File URI - use Gemini Part
+                uri = file_info.get('uri')
+                if uri:
+                    file_parts.append(types.Part.from_uri(file_uri=uri, mime_type=mime_type))
+                    file_parts.append(f"FILE {idx}: {filename}\n\n")
+
+        # Craft batch prompt
+        prompt = f"""Analyze these {len(files)} documents and provide summaries for each.
+
+For EACH document, return:
+1. **Summary**: A concise 40-50 word summary
+2. **Topics**: 3 most important topics
+3. **Content Type**: (assignment, lecture, syllabus, schedule, etc.)
+
+Return ONLY valid JSON array with one object per file, in the same order.
+Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_type": "..."}}, ...]"""
+
+        # Add prompt to content
+        file_parts.append(prompt)
+
+        # Retry configuration
+        max_attempts = 3  # Fewer retries for batch to fail fast
+        base_delay = 2.0
+        model_to_use = self.model_id
+
+        for attempt in range(max_attempts):
+            try:
+                # Generate batch summaries using Gemini (run in thread pool to avoid blocking)
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=model_to_use,
+                    contents=file_parts,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=len(files) * 500,  # ~500 tokens per summary
+                        top_p=0.8,
+                        top_k=20,
+                        response_mime_type="application/json"
+                    )
+                )
+
+                # Parse batch response
+                response_text = response.text.strip()
+
+                try:
+                    # Remove markdown code blocks if present
+                    if response_text.startswith("```json"):
+                        response_text = response_text.split("```json")[1].split("```")[0]
+                    elif response_text.startswith("```"):
+                        response_text = response_text.split("```")[1].split("```")[0]
+
+                    response_text = response_text.strip()
+                    parsed = json.loads(response_text)
+
+                    # Ensure parsed is a list
+                    if not isinstance(parsed, list):
+                        raise ValueError("Expected JSON array response")
+
+                    # Match responses to files
+                    summaries = []
+                    failed = []
+
+                    for item in parsed:
+                        file_idx = item.get('file_index')
+                        if file_idx is None or file_idx not in file_mapping:
+                            continue
+
+                        file_info = file_mapping[file_idx]
+                        summary = item.get('summary', '')
+                        topics = item.get('topics', [])
+                        doc_type = item.get('doc_type', 'document')
+
+                        if summary and topics:
+                            summaries.append({
+                                'file_id': file_info['file_id'],
+                                'filename': file_info['filename'],
+                                'summary': summary,
+                                'topics': topics,
+                                'metadata': {
+                                    'doc_type': doc_type,
+                                    'batch_summarized': True
+                                }
+                            })
+                        else:
+                            failed.append({
+                                'file_id': file_info['file_id'],
+                                'filename': file_info['filename'],
+                                'error': 'Empty summary or topics'
+                            })
+
+                    logger.info(f"✅ Batch summary complete: {len(summaries)} succeeded, {len(failed)} failed")
+
+                    return {
+                        'summaries': summaries,
+                        'failed': failed,
+                        'success_count': len(summaries),
+                        'failed_count': len(failed)
+                    }
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"Could not parse batch JSON response: {e}")
+                    logger.error(f"Raw response: {response_text[:500]}")
+                    raise ValueError(f"Invalid JSON response from Gemini API: {response_text[:200]}")
+
+            except Exception as e:
+                error_type = self._get_error_type(e)
+                is_retryable = self._is_retryable_error(e)
+
+                logger.warning(f"⚠️ Batch attempt {attempt + 1}/{max_attempts} failed: {error_type} - {str(e)[:100]}")
+
+                if not is_retryable or attempt == max_attempts - 1:
+                    # Return all as failed
+                    logger.error(f"❌ Batch summarization failed after {attempt + 1} attempts")
+                    failed = [
+                        {'file_id': info['file_id'], 'filename': info['filename'], 'error': str(e)[:200]}
+                        for info in file_mapping.values()
+                    ]
+                    return {
+                        'summaries': [],
+                        'failed': failed,
+                        'success_count': 0,
+                        'failed_count': len(failed)
+                    }
+
+                # Exponential backoff
+                exp_delay = base_delay * (2 ** attempt)
+                jitter = random.uniform(0.75, 1.25)
+                wait_time = exp_delay * jitter
+
+                if error_type == 'RATE_LIMIT' and attempt == 0:
+                    model_to_use = self.fallback_model
+                    logger.info(f"   → Switching to fallback model: {model_to_use}")
+
+                logger.info(f"   → Retrying batch in {wait_time:.1f}s...")
+                await asyncio.sleep(wait_time)
+
+        # Fallback: all failed
+        failed = [
+            {'file_id': info['file_id'], 'filename': info['filename'], 'error': 'Max retries exceeded'}
+            for info in file_mapping.values()
+        ]
+        return {
+            'summaries': [],
+            'failed': failed,
+            'success_count': 0,
+            'failed_count': len(failed)
+        }
+
     async def summarize_text_content(
         self,
         content: str,

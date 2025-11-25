@@ -129,11 +129,16 @@ async def _summary_retry_worker():
                         )
 
                         result = await _generate_single_summary(
-                            item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None
+                            item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None,
+                            document_manager=document_manager, storage_manager=storage_manager
                         )
 
                         if result.get("status") in ["success", "cached"]:
                             print(f"   ✅ Retry successful for {item['filename']}")
+                            failed_items.remove(item)
+                        elif result.get("status") == "removed":
+                            # File was removed due to validation failure - don't retry
+                            print(f"   🗑️  Removed invalid file from queue: {item['filename']}")
                             failed_items.remove(item)
                         else:
                             print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
@@ -503,13 +508,72 @@ def _sync_summarize_text_content(summarizer, text_content, filename):
         loop.close()
 
 
+# Global tracking for removed files (for status endpoint)
+removed_files_tracker: Dict[str, List[Dict]] = {}
+
+
+async def _remove_invalid_file(
+    course_id: str,
+    file_info: Dict,
+    error_reason: str,
+    document_manager,
+    chat_storage,
+    storage_manager
+):
+    """
+    Remove invalid file from catalog, database, and storage when validation fails
+
+    Args:
+        course_id: Course identifier
+        file_info: File information dict
+        error_reason: Why the file is invalid
+        document_manager: DocumentManager instance
+        chat_storage: ChatStorage instance
+        storage_manager: StorageManager instance
+    """
+    doc_id = file_info.get('doc_id')
+    filename = file_info.get('filename')
+    gcs_path = file_info.get('gcs_path')
+
+    print(f"🗑️  Removing invalid file: {filename} (Reason: {error_reason})")
+
+    # 1. Remove from document catalog
+    document_manager.remove_material(course_id, doc_id)
+
+    # 2. Soft delete from database
+    chat_storage.soft_delete_file(doc_id)
+
+    # 3. Delete from GCS storage (optional - saves space)
+    if gcs_path and storage_manager:
+        try:
+            storage_manager.delete_file(gcs_path)
+            print(f"   ✅ Deleted from GCS: {gcs_path}")
+        except Exception as e:
+            print(f"   ⚠️  Failed to delete from GCS: {e}")
+
+    # 4. Track for frontend notification
+    if course_id not in removed_files_tracker:
+        removed_files_tracker[course_id] = []
+
+    removed_files_tracker[course_id].append({
+        'doc_id': doc_id,
+        'filename': filename,
+        'reason': error_reason,
+        'timestamp': time.time()
+    })
+
+    print(f"   ✅ File removed from all systems: {filename}")
+
+
 async def _generate_single_summary(
     file_info: Dict,
     course_id: str,
     file_uploader,
     file_summarizer,
     chat_storage,
-    canvas_user_id: Optional[str] = None
+    canvas_user_id: Optional[str] = None,
+    document_manager=None,
+    storage_manager=None
 ) -> Dict:
     """Generate summary for a single file (optimized with thread pools)"""
     try:
@@ -573,6 +637,20 @@ async def _generate_single_summary(
         )
 
         if "error" in upload_result:
+            # Check if this is a validation error (proactively detected 400 error)
+            if upload_result.get("validation_failed"):
+                # Remove file from catalog/database/storage (don't retry)
+                await _remove_invalid_file(
+                    course_id,
+                    file_info,
+                    upload_result["error"],
+                    document_manager,
+                    chat_storage,
+                    storage_manager
+                )
+                return {"status": "removed", "filename": filename, "error": upload_result["error"]}
+
+            # Other errors - allow retry
             return {"status": "error", "filename": filename, "error": upload_result["error"]}
 
         # Check if this is a text file (assignments/pages)
@@ -639,6 +717,97 @@ async def _generate_single_summary(
 
     except Exception as e:
         return {"status": "error", "filename": file_info.get("filename", "unknown"), "error": str(e)}
+
+
+async def _generate_batch_summaries(
+    files_batch: List[Dict],
+    course_id: str,
+    file_uploader,
+    file_summarizer,
+    chat_storage,
+    canvas_user_id: Optional[str] = None
+) -> List[Dict]:
+    """
+    Generate summaries for a batch of files using a single API call
+
+    Args:
+        files_batch: List of file info dicts (already uploaded to Gemini)
+        course_id: Canvas course ID
+        file_uploader: FileUploadManager instance
+        file_summarizer: FileSummarizer instance
+        chat_storage: ChatStorage instance
+        canvas_user_id: Optional Canvas user ID
+
+    Returns:
+        List of result dicts with status for each file
+    """
+    try:
+        # Prepare batch input for file_summarizer
+        batch_input = []
+        for file_info in files_batch:
+            batch_input.append({
+                'file_id': file_info.get('file_id'),
+                'filename': file_info.get('filename'),
+                'uri': file_info.get('uri'),
+                'mime_type': file_info.get('mime_type'),
+                'text_content': file_info.get('text_content')  # For text files
+            })
+
+        # Call batch summarizer (async method with thread-pooled Gemini calls)
+        batch_result = await file_summarizer.summarize_files_batch(batch_input)
+
+        # Process results
+        results = []
+
+        # Handle successful summaries
+        for summary_info in batch_result.get('summaries', []):
+            file_id = summary_info['file_id']
+            filename = summary_info['filename']
+            summary = summary_info['summary']
+            topics = summary_info['topics']
+            metadata = summary_info['metadata']
+
+            # Find original file info for additional metadata
+            original_file = next((f for f in files_batch if f.get('file_id') == file_id), {})
+            file_path = original_file.get('gcs_path', f"{course_id}/{filename}")
+            content_hash = original_file.get('content_hash', '')
+
+            # Save to database
+            success = chat_storage.save_file_summary(
+                file_id=file_id,
+                course_id=course_id,
+                filename=filename,
+                summary=summary,
+                topics=topics,
+                metadata=metadata,
+                content_hash=content_hash,
+                canvas_user_id=canvas_user_id,
+                gcs_path=file_path
+            )
+
+            if success:
+                results.append({"status": "success", "filename": filename, "file_id": file_id})
+            else:
+                results.append({"status": "error", "filename": filename, "file_id": file_id, "error": "Failed to save"})
+
+        # Handle failed summaries
+        for failed_info in batch_result.get('failed', []):
+            results.append({
+                "status": "error",
+                "filename": failed_info['filename'],
+                "file_id": failed_info['file_id'],
+                "error": failed_info['error']
+            })
+
+        return results
+
+    except Exception as e:
+        # Entire batch failed - return error for all files
+        print(f"❌ Batch summary generation failed: {e}")
+        return [
+            {"status": "error", "filename": f.get('filename', 'unknown'), "file_id": f.get('file_id'), "error": str(e)}
+            for f in files_batch
+        ]
 
 
 async def _upload_to_gemini_background(course_id: str, successful_uploads: List[Dict], canvas_user_id: Optional[str] = None):
@@ -774,90 +943,152 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         # Replace successful_uploads with files that need summaries
         successful_uploads = files_to_summarize
 
-        async def process_with_limit(file_info):
-            """Wrapper to apply semaphore limit, adaptive rate pacing, and cooldown"""
-            global current_delay, rate_limit_cooldown_until, recent_api_results
+        # PHASE 2: BATCH SUMMARIZATION
+        # Step 1: Upload all files to Gemini to get URIs (pre-warming phase)
+        print(f"\n📤 PHASE 1: Uploading {len(successful_uploads)} files to Gemini...")
 
-            async with semaphore:
-                # Check if we're in cooldown period
-                if time.time() < rate_limit_cooldown_until:
-                    wait_time = rate_limit_cooldown_until - time.time()
-                    print(f"   ⏸️  Rate limit cooldown: waiting {wait_time:.1f}s...")
-                    await asyncio.sleep(wait_time)
+        # Upload files with high concurrency to get URIs quickly
+        upload_semaphore = asyncio.Semaphore(10)  # Higher concurrency for uploads
 
-                result = await _generate_single_summary(
-                    file_info, course_id, file_uploader, file_summarizer, chat_storage, canvas_user_id
+        async def upload_with_limit(file_info):
+            async with upload_semaphore:
+                filename = file_info.get("filename") or file_info.get("actual_filename")
+                file_path = file_info["path"]
+                mime_type = file_info.get("mime_type")
+
+                upload_result = await asyncio.to_thread(
+                    file_uploader.upload_pdf,
+                    file_path,
+                    filename,
+                    mime_type
                 )
 
-                # Track API success/failure for adaptive rate limiting
-                is_success = isinstance(result, dict) and result.get("status") in ["success", "cached", "skipped"]
-                recent_api_results.append(is_success)
+                # Check for validation failures
+                if "error" in upload_result:
+                    if upload_result.get("validation_failed"):
+                        # Remove invalid file
+                        await _remove_invalid_file(
+                            course_id,
+                            file_info,
+                            upload_result["error"],
+                            document_manager,
+                            chat_storage,
+                            storage_manager
+                        )
+                        return {"status": "removed", "file_info": file_info, "error": upload_result["error"]}
 
-                # If rate limited, trigger cooldown
-                if isinstance(result, dict) and result.get("status") == "error":
-                    error_msg = result.get("error", "").lower()
-                    if '429' in error_msg or 'rate limit' in error_msg or 'quota' in error_msg:
-                        print(f"   ⚠️  Rate limit detected! Entering 30s cooldown...")
-                        rate_limit_cooldown_until = time.time() + 30
-                        current_delay = 5.0  # Increase delay after rate limit
+                    # Other upload errors
+                    return {"status": "upload_error", "file_info": file_info, "error": upload_result["error"]}
 
-                # Adaptive delay based on recent success rate
-                if len(recent_api_results) >= 10:
-                    failure_rate = recent_api_results.count(False) / len(recent_api_results)
-                    if failure_rate > 0.3:  # >30% failures
-                        current_delay = 5.0
-                    elif failure_rate > 0.1:  # >10% failures
-                        current_delay = 3.5
-                    else:  # Low failure rate
-                        current_delay = max(2.0, current_delay - 0.2)  # Gradually decrease
+                # Success - add upload result to file_info for batch processing
+                return {
+                    "status": "uploaded",
+                    "file_info": {
+                        **file_info,
+                        "uri": upload_result.get("uri"),
+                        "text_content": upload_result.get("text_content"),
+                        "mime_type": upload_result.get("mime_type")
+                    }
+                }
 
+        # Upload all files concurrently
+        upload_tasks = [upload_with_limit(f) for f in successful_uploads]
+        upload_results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+        # Separate uploaded files from failed uploads
+        uploaded_files = []
+        for result in upload_results:
+            if isinstance(result, dict) and result.get("status") == "uploaded":
+                uploaded_files.append(result["file_info"])
+            elif isinstance(result, dict) and result.get("status") == "removed":
+                # File was removed due to validation - skip it
+                pass
+            else:
+                # Upload error - will be added to retry queue below
+                pass
+
+        print(f"✅ UPLOAD PHASE COMPLETE: {len(uploaded_files)} files uploaded to Gemini\n")
+
+        if not uploaded_files:
+            print("⚠️  No files to summarize (all failed validation or upload)")
+            return
+
+        # Step 2: Group files into batches and summarize
+        BATCH_SIZE = 12  # Optimal batch size (12 files per request)
+        batches = [uploaded_files[i:i + BATCH_SIZE] for i in range(0, len(uploaded_files), BATCH_SIZE)]
+
+        print(f"📝 PHASE 2: Summarizing {len(uploaded_files)} files in {len(batches)} batches (12 files per batch)...\n")
+
+        all_results = []
+        for batch_num, batch in enumerate(batches, 1):
+            # Check for cooldown
+            if time.time() < rate_limit_cooldown_until:
+                wait_time = rate_limit_cooldown_until - time.time()
+                print(f"   ⏸️  Rate limit cooldown: waiting {wait_time:.1f}s...")
+                await asyncio.sleep(wait_time)
+
+            print(f"   Batch {batch_num}/{len(batches)}: Processing {len(batch)} files...")
+
+            # Process batch
+            batch_results = await _generate_batch_summaries(
+                batch,
+                course_id,
+                file_uploader,
+                file_summarizer,
+                chat_storage,
+                canvas_user_id
+            )
+
+            all_results.extend(batch_results)
+
+            # Check for rate limits in batch results
+            has_rate_limit = any(
+                isinstance(r, dict) and '429' in r.get('error', '').lower()
+                for r in batch_results
+            )
+
+            if has_rate_limit:
+                print(f"   ⚠️  Rate limit detected! Entering 30s cooldown...")
+                rate_limit_cooldown_until = time.time() + 30
+                current_delay = 5.0
+            else:
+                # Adaptive delay between batches
                 await asyncio.sleep(current_delay)
-                return result
 
-        filenames_preview = ", ".join([f['filename'][:20] for f in successful_uploads[:3]])
-        more = f" +{len(successful_uploads)-3} more" if len(successful_uploads) > 3 else ""
-        print(f"\n📝 SUMMARIZING {len(successful_uploads)} files: {filenames_preview}{more}")
-
-        # Generate summaries with concurrency limit
-        tasks = [process_with_limit(file_info) for file_info in successful_uploads]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = all_results
 
         # Count results
         success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-        cached_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "cached")
-        skipped_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "skipped")
+        cached_count = 0  # No caching in batch mode (checked earlier)
+        skipped_count = 0
         error_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error")
         exception_count = sum(1 for r in results if isinstance(r, Exception))
+        removed_count = sum(1 for r in upload_results if isinstance(r, dict) and r.get("status") == "removed")
 
-        print(f"✅ BATCH COMPLETE: {success_count} new, {cached_count} cached, {error_count + exception_count} errors\n")
+        print(f"✅ BATCH COMPLETE: {success_count} new, {error_count + exception_count} errors, {removed_count} removed\n")
 
         # Add failed summaries to retry queue
         if course_id not in failed_summary_queue:
             failed_summary_queue[course_id] = []
 
-        for i, result in enumerate(results):
+        for result in results:
             if isinstance(result, Exception):
                 print(f"❌ Exception: {result}")
-                # Add to failed queue
-                file_info = successful_uploads[i]
-                failed_summary_queue[course_id].append({
-                    "file_id": file_info.get("file_id"),
-                    "filename": file_info.get("filename"),
-                    "attempts": 0,
-                    "last_error": str(result)[:200],
-                    "file_info": file_info  # Keep full info for retry
-                })
+                # We don't have file_info here, skip
+                continue
             elif isinstance(result, dict) and result.get("status") == "error":
-                print(f"❌ Error: {result['filename']}: {result.get('error')}")
-                # Add to failed queue
-                file_info = successful_uploads[i]
-                failed_summary_queue[course_id].append({
-                    "file_id": file_info.get("file_id"),
-                    "filename": result['filename'],
-                    "attempts": 0,
-                    "last_error": result.get('error', '')[:200],
-                    "file_info": file_info
-                })
+                # Find original file_info
+                file_id = result.get('file_id')
+                file_info = next((f for f in uploaded_files if f.get('file_id') == file_id), None)
+
+                if file_info:
+                    failed_summary_queue[course_id].append({
+                        "file_id": file_id,
+                        "filename": result['filename'],
+                        "attempts": 0,
+                        "last_error": result.get('error', '')[:200],
+                        "file_info": file_info
+                    })
 
         # Log failed queue status
         if failed_summary_queue[course_id]:
@@ -2504,6 +2735,9 @@ async def get_course_summary_status(course_id: str):
                 "last_error": item["last_error"]
             })
 
+        # Get removed files for this course (validation failures)
+        removed_files_list = removed_files_tracker.get(course_id, [])
+
         return {
             "success": True,
             "course_id": course_id,
@@ -2516,6 +2750,7 @@ async def get_course_summary_status(course_id: str):
             "failed_count": failed_count,
             "retry_queue_count": retry_queue_count,
             "error_details": error_details,
+            "removed_files": removed_files_list,  # Files removed due to validation failures
             "message": "All summaries ready!" if (summaries_pending == 0 and failed_count == 0) else
                       f"Generating {summaries_pending} summaries... ({failed_count} failed, {retry_queue_count} retrying)"
         }
@@ -2595,11 +2830,16 @@ async def _retry_failed_summaries_once(course_id: str):
         for item in failed_items[:]:  # Copy to allow modification
             try:
                 result = await _generate_single_summary(
-                    item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None
+                    item["file_info"], course_id, file_uploader, file_summarizer, chat_storage, None,
+                    document_manager=document_manager, storage_manager=storage_manager
                 )
 
                 if result.get("status") in ["success", "cached"]:
                     print(f"   ✅ Retry successful for {item['filename']}")
+                    failed_items.remove(item)
+                elif result.get("status") == "removed":
+                    # File was removed due to validation failure - don't retry
+                    print(f"   🗑️  Removed invalid file from queue: {item['filename']}")
                     failed_items.remove(item)
                 else:
                     print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")

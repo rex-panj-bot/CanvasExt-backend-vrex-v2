@@ -10,6 +10,7 @@ import time
 import asyncio
 from .mime_types import get_mime_type, get_file_extension, is_supported_by_gemini
 from .file_converter import convert_office_to_pdf, needs_conversion
+from .file_validator import FileValidator
 
 
 class FileUploadManager:
@@ -142,6 +143,18 @@ class FileUploadManager:
 
             ext = get_file_extension(filename) or 'file'
 
+            # Proactive validation for PDFs to prevent 400 errors
+            if mime_type == 'application/pdf':
+                is_valid, error_reason = FileValidator.validate_pdf(file_bytes, filename)
+                if not is_valid:
+                    print(f"❌ [VALIDATION] PDF validation failed for {filename}: {error_reason}")
+                    return {
+                        'error': error_reason,
+                        'filename': filename,
+                        'skipped': True,
+                        'validation_failed': True  # Flag for special handling (don't retry)
+                    }
+
             # SPECIAL HANDLING: Text files (assignments/pages) should NOT be uploaded as files
             # Gemini File API expects documents with pages (PDFs, images), not plain text
             # Instead, return the text content directly for inline use
@@ -150,13 +163,15 @@ class FileUploadManager:
                 try:
                     text_content = file_bytes.decode('utf-8')
 
-                    # Validate text content is not empty
-                    if not text_content or not text_content.strip():
-                        print(f"⚠️  [TXT FILE] Skipping empty text file: {filename}")
+                    # Proactive validation for text files
+                    is_valid, error_reason = FileValidator.validate_text(text_content, filename)
+                    if not is_valid:
+                        print(f"❌ [VALIDATION] Text validation failed for {filename}: {error_reason}")
                         return {
-                            'error': f'Text file is empty: {filename}',
+                            'error': error_reason,
                             'filename': filename,
-                            'skipped': True
+                            'skipped': True,
+                            'validation_failed': True  # Flag for special handling (don't retry)
                         }
 
                     result = {
