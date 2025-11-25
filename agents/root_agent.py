@@ -475,12 +475,56 @@ INCORRECT examples (DO NOT USE):
 ✗ (Lecture_3_Algorithms, Page 12) (wrong brackets)
 {"When using web search results, the sources will be automatically cited below your response." if enable_web_search else ""}
 
+LATEX FORMATTING - CRITICAL:
+When writing mathematical expressions, you MUST follow these rules:
+1. ALWAYS wrap inline math in single dollar signs: $expression$
+2. ALWAYS wrap display math (equations on their own line) in double dollar signs: $$expression$$
+3. Use proper delimiter pairs with \\left and \\right:
+   - \\left( ... \\right) for parentheses
+   - \\left[ ... \\right] for brackets
+   - \\left\\{{ ... \\right\\}} for braces
+   - NEVER use \\left or \\right without a proper matching delimiter
+4. Always balance all braces {{{{ }}}}
+5. Common LaTeX commands: \\frac{{numerator}}{{denominator}}, \\sqrt{{x}}, \\mathcal{{L}}
+
+CORRECT examples:
+✓ The inverse Laplace transform is $\\mathcal{{L}}^{{-1}}\\left(\\frac{{6}}{{s+2}}\\right) = 6e^{{-2t}}$.
+✓ Display equation: $$x = \\frac{{-b \\pm \\sqrt{{b^2 - 4ac}}}}{{2a}}$$
+✓ Inline fraction: The derivative is $\\frac{{dy}}{{dt}} = 3t^2$.
+
+INCORRECT examples (DO NOT USE):
+✗ \\mathcal{{L}}^{{-1}}\\left\\frac{{6}}{{s+2}}\\right}} (no delimiters, mismatched \\left/\\right)
+✗ The answer is \\frac{{1}}{{2}} (no dollar signs)
+✗ $$\\left\\frac{{x}}{{y}}\\right$$ (\\left without proper delimiter)
+
 {"PRIORITY: Always prioritize course materials first. Use web search only when information is not available in course materials or when user asks about current events." if enable_web_search else "Focus on providing accurate information from the course materials."}"""
             else:
                 # No files - regular Gemini mode
                 system_instruction = f"""You are a helpful AI assistant{"with access to real-time web search" if enable_web_search else ""}.
 
-{"CAPABILITIES:\n1. Answer questions on any topic\n2. Perform Google searches for current information, news, or topics when needed\n\nWhen using web search results, the sources will be automatically cited below your response." if enable_web_search else "Provide helpful, accurate, and conversational responses to user questions."}"""
+{"CAPABILITIES:\n1. Answer questions on any topic\n2. Perform Google searches for current information, news, or topics when needed\n\nWhen using web search results, the sources will be automatically cited below your response." if enable_web_search else "Provide helpful, accurate, and conversational responses to user questions."}
+
+LATEX FORMATTING - CRITICAL:
+When writing mathematical expressions, you MUST follow these rules:
+1. ALWAYS wrap inline math in single dollar signs: $expression$
+2. ALWAYS wrap display math (equations on their own line) in double dollar signs: $$expression$$
+3. Use proper delimiter pairs with \\left and \\right:
+   - \\left( ... \\right) for parentheses
+   - \\left[ ... \\right] for brackets
+   - \\left\\{{ ... \\right\\}} for braces
+   - NEVER use \\left or \\right without a proper matching delimiter
+4. Always balance all braces {{{{ }}}}
+5. Common LaTeX commands: \\frac{{numerator}}{{denominator}}, \\sqrt{{x}}, \\mathcal{{L}}
+
+CORRECT examples:
+✓ The inverse Laplace transform is $\\mathcal{{L}}^{{-1}}\\left(\\frac{{6}}{{s+2}}\\right) = 6e^{{-2t}}$.
+✓ Display equation: $$x = \\frac{{-b \\pm \\sqrt{{b^2 - 4ac}}}}{{2a}}$$
+✓ Inline fraction: The derivative is $\\frac{{dy}}{{dt}} = 3t^2$.
+
+INCORRECT examples (DO NOT USE):
+✗ \\mathcal{{L}}^{{-1}}\\left\\frac{{6}}{{s+2}}\\right}} (no delimiters, mismatched \\left/\\right)
+✗ The answer is \\frac{{1}}{{2}} (no dollar signs)
+✗ $$\\left\\frac{{x}}{{y}}\\right$$ (\\left without proper delimiter)"""
 
             # Step 5: Build conversation with file references
             contents = []
