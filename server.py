@@ -946,7 +946,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         # PHASE 2: BATCH SUMMARIZATION
         # Initialize rate limiting variables for batch processing
         rate_limit_cooldown_until = 0.0  # Timestamp when cooldown ends
-        current_delay = 3.0  # Initial delay between batches (increased to avoid rate limits)
+        current_delay = 2.0  # Delay between batches (2s = 30 RPM compliance)
 
         # Step 1: Upload all files to Gemini to get URIs (pre-warming phase)
         print(f"\n📤 PHASE 1: Uploading {len(successful_uploads)} files to Gemini...")
@@ -1029,7 +1029,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             return
 
         # Step 2: Group files into batches and summarize
-        BATCH_SIZE = 5  # Small batch size to avoid rate limits and minimize 400 error impact
+        BATCH_SIZE = 10  # Optimal batch size for throughput (10 files per request)
         batches = [uploaded_files[i:i + BATCH_SIZE] for i in range(0, len(uploaded_files), BATCH_SIZE)]
 
         print(f"📝 PHASE 2: Summarizing {len(uploaded_files)} files in {len(batches)} batches ({BATCH_SIZE} files per batch)...\n")
@@ -1097,13 +1097,28 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                 file_info = next((f for f in uploaded_files if f.get('file_id') == file_id), None)
 
                 if file_info:
-                    failed_summary_queue[course_id].append({
-                        "file_id": file_id,
-                        "filename": result['filename'],
-                        "attempts": 0,
-                        "last_error": result.get('error', '')[:200],
-                        "file_info": file_info
-                    })
+                    error_msg = result.get('error', '').lower()
+
+                    # Check if this is a 400 error (validation/bad PDF) - don't retry, remove instead
+                    if '400' in error_msg or 'invalid_argument' in error_msg or 'no pages' in error_msg:
+                        print(f"🗑️  Removing invalid file (400 error): {result['filename']}")
+                        await _remove_invalid_file(
+                            course_id,
+                            file_info,
+                            result.get('error', 'Validation failed'),
+                            document_manager,
+                            chat_storage,
+                            storage_manager
+                        )
+                    else:
+                        # Other errors - add to retry queue
+                        failed_summary_queue[course_id].append({
+                            "file_id": file_id,
+                            "filename": result['filename'],
+                            "attempts": 0,
+                            "last_error": result.get('error', '')[:200],
+                            "file_info": file_info
+                        })
 
         # Log failed queue status
         if failed_summary_queue[course_id]:
@@ -1827,7 +1842,8 @@ async def process_canvas_files(
 @app.post("/admin/regenerate_summaries/{course_id}")
 async def regenerate_missing_summaries(
     course_id: str,
-    force: bool = False
+    force: bool = False,
+    x_canvas_user_id: Optional[str] = Header(None)
 ):
     """
     Regenerate summaries for files that don't have them.
@@ -1898,7 +1914,7 @@ async def regenerate_missing_summaries(
 
         # Generate summaries in background
         print(f"📝 Backfilling {len(files_to_summarize)} missing summaries...")
-        asyncio.create_task(_generate_summaries_background(course_id, files_to_summarize))
+        asyncio.create_task(_generate_summaries_background(course_id, files_to_summarize, x_canvas_user_id))
 
         return {
             "success": True,
