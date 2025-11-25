@@ -14,6 +14,9 @@ class FileValidator:
     MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB (Gemini API limit)
     MAX_BATCH_SIZE = 200 * 1024 * 1024  # 200 MB safe batch limit
 
+    # Video file extensions supported by Gemini
+    VIDEO_EXTENSIONS = {'.mov', '.mp4', '.avi', '.webm', '.wmv', '.mpeg', '.mpg', '.flv', '.3gp'}
+
     @staticmethod
     def validate_pdf(pdf_bytes: bytes, filename: str) -> Tuple[bool, Optional[str]]:
         """
@@ -87,6 +90,46 @@ class FileValidator:
         size_bytes = len(text_content.encode('utf-8'))
         if size_bytes > 10 * 1024 * 1024:  # 10 MB text file is suspicious
             return False, f"Text file unusually large ({size_bytes / (1024**2):.1f} MB)"
+
+        return True, None
+
+    @staticmethod
+    def validate_video(video_bytes: bytes, filename: str) -> Tuple[bool, Optional[str]]:
+        """
+        Validate video file for Gemini API compatibility
+
+        Detects common 400 errors:
+        - Empty files (0 bytes)
+        - Files too large (>2GB)
+        - Unsupported video formats
+
+        Args:
+            video_bytes: Video file content as bytes
+            filename: Original filename (for logging)
+
+        Returns:
+            (is_valid, error_message)
+            - (True, None) if valid
+            - (False, "error reason") if invalid
+        """
+        # Check 1: Empty file
+        if not video_bytes or len(video_bytes) == 0:
+            return False, "Video file is empty (0 bytes)"
+
+        # Check 2: File size (2 GB limit for Gemini API)
+        size_bytes = len(video_bytes)
+        if size_bytes > FileValidator.MAX_FILE_SIZE:
+            size_gb = size_bytes / (1024**3)
+            return False, f"Video file too large ({size_gb:.1f} GB, max 2 GB)"
+
+        # Check 3: File extension (basic format check)
+        ext = '.' + filename.split('.')[-1].lower() if '.' in filename else ''
+        if ext not in FileValidator.VIDEO_EXTENSIONS:
+            return False, f"Unsupported video format: {ext}"
+
+        # Check 4: Minimum size (videos smaller than 100 bytes are likely corrupted)
+        if size_bytes < 100:
+            return False, f"Video file suspiciously small ({size_bytes} bytes)"
 
         return True, None
 

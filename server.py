@@ -293,7 +293,7 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
 
         # NEVER SKIP: If MIME type unknown, try to infer or use generic
         if not mime_type:
-            # Try to infer from extension
+            # Try to infer from extension (fallback for files not in mime_types.py)
             ext_to_mime = {
                 'txt': 'text/plain',
                 'md': 'text/markdown',
@@ -303,9 +303,20 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                 'html': 'text/html',
                 'htm': 'text/html',
                 'pdf': 'application/pdf',
+                # Video formats (should be in mime_types.py, but fallback here too)
+                'mov': 'video/mov',
+                'mp4': 'video/mp4',
+                'avi': 'video/avi',
+                'webm': 'video/webm',
+                'wmv': 'video/x-ms-wmv',
+                'mpeg': 'video/mpeg',
+                'mpg': 'video/mpeg',
+                'flv': 'video/x-flv',
+                '3gp': 'video/3gpp',
             }
-            mime_type = ext_to_mime.get(ext.lower(), 'application/pdf')  # Treat unknown as PDF
-            print(f"⚠️  Unknown file type for {file.filename}, treating as PDF")
+            mime_type = ext_to_mime.get(ext.lower(), 'application/octet-stream')  # Use generic binary for truly unknown types
+            if mime_type == 'application/octet-stream':
+                print(f"⚠️  Unknown file type for {file.filename} ({ext.upper()}), treating as binary")
 
         print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
 

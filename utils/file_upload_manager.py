@@ -52,11 +52,11 @@ class FileUploadManager:
         if not mime_type:
             mime_type = get_mime_type(filename)
             if not mime_type:
-                # Treat unknown files as PDFs for Gemini compatibility
+                # Use generic binary type for truly unknown files (will likely be rejected by Gemini)
                 ext = get_file_extension(filename) or 'unknown'
-                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), treating as PDF")
-                # Use PDF as fallback - Gemini can read PDFs but not octet-stream
-                mime_type = 'application/pdf'
+                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), using generic binary type")
+                print(f"   Note: This file type may not be supported by Gemini API")
+                mime_type = 'application/octet-stream'
 
         # PHASE 3: Check database cache first (persistent across server restarts)
         if self.chat_storage:
@@ -148,6 +148,18 @@ class FileUploadManager:
                 is_valid, error_reason = FileValidator.validate_pdf(file_bytes, filename)
                 if not is_valid:
                     print(f"❌ [VALIDATION] PDF validation failed for {filename}: {error_reason}")
+                    return {
+                        'error': error_reason,
+                        'filename': filename,
+                        'skipped': True,
+                        'validation_failed': True  # Flag for special handling (don't retry)
+                    }
+
+            # Proactive validation for videos to prevent 400 errors
+            if mime_type and mime_type.startswith('video/'):
+                is_valid, error_reason = FileValidator.validate_video(file_bytes, filename)
+                if not is_valid:
+                    print(f"❌ [VALIDATION] Video validation failed for {filename}: {error_reason}")
                     return {
                         'error': error_reason,
                         'filename': filename,
@@ -258,7 +270,7 @@ class FileUploadManager:
                     print(f"❌ Gemini rejected {filename}: {ext.upper()} format not supported by Gemini API")
                     print(f"   Error: {error_msg}")
                     return {
-                        "error": f"File type {ext.upper()} not supported by Gemini API. Supported: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP",
+                        "error": f"File type {ext.upper()} not supported by Gemini API. Supported: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP, MOV, MP4, AVI, WEBM, WMV, MPEG, MPG, FLV, 3GP",
                         "filename": filename,
                         "rejected": True
                     }

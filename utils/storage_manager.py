@@ -83,9 +83,10 @@ class StorageManager:
             if not content_type:
                 content_type = get_mime_type(filename)
                 if not content_type:
-                    # Treat unknown files as PDFs for Gemini compatibility
-                    content_type = 'application/pdf'
-                    logger.warning(f"Unknown file type for {filename}, treating as PDF")
+                    # Use generic binary type for truly unknown files
+                    # (mime_types.py should handle all supported types including videos)
+                    content_type = 'application/octet-stream'
+                    logger.warning(f"Unknown file type for {filename}, using generic binary type")
 
             # Store original filename in GCS custom metadata
             # This allows catalog reconstruction to map hash-based filenames back to original names

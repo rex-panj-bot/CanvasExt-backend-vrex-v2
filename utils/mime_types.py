@@ -30,6 +30,17 @@ MIME_TYPE_MAP = {
     'jpeg': 'image/jpeg',
     'gif': 'image/gif',
     'webp': 'image/webp',
+
+    # Videos (Gemini File API supports video formats)
+    'mov': 'video/mov',
+    'mp4': 'video/mp4',
+    'avi': 'video/avi',
+    'webm': 'video/webm',
+    'wmv': 'video/x-ms-wmv',
+    'mpeg': 'video/mpeg',
+    'mpg': 'video/mpeg',
+    'flv': 'video/x-flv',
+    '3gp': 'video/3gpp',
 }
 
 # Gemini File API supported file types (verified working MIME types only)
@@ -42,6 +53,9 @@ GEMINI_SUPPORTED = {
 
     # Images - supported for vision capabilities
     'png', 'jpg', 'jpeg', 'gif', 'webp',
+
+    # Videos - supported by Gemini File API (up to 2GB)
+    'mov', 'mp4', 'avi', 'webm', 'wmv', 'mpeg', 'mpg', 'flv', '3gp',
 
     # Note: Office formats (docx, xlsx, pptx) are NOT supported by Gemini File API
     # They need to be converted to PDF or extracted as text first
@@ -158,6 +172,15 @@ def get_display_type(filename: str) -> str:
         'jpeg': 'JPEG Image',
         'gif': 'GIF Image',
         'webp': 'WebP Image',
+        'mov': 'QuickTime Video',
+        'mp4': 'MP4 Video',
+        'avi': 'AVI Video',
+        'webm': 'WebM Video',
+        'wmv': 'Windows Media Video',
+        'mpeg': 'MPEG Video',
+        'mpg': 'MPEG Video',
+        'flv': 'Flash Video',
+        '3gp': '3GPP Video',
     }
 
     return type_names.get(ext, f'{ext.upper()} File' if ext else 'Unknown File')
