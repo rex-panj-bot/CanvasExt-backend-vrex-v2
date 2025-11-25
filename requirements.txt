@@ -10,7 +10,7 @@ websockets
 aiohttp  # Async HTTP client for downloading files from Canvas
 
 # PDF Processing
-pypdf2
+pypdf
 
 # Office Document Processing (for conversion to PDF)
 python-pptx         # PowerPoint files
