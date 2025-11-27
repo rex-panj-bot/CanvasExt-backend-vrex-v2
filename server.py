@@ -2763,15 +2763,26 @@ async def get_course_summary_status(course_id: str):
             }
 
         # Get all files for this course from catalog
+        # Catalog now filters media files during build, so this is more accurate
         catalog = document_manager.get_material_catalog(course_id)
-        total_files = catalog.get("total_documents", 0)
+        catalog_files = catalog.get("total_documents", 0)
 
-        # Count summaries for this course
+        # Subtract deleted files from catalog count (files that failed validation)
+        # Deleted files may still be in catalog if they were removed before server restart
+        deleted_files = chat_storage.get_deleted_files(course_id)
+        deleted_count = len(deleted_files)
+
+        # Smart total: catalog count minus deleted files
+        # This gives us the actual number of valid files that need/have summaries
+        total_files = max(0, catalog_files - deleted_count)
+
+        # Count summaries for this course (excludes soft-deleted files)
         summaries_ready = chat_storage.count_summaries_for_course(course_id)
         summaries_pending = max(0, total_files - summaries_ready)
         completion_percent = (summaries_ready / total_files * 100) if total_files > 0 else 0
 
         print(f"📊 Summary status for {course_id}: {summaries_ready}/{total_files} ready ({completion_percent:.1f}%)")
+        print(f"   📁 Catalog: {catalog_files} files, Deleted: {deleted_count}, Valid: {total_files}")
 
         # Estimate time until all summaries are ready (3 seconds per summary average)
         # This accounts for: 3 concurrent + 3.0s delay = ~3s per file average

@@ -10,6 +10,7 @@ import json
 from pypdf import PdfReader
 import re
 from io import BytesIO
+from .mime_types import get_mime_type
 
 
 class DocumentManager:
@@ -52,6 +53,13 @@ class DocumentManager:
 
                     course_id = parts[0]
                     filename = parts[1]
+
+                    # FILTER OUT MEDIA FILES: Skip audio/video files from catalog
+                    # These files should not be uploaded, but if they exist in GCS from old sessions, skip them
+                    mime_type = get_mime_type(filename)
+                    if mime_type and (mime_type.startswith('audio/') or mime_type.startswith('video/')):
+                        print(f"   🚫 Skipping media file in catalog: {filename} ({mime_type})")
+                        continue
 
                     # CRITICAL: Keep the full filename with extension for document IDs
                     # Frontend now sends IDs with extensions (e.g., "1421639_file.pdf")
