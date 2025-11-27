@@ -52,11 +52,26 @@ class FileUploadManager:
         if not mime_type:
             mime_type = get_mime_type(filename)
             if not mime_type:
-                # Use generic binary type for truly unknown files (will likely be rejected by Gemini)
+                # Unknown file type - skip it
                 ext = get_file_extension(filename) or 'unknown'
-                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), using generic binary type")
-                print(f"   Note: This file type may not be supported by Gemini API")
-                mime_type = 'application/octet-stream'
+                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), skipping")
+                return {
+                    'error': f'Unknown file type ({ext.upper()})',
+                    'filename': filename,
+                    'skipped': True,
+                    'validation_failed': True
+                }
+
+        # Filter out audio files - NOT supported by Gemini
+        if mime_type.startswith('audio/'):
+            ext = get_file_extension(filename) or 'audio'
+            print(f"⚠️  Audio file not supported: {filename} ({ext.upper()}), skipping")
+            return {
+                'error': f'Audio files not supported ({ext.upper()})',
+                'filename': filename,
+                'skipped': True,
+                'validation_failed': True
+            }
 
         # PHASE 3: Check database cache first (persistent across server restarts)
         if self.chat_storage:

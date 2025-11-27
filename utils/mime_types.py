@@ -41,6 +41,14 @@ MIME_TYPE_MAP = {
     'mpg': 'video/mpeg',
     'flv': 'video/x-flv',
     '3gp': 'video/3gpp',
+
+    # Audio (NOT supported by Gemini File API - will be filtered out)
+    'mp3': 'audio/mpeg',
+    'wav': 'audio/wav',
+    'm4a': 'audio/mp4',
+    'aac': 'audio/aac',
+    'ogg': 'audio/ogg',
+    'flac': 'audio/flac',
 }
 
 # Gemini File API supported file types (verified working MIME types only)
