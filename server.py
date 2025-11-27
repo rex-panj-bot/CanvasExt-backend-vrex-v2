@@ -931,18 +931,29 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             # Check if summary exists in database
             existing_summary = chat_storage.get_file_summary(file_id)
             if not existing_summary:
-                # Find matching upload info from this batch, or create minimal info
+                # Find matching upload info from this batch
                 upload_info = next(
                     (f for f in successful_uploads if f.get('file_id') == file_id),
-                    {
-                        'file_id': file_id,
-                        'filename': material['name'],  # Use original display name, not hash-based filename
-                        'path': material['path'],
-                        'gcs_path': f"{course_id}/{material['filename']}",
-                        'size_mb': material.get('size_mb', 0),
-                        'num_pages': material.get('num_pages', 0)
-                    }
+                    None
                 )
+
+                # If not in current batch, create minimal info from catalog
+                if not upload_info:
+                    # Only create minimal info if material has required fields
+                    if material.get('filename') and material.get('path'):
+                        upload_info = {
+                            'file_id': file_id,
+                            'filename': material['name'],  # Use original display name, not hash-based filename
+                            'path': material['path'],
+                            'gcs_path': f"{course_id}/{material['filename']}",
+                            'size_mb': material.get('size_mb', 0),
+                            'num_pages': material.get('num_pages', 0)
+                        }
+                        print(f"  📝 [CATALOG] Queuing summary for {material['name']} (from catalog, not current batch)")
+                    else:
+                        print(f"  ⏭️  [SKIP] {material.get('name', 'unknown')} - incomplete metadata, will retry later")
+                        continue
+
                 files_to_summarize.append(upload_info)
 
         if not files_to_summarize:
@@ -1818,19 +1829,21 @@ async def process_canvas_files(
 
         print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed, {skipped_no_url} missing URLs")
 
-        # Add uploaded AND skipped files to catalog with hash-based metadata
+        # IMPORTANT: Update catalog BEFORE triggering summary generation
+        # This ensures summary generation sees the complete catalog with all new files
         files_for_catalog = uploaded_files + skipped_files
         if files_for_catalog and document_manager:
             try:
                 print(f"📚 Adding {len(files_for_catalog)} files to catalog ({len(uploaded_files)} new, {len(skipped_files)} existing)...")
                 document_manager.add_files_to_catalog_with_metadata(files_for_catalog)
-                print(f"✅ Catalog updated")
+                print(f"✅ Catalog updated - {len(files_for_catalog)} files now in catalog")
             except Exception as e:
                 print(f"⚠️ Catalog update failed: {e}")
 
-        # Generate summaries for uploaded files with hash-based metadata
+        # Generate summaries for uploaded files AFTER catalog is updated
+        # This prevents race conditions where summary status shows incomplete counts
         if file_summarizer and chat_storage and processed > 0:
-            print(f"📝 Generating summaries for {processed} uploaded files...")
+            print(f"📝 Triggering summary generation for {processed} uploaded files...")
             # uploaded_files already has correct format with doc_id, hash, etc.
             asyncio.create_task(_generate_summaries_background(course_id, uploaded_files, x_canvas_user_id))
 
