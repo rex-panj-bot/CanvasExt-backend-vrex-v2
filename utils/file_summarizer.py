@@ -17,16 +17,26 @@ logger = logging.getLogger(__name__)
 class FileSummarizer:
     """Generates summaries of uploaded files using Gemini"""
 
-    def __init__(self, google_api_key: str):
+    def __init__(self, google_api_key: str, model_id: str = "gemini-2.0-flash-lite"):
         """
         Initialize File Summarizer
 
         Args:
             google_api_key: Google API key for Gemini
+            model_id: Gemini model to use (default: gemini-2.0-flash-lite)
         """
         self.client = genai.Client(api_key=google_api_key)
-        self.model_id = "gemini-2.0-flash-lite"  # Higher RPM (30) for batch summarization
-        self.fallback_model = "gemini-2.0-flash"  # Valid fallback model
+        self.model_id = model_id
+
+        # Auto-set fallback based on model family (avoid 2.5-flash - reserved for user queries)
+        if "2.0-flash-lite" in model_id:
+            self.fallback_model = "gemini-2.0-flash"
+        elif "2.0-flash" in model_id:
+            self.fallback_model = "gemini-2.5-flash-lite"
+        elif "2.5-flash-lite" in model_id:
+            self.fallback_model = "gemini-2.0-flash"
+        else:
+            self.fallback_model = "gemini-2.0-flash-lite"  # Safe default
 
     def _is_retryable_error(self, error: Exception) -> bool:
         """Check if an error is retryable (rate limit, server error, timeout)"""
@@ -361,6 +371,32 @@ Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_typ
                 is_retryable = self._is_retryable_error(e)
 
                 logger.warning(f"⚠️ Batch attempt {attempt + 1}/{max_attempts} failed: {error_type} - {str(e)[:100]}")
+
+                # RETRY-WITH-SPLIT: If 400 error and batch > 1 file, split in half and retry
+                if error_type == 'INVALID_ARGUMENT' and len(files) > 1:
+                    logger.info(f"   → 400 error on batch of {len(files)} files - splitting in half and retrying...")
+
+                    # Split batch in half
+                    mid = len(files) // 2
+                    batch1 = files[:mid]
+                    batch2 = files[mid:]
+
+                    # Recursively retry each half
+                    result1 = await self.summarize_files_batch(batch1)
+                    result2 = await self.summarize_files_batch(batch2)
+
+                    # Merge results
+                    merged_summaries = result1.get('summaries', []) + result2.get('summaries', [])
+                    merged_failed = result1.get('failed', []) + result2.get('failed', [])
+
+                    logger.info(f"   → Split retry complete: {len(merged_summaries)} succeeded, {len(merged_failed)} failed")
+
+                    return {
+                        'summaries': merged_summaries,
+                        'failed': merged_failed,
+                        'success_count': len(merged_summaries),
+                        'failed_count': len(merged_failed)
+                    }
 
                 if not is_retryable or attempt == max_attempts - 1:
                     # Return all as failed

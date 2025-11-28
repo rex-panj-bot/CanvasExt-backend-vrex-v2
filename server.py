@@ -1050,49 +1050,23 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
             print("⚠️  No files to summarize (all failed validation or upload)")
             return
 
-        # Step 2: Group files into batches and summarize
-        BATCH_SIZE = 10  # Optimal batch size for throughput (10 files per request)
+        # Step 2: Group files into batches and summarize IN PARALLEL
+        BATCH_SIZE = 5  # Reduced from 10 to prevent oversized requests (text files = 8KB each)
         batches = [uploaded_files[i:i + BATCH_SIZE] for i in range(0, len(uploaded_files), BATCH_SIZE)]
 
         print(f"📝 PHASE 2: Summarizing {len(uploaded_files)} files in {len(batches)} batches ({BATCH_SIZE} files per batch)...\n")
 
-        all_results = []
-        for batch_num, batch in enumerate(batches, 1):
-            # Check for cooldown
-            if time.time() < rate_limit_cooldown_until:
-                wait_time = rate_limit_cooldown_until - time.time()
-                print(f"   ⏸️  Rate limit cooldown: waiting {wait_time:.1f}s...")
-                await asyncio.sleep(wait_time)
+        # Use parallel multi-model processor (2x faster than sequential)
+        from utils.multi_model_processor import MultiModelBatchProcessor
 
-            print(f"   Batch {batch_num}/{len(batches)}: Processing {len(batch)} files...")
-
-            # Process batch
-            batch_results = await _generate_batch_summaries(
-                batch,
-                course_id,
-                file_uploader,
-                file_summarizer,
-                chat_storage,
-                canvas_user_id
-            )
-
-            all_results.extend(batch_results)
-
-            # Check for rate limits in batch results
-            has_rate_limit = any(
-                isinstance(r, dict) and '429' in r.get('error', '').lower()
-                for r in batch_results
-            )
-
-            if has_rate_limit:
-                print(f"   ⚠️  Rate limit detected! Entering 30s cooldown...")
-                rate_limit_cooldown_until = time.time() + 30
-                current_delay = 5.0
-            else:
-                # Adaptive delay between batches
-                await asyncio.sleep(current_delay)
-
-        results = all_results
+        processor = MultiModelBatchProcessor(api_key)
+        results = await processor.process_batches_parallel(
+            batches,
+            course_id,
+            file_uploader,
+            chat_storage,
+            canvas_user_id
+        )
 
         # Count results
         success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
@@ -1121,9 +1095,17 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                 if file_info:
                     error_msg = result.get('error', '').lower()
 
-                    # Check if this is a 400 error (validation/bad PDF) - don't retry, remove instead
-                    if '400' in error_msg or 'invalid_argument' in error_msg or 'no pages' in error_msg:
-                        print(f"🗑️  Removing invalid file (400 error): {result['filename']}")
+                    # Only remove on SPECIFIC validation errors (corrupted files, not batch size issues)
+                    # Batch size 400 errors are handled by retry-with-split in file_summarizer
+                    is_validation_error = (
+                        'no pages' in error_msg or
+                        'corrupted' in error_msg or
+                        'invalid pdf' in error_msg or
+                        'empty' in error_msg
+                    )
+
+                    if is_validation_error:
+                        print(f"🗑️  Removing invalid file (validation error): {result['filename']}")
                         await _remove_invalid_file(
                             course_id,
                             file_info,
