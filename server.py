@@ -680,7 +680,8 @@ async def _generate_single_summary(
             file_uploader.upload_pdf,
             file_path,
             filename,
-            file_info.get("mime_type")
+            file_info.get("mime_type"),
+            canvas_user_id
         )
 
         if "error" in upload_result:
@@ -905,7 +906,8 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
                         file_uploader.upload_pdf,
                         file_path,
                         filename,
-                        mime_type
+                        mime_type,
+                        canvas_user_id
                     )
 
                     if "error" not in upload_result:
@@ -1029,7 +1031,8 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                     file_uploader.upload_pdf,
                     file_path,
                     filename,
-                    mime_type
+                    mime_type,
+                    canvas_user_id
                 )
 
                 # Check for validation failures
@@ -1358,11 +1361,13 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
 
             if successful_batch and file_summarizer and chat_storage:
                 print(f"   ➜ Starting summaries for {len(successful_batch)} new files...")
-                asyncio.create_task(
+                task = asyncio.create_task(
                     _generate_summaries_background(
                         course_id, successful_batch, canvas_user_id
                     )
                 )
+                if canvas_user_id:
+                    register_user_task(canvas_user_id, task)
 
         # Count results
         successful = [r for r in processed_results if r["status"] == "uploaded"]
@@ -1457,6 +1462,7 @@ async def upload_pdfs(
 
         print(f"✅ Files accepted and hashed ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
         print(f"   Sample hashes: {[f['hash'][:16] + '...' for f in files_in_memory[:3]]}")
+        print(f"   Canvas User ID for tracking: {x_canvas_user_id if x_canvas_user_id else 'NULL/MISSING'}")
 
         # Track files immediately in database for deletion safety
         for file_data in files_in_memory:
@@ -1902,7 +1908,9 @@ async def process_canvas_files(
         if file_summarizer and chat_storage and processed > 0:
             print(f"📝 Triggering summary generation for {processed} uploaded files...")
             # uploaded_files already has correct format with doc_id, hash, etc.
-            asyncio.create_task(_generate_summaries_background(course_id, uploaded_files, x_canvas_user_id))
+            task = asyncio.create_task(_generate_summaries_background(course_id, uploaded_files, x_canvas_user_id))
+            if x_canvas_user_id:
+                register_user_task(x_canvas_user_id, task)
 
         return {
             "success": True,
@@ -1996,7 +2004,9 @@ async def regenerate_missing_summaries(
 
         # Generate summaries in background
         print(f"📝 Backfilling {len(files_to_summarize)} missing summaries...")
-        asyncio.create_task(_generate_summaries_background(course_id, files_to_summarize, x_canvas_user_id))
+        task = asyncio.create_task(_generate_summaries_background(course_id, files_to_summarize, x_canvas_user_id))
+        if x_canvas_user_id:
+            register_user_task(x_canvas_user_id, task)
 
         return {
             "success": True,
@@ -3233,12 +3243,34 @@ async def delete_user_data(canvas_user_id: str):
         print(f"   - Gemini cache entries deleted: {db_stats['gemini_cache_deleted']}")
         print(f"   - File upload records deleted: {uploads_deleted}")
 
-        # Step 6: Clear in-memory caches
+        # Step 6: Clear in-memory caches (selective removal of deleted files only)
         if document_manager:
-            # Clear document catalog entries for this user's files
-            # Note: This clears all courses for simplicity - catalog will rebuild on next access
-            document_manager.catalog.clear()
-            print(f"✅ In-memory document catalog cleared")
+            # Build set of deleted doc_ids from file paths
+            deleted_doc_ids = set()
+            for file_path in all_file_paths:
+                # Extract doc_id from gcs_path (e.g., "course_id/hash.pdf" -> "course_id_hash")
+                parts = file_path.split('/')
+                if len(parts) == 2:
+                    course_id_part = parts[0]
+                    file_hash = parts[1].rsplit('.', 1)[0]  # Remove extension
+                    doc_id = f"{course_id_part}_{file_hash}"
+                    deleted_doc_ids.add(doc_id)
+
+            # Remove only deleted files from catalog (keep other users' files)
+            files_removed = 0
+            for course_id, materials in list(document_manager.catalog.items()):
+                original_count = len(materials)
+                document_manager.catalog[course_id] = [
+                    m for m in materials
+                    if m.get('id') not in deleted_doc_ids
+                ]
+                removed = original_count - len(document_manager.catalog[course_id])
+                files_removed += removed
+                # Remove course from catalog if empty
+                if len(document_manager.catalog[course_id]) == 0:
+                    del document_manager.catalog[course_id]
+
+            print(f"✅ Removed {files_removed} files from in-memory catalog")
 
         result = {
             "success": True,
@@ -3246,12 +3278,13 @@ async def delete_user_data(canvas_user_id: str):
             "message": "All user data has been permanently deleted",
             "statistics": {
                 "gcs_files_deleted": gcs_deleted,
-                "gcs_files_attempted": len(file_paths),
+                "gcs_files_attempted": len(all_file_paths),
                 "gcs_errors": len(gcs_errors),
                 "chat_sessions_deleted": db_stats['chat_sessions_deleted'],
                 "chat_messages_deleted": db_stats['chat_messages_deleted'],
                 "file_summaries_deleted": db_stats['file_summaries_deleted'],
-                "gemini_cache_deleted": db_stats['gemini_cache_deleted']
+                "gemini_cache_deleted": db_stats['gemini_cache_deleted'],
+                "file_uploads_deleted": uploads_deleted
             }
         }
 

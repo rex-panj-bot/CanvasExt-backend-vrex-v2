@@ -33,7 +33,7 @@ class FileUploadManager:
         # Note: Database cache (chat_storage) takes precedence if available
         self._file_cache = {}
 
-    def upload_pdf(self, file_path: str, display_name: Optional[str] = None, mime_type: Optional[str] = None) -> Dict:
+    def upload_pdf(self, file_path: str, display_name: Optional[str] = None, mime_type: Optional[str] = None, canvas_user_id: Optional[str] = None) -> Dict:
         """
         Upload a file to Gemini File API (supports PDFs, documents, images, etc.)
 
@@ -41,6 +41,7 @@ class FileUploadManager:
             file_path: Path to file (local path or GCS blob name)
             display_name: Optional display name for the file
             mime_type: Optional MIME type (auto-detected from filename if not provided)
+            canvas_user_id: Optional Canvas user ID for ownership tracking
 
         Returns:
             Dict with file object and metadata
@@ -271,7 +272,8 @@ class FileUploadManager:
                         gemini_name=file_obj.name,
                         mime_type=mime_type,
                         size_bytes=file_obj.size_bytes,
-                        expires_hours=self.cache_duration_hours
+                        expires_hours=self.cache_duration_hours,
+                        canvas_user_id=canvas_user_id
                     )
 
                 # Silently uploaded - batch summary will show totals
