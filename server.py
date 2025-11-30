@@ -587,8 +587,8 @@ async def _remove_invalid_file(
     # 1. Remove from document catalog
     document_manager.remove_material(course_id, doc_id)
 
-    # 2. Soft delete from database
-    chat_storage.soft_delete_file(doc_id)
+    # 2. Soft delete from database (with course_id and filename for tracking)
+    chat_storage.soft_delete_file(doc_id, course_id=course_id, filename=filename)
 
     # 3. Delete from GCS storage (optional - saves space)
     if gcs_path and storage_manager:
@@ -2868,16 +2868,17 @@ async def get_course_summary_status(course_id: str):
         # Get all files for this course from catalog
         # Catalog now filters media files during build, so this is more accurate
         catalog = document_manager.get_material_catalog(course_id)
-        catalog_files = catalog.get("total_documents", 0)
+        all_materials = catalog.get("materials", [])
 
-        # Subtract deleted files from catalog count (files that failed validation)
-        # Deleted files may still be in catalog if they were removed before server restart
+        # Get soft-deleted files to exclude from count
+        # This handles both validation failures AND files that might reappear after server restart
         deleted_files = chat_storage.get_deleted_files(course_id)
-        deleted_count = len(deleted_files)
+        deleted_doc_ids = {f.get('doc_id') for f in deleted_files}
 
-        # Smart total: catalog count minus deleted files
-        # This gives us the actual number of valid files that need/have summaries
-        total_files = max(0, catalog_files - deleted_count)
+        # Filter out soft-deleted files from catalog materials
+        # This ensures accurate count regardless of when deletions happened
+        valid_materials = [m for m in all_materials if m.get('id') not in deleted_doc_ids]
+        total_files = len(valid_materials)
 
         # Count summaries for this course (excludes soft-deleted files)
         summaries_ready = chat_storage.count_summaries_for_course(course_id)
@@ -2885,7 +2886,7 @@ async def get_course_summary_status(course_id: str):
         completion_percent = (summaries_ready / total_files * 100) if total_files > 0 else 0
 
         print(f"📊 Summary status for {course_id}: {summaries_ready}/{total_files} ready ({completion_percent:.1f}%)")
-        print(f"   📁 Catalog: {catalog_files} files, Deleted: {deleted_count}, Valid: {total_files}")
+        print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {total_files} valid")
 
         # Estimate time until all summaries are ready (3 seconds per summary average)
         # This accounts for: 3 concurrent + 3.0s delay = ~3s per file average
@@ -3123,7 +3124,12 @@ async def soft_delete_material(course_id: str, file_id: str, permanent: bool = F
         else:
             # Soft delete: Set deleted_at timestamp
             print(f"🗑️  Soft deleting file {file_id} from course {course_id}")
-            success = chat_storage.soft_delete_file(file_id)
+
+            # Get filename for tracking (optional)
+            file_info = chat_storage.get_file_summary(file_id)
+            filename = file_info.get('filename') if file_info else None
+
+            success = chat_storage.soft_delete_file(file_id, course_id=course_id, filename=filename)
 
             if not success:
                 raise HTTPException(status_code=500, detail="Failed to soft delete file")

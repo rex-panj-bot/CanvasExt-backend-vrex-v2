@@ -1745,12 +1745,15 @@ class ChatStorage:
 
     # ========== Soft Delete Operations ==========
 
-    def soft_delete_file(self, doc_id: str) -> bool:
+    def soft_delete_file(self, doc_id: str, course_id: str = None, filename: str = None) -> bool:
         """
         Soft delete a file by setting deleted_at timestamp
+        Creates a minimal record if the file doesn't have a summary entry yet
 
         Args:
             doc_id: Document identifier
+            course_id: Course identifier (optional, needed if creating new record)
+            filename: Filename (optional, needed if creating new record)
 
         Returns:
             True if successful
@@ -1758,11 +1761,25 @@ class ChatStorage:
         try:
             if self.use_postgres:
                 with self.engine.connect() as conn:
-                    conn.execute(text("""
+                    # Try to update existing record
+                    result = conn.execute(text("""
                         UPDATE file_summaries
                         SET deleted_at = NOW()
                         WHERE doc_id = :doc_id
                     """), {"doc_id": doc_id})
+
+                    # If no rows updated, insert a minimal record for tracking deletion
+                    if result.rowcount == 0 and course_id:
+                        conn.execute(text("""
+                            INSERT INTO file_summaries (doc_id, course_id, filename, deleted_at)
+                            VALUES (:doc_id, :course_id, :filename, NOW())
+                        """), {
+                            "doc_id": doc_id,
+                            "course_id": course_id,
+                            "filename": filename or "unknown"
+                        })
+                        logger.info(f"Created deletion record for {doc_id} (no summary existed)")
+
                     conn.commit()
             else:
                 with sqlite3.connect(self.db_path) as conn:
@@ -1772,6 +1789,15 @@ class ChatStorage:
                         SET deleted_at = CURRENT_TIMESTAMP
                         WHERE doc_id = ?
                     """, (doc_id,))
+
+                    # If no rows updated, insert a minimal record
+                    if cursor.rowcount == 0 and course_id:
+                        cursor.execute("""
+                            INSERT INTO file_summaries (doc_id, course_id, filename, deleted_at)
+                            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (doc_id, course_id, filename or "unknown"))
+                        logger.info(f"Created deletion record for {doc_id} (no summary existed)")
+
                     conn.commit()
 
             logger.info(f"Soft deleted file {doc_id}")
