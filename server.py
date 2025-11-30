@@ -988,7 +988,9 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                     if material.get('filename') and material.get('path'):
                         upload_info = {
                             'file_id': file_id,
-                            'filename': material['name'],  # Use original display name, not hash-based filename
+                            'doc_id': file_id,  # Include doc_id for error handling
+                            'filename': material['filename'],  # Use stored filename with extension for MIME detection
+                            'display_name': material['name'],  # Keep display name for logging
                             'path': material['path'],
                             'gcs_path': f"{course_id}/{material['filename']}",
                             'size_mb': material.get('size_mb', 0),
@@ -2025,7 +2027,7 @@ async def regenerate_missing_summaries(
                 "actual_filename": material["filename"],
                 "path": material["path"],
                 "status": "uploaded",
-                "mime_type": "application/pdf"
+                "mime_type": get_mime_type(material["filename"])  # Detect MIME type from filename
             })
 
         if not files_to_summarize:
