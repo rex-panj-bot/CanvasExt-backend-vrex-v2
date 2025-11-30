@@ -185,10 +185,7 @@ class MultiModelBatchProcessor:
         print(f"🚀 PARALLEL PROCESSING: {len(batches)} batches across {len(self.models)} models")
         print(f"   Max throughput: {self.total_rpm} batches/minute (vs. 30 sequential)")
 
-        # Wait until start of minute window for optimal throughput
-        await self._sync_to_minute_window()
-
-        # Phase 1: Assign batches to models and create tasks
+        # Phase 1: Assign batches to models and create tasks (start immediately, no waiting)
         tasks = []
         batch_assignments = []
 
@@ -233,20 +230,6 @@ class MultiModelBatchProcessor:
         self._log_final_stats()
 
         return all_results
-
-    async def _sync_to_minute_window(self):
-        """
-        Sync to start of minute window for maximum throughput
-
-        If we're more than 5 seconds into the current minute, wait for next minute
-        """
-        current_time = time.time()
-        minute_elapsed = current_time % 60
-
-        if minute_elapsed > 5:  # More than 5s into minute
-            wait_time = 60 - minute_elapsed + 0.5  # +0.5s safety margin
-            print(f"   ⏱️  Syncing to next minute window (waiting {wait_time:.1f}s)...")
-            await asyncio.sleep(wait_time)
 
     async def _get_or_wait_for_model(self) -> Dict:
         """
