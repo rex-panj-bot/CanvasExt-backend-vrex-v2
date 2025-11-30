@@ -151,6 +151,37 @@ class ChatStorage:
                 """))
                 logger.info("✅ gemini_file_cache table created")
 
+                # File uploads tracking (immediate ownership tracking)
+                logger.info("Creating file_uploads table...")
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS file_uploads (
+                        upload_id SERIAL PRIMARY KEY,
+                        course_id VARCHAR(255) NOT NULL,
+                        canvas_user_id VARCHAR(255) NOT NULL,
+                        content_hash VARCHAR(64) NOT NULL,
+                        gcs_path TEXT NOT NULL,
+                        original_filename TEXT NOT NULL,
+                        mime_type VARCHAR(100),
+                        size_bytes BIGINT,
+                        status VARCHAR(50) DEFAULT 'uploading',
+                        uploaded_at TIMESTAMP DEFAULT NOW(),
+                        completed_at TIMESTAMP NULL
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_file_uploads_user
+                    ON file_uploads(canvas_user_id)
+                """))
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_file_uploads_hash
+                    ON file_uploads(content_hash)
+                """))
+                conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_file_uploads_status
+                    ON file_uploads(status)
+                """))
+                logger.info("✅ file_uploads table created")
+
                 # Create indices for faster queries
                 logger.info("Creating indices...")
                 conn.execute(text("""
@@ -266,6 +297,37 @@ class ChatStorage:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     deleted_at TIMESTAMP NULL
                 )
+            """)
+
+            # File uploads tracking (immediate ownership tracking)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS file_uploads (
+                    upload_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    course_id TEXT NOT NULL,
+                    canvas_user_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    gcs_path TEXT NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    mime_type TEXT,
+                    size_bytes INTEGER,
+                    status TEXT DEFAULT 'uploading',
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP NULL
+                )
+            """)
+
+            # Create indices for file_uploads
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_uploads_user
+                ON file_uploads(canvas_user_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_uploads_hash
+                ON file_uploads(content_hash)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_uploads_status
+                ON file_uploads(status)
             """)
 
             # Migration: Add deleted_at column if it doesn't exist (for existing tables)
@@ -838,6 +900,134 @@ class ChatStorage:
         except Exception as e:
             logger.error(f"Error saving file summary: {e}")
             return False
+
+    def create_file_upload(self, course_id: str, canvas_user_id: str, content_hash: str,
+                          gcs_path: str, original_filename: str, mime_type: str = None,
+                          size_bytes: int = None) -> bool:
+        """Create file upload record immediately after upload starts"""
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        INSERT INTO file_uploads
+                        (course_id, canvas_user_id, content_hash, gcs_path, original_filename,
+                         mime_type, size_bytes, status, uploaded_at)
+                        VALUES (:course_id, :canvas_user_id, :content_hash, :gcs_path, :original_filename,
+                                :mime_type, :size_bytes, 'uploading', NOW())
+                    """), {
+                        "course_id": course_id,
+                        "canvas_user_id": canvas_user_id,
+                        "content_hash": content_hash,
+                        "gcs_path": gcs_path,
+                        "original_filename": original_filename,
+                        "mime_type": mime_type,
+                        "size_bytes": size_bytes
+                    })
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO file_uploads
+                        (course_id, canvas_user_id, content_hash, gcs_path, original_filename,
+                         mime_type, size_bytes, status, uploaded_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'uploading', CURRENT_TIMESTAMP)
+                    """, (course_id, canvas_user_id, content_hash, gcs_path, original_filename,
+                          mime_type, size_bytes))
+                    conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating file upload record: {e}")
+            return False
+
+    def update_file_upload_status(self, content_hash: str, status: str, completed_at: str = None) -> bool:
+        """Update file upload status"""
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    if completed_at:
+                        conn.execute(text("""
+                            UPDATE file_uploads
+                            SET status = :status, completed_at = :completed_at
+                            WHERE content_hash = :content_hash
+                        """), {"status": status, "completed_at": completed_at, "content_hash": content_hash})
+                    else:
+                        conn.execute(text("""
+                            UPDATE file_uploads
+                            SET status = :status
+                            WHERE content_hash = :content_hash
+                        """), {"status": status, "content_hash": content_hash})
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    if completed_at:
+                        cursor.execute("""
+                            UPDATE file_uploads
+                            SET status = ?, completed_at = ?
+                            WHERE content_hash = ?
+                        """, (status, completed_at, content_hash))
+                    else:
+                        cursor.execute("""
+                            UPDATE file_uploads
+                            SET status = ?
+                            WHERE content_hash = ?
+                        """, (status, content_hash))
+                    conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating file upload status: {e}")
+            return False
+
+    def get_user_upload_paths(self, canvas_user_id: str) -> List[str]:
+        """Get all GCS paths for files uploaded by a user"""
+        try:
+            paths = []
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT DISTINCT gcs_path FROM file_uploads
+                        WHERE canvas_user_id = :canvas_user_id
+                        AND gcs_path IS NOT NULL
+                    """), {"canvas_user_id": canvas_user_id})
+                    paths = [row[0] for row in result]
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT DISTINCT gcs_path FROM file_uploads
+                        WHERE canvas_user_id = ?
+                        AND gcs_path IS NOT NULL
+                    """, (canvas_user_id,))
+                    paths = [row[0] for row in cursor.fetchall()]
+            return paths
+        except Exception as e:
+            logger.error(f"Error getting user upload paths: {e}")
+            return []
+
+    def delete_user_uploads(self, canvas_user_id: str) -> int:
+        """Delete all file upload records for a user"""
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        DELETE FROM file_uploads
+                        WHERE canvas_user_id = :canvas_user_id
+                    """), {"canvas_user_id": canvas_user_id})
+                    conn.commit()
+                    return result.rowcount
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        DELETE FROM file_uploads
+                        WHERE canvas_user_id = ?
+                    """, (canvas_user_id,))
+                    conn.commit()
+                    return cursor.rowcount
+        except Exception as e:
+            logger.error(f"Error deleting user uploads: {e}")
+            return 0
 
     def get_file_summary(self, doc_id: str) -> Optional[Dict]:
         """Get a file summary by doc_id"""

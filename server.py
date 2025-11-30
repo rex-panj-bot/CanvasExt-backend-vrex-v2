@@ -87,6 +87,38 @@ rate_limit_cooldown_until = 0  # Timestamp when cooldown ends
 # Background retry worker state
 retry_worker_task = None
 
+# ========== Background Task Cancellation System ==========
+# Track active background tasks per user for cancellation on data deletion
+user_background_tasks: Dict[str, List[asyncio.Task]] = {}
+
+def register_user_task(canvas_user_id: str, task: asyncio.Task):
+    """Register a background task for a user"""
+    if canvas_user_id not in user_background_tasks:
+        user_background_tasks[canvas_user_id] = []
+    user_background_tasks[canvas_user_id].append(task)
+    # Auto-cleanup completed tasks
+    user_background_tasks[canvas_user_id] = [t for t in user_background_tasks[canvas_user_id] if not t.done()]
+
+async def cancel_user_background_tasks(canvas_user_id: str):
+    """Cancel all background tasks for a user"""
+    tasks = user_background_tasks.get(canvas_user_id, [])
+    if not tasks:
+        return 0
+
+    cancelled_count = 0
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+            cancelled_count += 1
+
+    # Wait for all cancellations to complete
+    if cancelled_count > 0:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Clear the user's task list
+    user_background_tasks[canvas_user_id] = []
+    return cancelled_count
+
 
 async def _summary_retry_worker():
     """Background worker that retries failed summaries every 10 minutes"""
@@ -441,6 +473,10 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
             )
             # HASH-BASED: doc_id is now {course_id}_{hash} instead of {course_id}_{filename}
             doc_id = f"{course_id}_{content_hash}"
+
+            # Update upload status to 'processing' after successful GCS upload
+            chat_storage.update_file_upload_status(content_hash, 'processing')
+
             result = {
                 "filename": original_filename,  # Original name for frontend display
                 "doc_id": doc_id,  # Hash-based ID for matching
@@ -797,8 +833,15 @@ async def _generate_batch_summaries(
             )
 
             if success:
+                # Update upload status to 'complete' after summary saved
+                if content_hash:
+                    from datetime import datetime
+                    chat_storage.update_file_upload_status(content_hash, 'complete', datetime.now().isoformat())
                 results.append({"status": "success", "filename": filename, "file_id": file_id})
             else:
+                # Mark as failed
+                if content_hash:
+                    chat_storage.update_file_upload_status(content_hash, 'failed')
                 results.append({"status": "error", "filename": filename, "file_id": file_id, "error": "Failed to save"})
 
         # Handle failed summaries
@@ -1229,6 +1272,14 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
     """
     try:
         print(f"\n🔄 BACKGROUND PROCESSING STARTED: {len(files_in_memory)} files for course {course_id} (user: {canvas_user_id})")
+    except asyncio.CancelledError:
+        print(f"🚫 Upload processing cancelled for user {canvas_user_id}")
+        # Mark uploads as cancelled
+        for file_data in files_in_memory:
+            chat_storage.update_file_upload_status(file_data['hash'], 'cancelled')
+        raise
+
+    try:
 
         # Create UploadFile-like objects from memory
         from fastapi import UploadFile
@@ -1407,8 +1458,32 @@ async def upload_pdfs(
         print(f"✅ Files accepted and hashed ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
         print(f"   Sample hashes: {[f['hash'][:16] + '...' for f in files_in_memory[:3]]}")
 
-        # Start background processing (non-blocking)
-        asyncio.create_task(_process_uploads_background(course_id, files_in_memory, x_canvas_user_id))
+        # Track files immediately in database for deletion safety
+        for file_data in files_in_memory:
+            # Determine extension from content type or filename
+            ext = None
+            if file_data['content_type']:
+                if 'pdf' in file_data['content_type']:
+                    ext = 'pdf'
+                elif 'text' in file_data['content_type']:
+                    ext = 'txt'
+            if not ext:
+                ext = file_data['filename'].rsplit('.', 1)[-1] if '.' in file_data['filename'] else 'pdf'
+
+            gcs_path = f"{course_id}/{file_data['hash']}.{ext}"
+            chat_storage.create_file_upload(
+                course_id=course_id,
+                canvas_user_id=x_canvas_user_id,
+                content_hash=file_data['hash'],
+                gcs_path=gcs_path,
+                original_filename=file_data['filename'],
+                mime_type=file_data['content_type'],
+                size_bytes=len(file_data['content'])
+            )
+
+        # Start background processing (non-blocking) and register task for cancellation
+        task = asyncio.create_task(_process_uploads_background(course_id, files_in_memory, x_canvas_user_id))
+        register_user_task(x_canvas_user_id, task)
 
         # FAST RESPONSE with hash data - User can open files immediately!
         return {
@@ -3111,19 +3186,29 @@ async def delete_user_data(canvas_user_id: str):
         print(f"   Canvas User ID: {canvas_user_id}")
         print(f"{'='*80}")
 
-        # Step 1: Get list of files to delete from GCS before deleting from database
-        file_paths = chat_storage.get_user_file_paths(canvas_user_id)
-        print(f"📁 Found {len(file_paths)} files to delete from GCS")
+        # Step 1: Cancel any active background tasks for this user
+        cancelled_count = await cancel_user_background_tasks(canvas_user_id)
+        if cancelled_count > 0:
+            print(f"🚫 Cancelled {cancelled_count} active background tasks")
 
-        # Step 2: Get Gemini cache entries (for potential future cleanup)
+        # Step 2: Get list of files to delete from GCS (from BOTH tables)
+        file_paths_from_summaries = chat_storage.get_user_file_paths(canvas_user_id)
+        file_paths_from_uploads = chat_storage.get_user_upload_paths(canvas_user_id)
+
+        # Combine and deduplicate
+        all_file_paths = list(set(file_paths_from_summaries + file_paths_from_uploads))
+        print(f"📁 Found {len(all_file_paths)} files to delete from GCS")
+        print(f"   ({len(file_paths_from_summaries)} from summaries, {len(file_paths_from_uploads)} from uploads)")
+
+        # Step 3: Get Gemini cache entries (for potential future cleanup)
         gemini_entries = chat_storage.get_user_gemini_cache_entries(canvas_user_id)
         print(f"🔥 Found {len(gemini_entries)} Gemini cache entries")
 
-        # Step 3: Delete from GCS
+        # Step 4: Delete from GCS
         gcs_deleted = 0
         gcs_errors = []
-        if storage_manager and file_paths:
-            for file_path in file_paths:
+        if storage_manager and all_file_paths:
+            for file_path in all_file_paths:
                 try:
                     success = storage_manager.delete_file(file_path)
                     if success:
@@ -3135,18 +3220,20 @@ async def delete_user_data(canvas_user_id: str):
                     print(f"⚠️  Failed to delete GCS file {file_path}: {e}")
                     gcs_errors.append({"path": file_path, "error": str(e)})
 
-        print(f"✅ Deleted {gcs_deleted}/{len(file_paths)} files from GCS")
+        print(f"✅ Deleted {gcs_deleted}/{len(all_file_paths)} files from GCS")
 
-        # Step 4: Delete from database (chat sessions, messages, file summaries, gemini cache)
+        # Step 5: Delete from database (chat sessions, messages, file summaries, gemini cache, file uploads)
         db_stats = chat_storage.delete_user_data(canvas_user_id)
+        uploads_deleted = chat_storage.delete_user_uploads(canvas_user_id)
 
         print(f"✅ Database cleanup complete:")
         print(f"   - Chat sessions deleted: {db_stats['chat_sessions_deleted']}")
         print(f"   - Chat messages deleted: {db_stats['chat_messages_deleted']}")
         print(f"   - File summaries deleted: {db_stats['file_summaries_deleted']}")
         print(f"   - Gemini cache entries deleted: {db_stats['gemini_cache_deleted']}")
+        print(f"   - File upload records deleted: {uploads_deleted}")
 
-        # Step 5: Clear in-memory caches
+        # Step 6: Clear in-memory caches
         if document_manager:
             # Clear document catalog entries for this user's files
             # Note: This clears all courses for simplicity - catalog will rebuild on next access
