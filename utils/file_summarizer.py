@@ -372,8 +372,13 @@ Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_typ
 
                 logger.warning(f"⚠️ Batch attempt {attempt + 1}/{max_attempts} failed: {error_type} - {str(e)[:100]}")
 
+                # Check if this is a "too large" error on a single file (non-retryable)
+                error_msg = str(e).lower()
+                is_too_large_error = ('too large' in error_msg or 'exceeds' in error_msg) and len(files) == 1
+
                 # RETRY-WITH-SPLIT: If 400 error and batch > 1 file, split in half and retry
-                if error_type == 'INVALID_ARGUMENT' and len(files) > 1:
+                # But if it's a "too large" error on single file, mark as failed and don't retry
+                if error_type == 'INVALID_ARGUMENT' and len(files) > 1 and not is_too_large_error:
                     logger.info(f"   → 400 error on batch of {len(files)} files - splitting in half and retrying...")
 
                     # Split batch in half
@@ -396,6 +401,20 @@ Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_typ
                         'failed': merged_failed,
                         'success_count': len(merged_summaries),
                         'failed_count': len(merged_failed)
+                    }
+
+                # If this is a "too large" error on a single file, mark as permanently failed
+                if is_too_large_error:
+                    logger.error(f"❌ File too large for Gemini API: {files[0].get('filename', 'unknown')}")
+                    return {
+                        'summaries': [],
+                        'failed': [{
+                            'filename': files[0].get('filename', 'unknown'),
+                            'file_id': files[0].get('file_id'),
+                            'error': 'File too large for AI processing (exceeds Gemini API limits)'
+                        }],
+                        'success_count': 0,
+                        'failed_count': 1
                     }
 
                 if not is_retryable or attempt == max_attempts - 1:

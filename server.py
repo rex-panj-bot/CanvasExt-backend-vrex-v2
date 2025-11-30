@@ -1440,6 +1440,18 @@ async def upload_pdfs(
         for file in files:
             content = await file.read()
 
+            # Check file size before processing (reject files >100MB to prevent Gemini errors)
+            file_size_mb = len(content) / (1024**2)
+            MAX_FILE_SIZE_MB = 100
+            if file_size_mb > MAX_FILE_SIZE_MB:
+                print(f"⚠️  Rejecting oversized file: {file.filename} ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB)")
+                files_metadata.append({
+                    'filename': file.filename,
+                    'status': 'rejected',
+                    'error': f"File too large ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB for AI processing)"
+                })
+                continue
+
             # Compute hash immediately (needed for IndexedDB and file opening)
             import hashlib
             content_hash = hashlib.sha256(content).hexdigest()
@@ -1787,6 +1799,18 @@ async def process_canvas_files(
                             actual_filename = safe_filename.rsplit('.', 1)[0] + '.pdf'
                             mime_type = 'application/pdf'
 
+                # Check file size before uploading (reject files >100MB to prevent Gemini errors)
+                file_size_mb = len(file_content) / (1024**2)
+                MAX_FILE_SIZE_MB = 100
+                if file_size_mb > MAX_FILE_SIZE_MB:
+                    print(f"⚠️  File too large for AI processing: {original_filename} ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB)")
+                    skipped += 1
+                    return {
+                        "status": "skipped",
+                        "filename": original_filename,
+                        "reason": f"File too large ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB for AI processing)"
+                    }
+
                 if storage_manager:
                     # HASH-BASED: Use hash for GCS filename with correct extension
                     import os
@@ -1801,6 +1825,18 @@ async def process_canvas_files(
                     )
                     processed += 1
                     print(f"✅ {original_filename}")
+
+                    # Track file upload for deletion safety (same as upload_pdfs endpoint)
+                    if x_canvas_user_id:
+                        chat_storage.create_file_upload(
+                            course_id=course_id,
+                            canvas_user_id=x_canvas_user_id,
+                            content_hash=content_hash,
+                            gcs_path=blob_name,
+                            original_filename=original_filename,
+                            mime_type=mime_type,
+                            size_bytes=len(file_content)
+                        )
 
                     # HASH-BASED: doc_id is {course_id}_{hash}
                     doc_id = f"{course_id}_{content_hash}"
