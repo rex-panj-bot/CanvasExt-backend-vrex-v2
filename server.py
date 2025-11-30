@@ -3125,8 +3125,12 @@ async def delete_user_data(canvas_user_id: str):
         if storage_manager and file_paths:
             for file_path in file_paths:
                 try:
-                    storage_manager.delete_file(file_path)
-                    gcs_deleted += 1
+                    success = storage_manager.delete_file(file_path)
+                    if success:
+                        gcs_deleted += 1
+                    else:
+                        # File not found in GCS
+                        gcs_errors.append({"path": file_path, "error": "File not found in GCS"})
                 except Exception as e:
                     print(f"⚠️  Failed to delete GCS file {file_path}: {e}")
                     gcs_errors.append({"path": file_path, "error": str(e)})

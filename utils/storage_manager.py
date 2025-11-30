@@ -252,20 +252,24 @@ class StorageManager:
             blob_name: Full path in bucket
 
         Returns:
-            True if deleted successfully
+            True if deleted successfully, False if already deleted
         """
         try:
             blob = self.bucket.blob(blob_name)
+            logger.info(f"Attempting to delete blob: {blob_name}")
 
-            if not blob.exists():
-                logger.warning(f"Blob {blob_name} not found, cannot delete")
-                return False
-
+            # Delete directly without checking exists() - more reliable
             blob.delete()
-            logger.info(f"Deleted {blob_name}")
+            logger.info(f"Successfully deleted {blob_name}")
             return True
 
         except Exception as e:
+            # If blob doesn't exist (404), treat as already deleted
+            if "404" in str(e) or "Not Found" in str(e) or "not found" in str(e).lower():
+                logger.warning(f"Blob {blob_name} not found (already deleted)")
+                return False
+
+            # Other errors should be raised
             logger.error(f"Failed to delete {blob_name}: {e}")
             raise
 
