@@ -352,6 +352,23 @@ Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_typ
                                 'error': 'Empty summary or topics'
                             })
 
+                    # CRITICAL: Validate that ALL files were processed
+                    # If API response is missing files, they would silently disappear without this check
+                    expected_indices = set(file_mapping.keys())
+                    processed_indices = {s.get('file_index') for s in summaries} | {f.get('file_index') for f in failed if f.get('file_index') is not None}
+                    missing_indices = expected_indices - processed_indices
+
+                    if missing_indices:
+                        logger.warning(f"⚠️  {len(missing_indices)} files missing from API response (possible token/rate limit)")
+                        for idx in sorted(missing_indices):
+                            file_info = file_mapping[idx]
+                            logger.warning(f"   Missing: {file_info['filename']}")
+                            failed.append({
+                                'file_id': file_info['file_id'],
+                                'filename': file_info['filename'],
+                                'error': 'Not included in API response (possible token limit exceeded)'
+                            })
+
                     logger.info(f"✅ Batch summary complete: {len(summaries)} succeeded, {len(failed)} failed")
 
                     return {
