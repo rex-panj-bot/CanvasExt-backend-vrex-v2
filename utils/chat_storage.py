@@ -1771,12 +1771,13 @@ class ChatStorage:
                     # If no rows updated, insert a minimal record for tracking deletion
                     if result.rowcount == 0 and course_id:
                         conn.execute(text("""
-                            INSERT INTO file_summaries (doc_id, course_id, filename, deleted_at)
-                            VALUES (:doc_id, :course_id, :filename, NOW())
+                            INSERT INTO file_summaries (doc_id, course_id, filename, summary, deleted_at)
+                            VALUES (:doc_id, :course_id, :filename, :summary, NOW())
                         """), {
                             "doc_id": doc_id,
                             "course_id": course_id,
-                            "filename": filename or "unknown"
+                            "filename": filename or "unknown",
+                            "summary": ""  # Empty string to satisfy NOT NULL constraint
                         })
                         logger.info(f"Created deletion record for {doc_id} (no summary existed)")
 
@@ -1793,9 +1794,9 @@ class ChatStorage:
                     # If no rows updated, insert a minimal record
                     if cursor.rowcount == 0 and course_id:
                         cursor.execute("""
-                            INSERT INTO file_summaries (doc_id, course_id, filename, deleted_at)
-                            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                        """, (doc_id, course_id, filename or "unknown"))
+                            INSERT INTO file_summaries (doc_id, course_id, filename, summary, deleted_at)
+                            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (doc_id, course_id, filename or "unknown", ""))
                         logger.info(f"Created deletion record for {doc_id} (no summary existed)")
 
                     conn.commit()

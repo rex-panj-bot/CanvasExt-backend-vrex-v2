@@ -1933,11 +1933,25 @@ async def process_canvas_files(
         # IMPORTANT: Update catalog BEFORE triggering summary generation
         # This ensures summary generation sees the complete catalog with all new files
         files_for_catalog = uploaded_files + skipped_files
-        if files_for_catalog and document_manager:
+
+        # Deduplicate by doc_id to prevent duplicate catalog entries
+        # (happens when multiple files have same content hash)
+        seen_doc_ids = set()
+        unique_files = []
+        for file_data in files_for_catalog:
+            doc_id = file_data.get('doc_id')
+            if doc_id and doc_id not in seen_doc_ids:
+                unique_files.append(file_data)
+                seen_doc_ids.add(doc_id)
+            elif not doc_id:
+                # Keep files without doc_id (shouldn't happen, but be defensive)
+                unique_files.append(file_data)
+
+        if unique_files and document_manager:
             try:
-                print(f"📚 Adding {len(files_for_catalog)} files to catalog ({len(uploaded_files)} new, {len(skipped_files)} existing)...")
-                document_manager.add_files_to_catalog_with_metadata(files_for_catalog)
-                print(f"✅ Catalog updated - {len(files_for_catalog)} files now in catalog")
+                print(f"📚 Adding {len(unique_files)} unique files to catalog ({len(uploaded_files)} new, {len(skipped_files)} existing, {len(files_for_catalog) - len(unique_files)} duplicates filtered)...")
+                document_manager.add_files_to_catalog_with_metadata(unique_files)
+                print(f"✅ Catalog updated - {len(unique_files)} files now in catalog")
             except Exception as e:
                 print(f"⚠️ Catalog update failed: {e}")
 
@@ -2880,7 +2894,12 @@ async def get_course_summary_status(course_id: str):
         # Filter out soft-deleted files from catalog materials
         # This ensures accurate count regardless of when deletions happened
         valid_materials = [m for m in all_materials if m.get('id') not in deleted_doc_ids]
-        total_files = len(valid_materials)
+
+        # Deduplicate by doc_id to handle duplicate files with same content hash
+        # (multiple files might have same doc_id if they have identical content)
+        unique_doc_ids = set(m.get('id') for m in valid_materials if m.get('id'))
+        total_files = len(unique_doc_ids)
+        duplicates_found = len(valid_materials) - total_files
 
         # Count summaries for this course (excludes soft-deleted files)
         summaries_ready = chat_storage.count_summaries_for_course(course_id)
@@ -2888,7 +2907,10 @@ async def get_course_summary_status(course_id: str):
         completion_percent = (summaries_ready / total_files * 100) if total_files > 0 else 0
 
         print(f"📊 Summary status for {course_id}: {summaries_ready}/{total_files} ready ({completion_percent:.1f}%)")
-        print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {total_files} valid")
+        if duplicates_found > 0:
+            print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {duplicates_found} duplicates, {total_files} unique")
+        else:
+            print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {total_files} unique")
 
         # Estimate time until all summaries are ready (3 seconds per summary average)
         # This accounts for: 3 concurrent + 3.0s delay = ~3s per file average
