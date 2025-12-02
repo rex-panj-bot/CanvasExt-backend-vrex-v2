@@ -23,12 +23,13 @@ class ProactiveRateLimiter:
         self.minute_start = time.time()
         self.day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-    def can_submit_request(self, model_name: str) -> Tuple[bool, float]:
+    def can_submit_request(self, model_name: str, estimated_tokens: int = 0) -> Tuple[bool, float]:
         """
         Check if we can submit a request WITHOUT hitting rate limits
 
         Args:
             model_name: Name of the model to check
+            estimated_tokens: Estimated tokens for this request (input + output)
 
         Returns:
             (can_submit: bool, wait_time: float)
@@ -42,20 +43,26 @@ class ProactiveRateLimiter:
         if current_time - self.minute_start >= 60:
             self.minute_start = current_time
             model['request_count'] = 0
+            model['token_count'] = 0  # Reset token counter
 
         # Reset daily counter if new day
         now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         if now > self.day_start:
             self.day_start = now
             model['daily_count'] = 0
+            model['daily_token_count'] = 0  # Reset daily tokens
 
-        # PROACTIVE CHECK: Leave 1-request buffer to prevent edge cases
+        # PROACTIVE CHECK: Leave buffer to prevent edge cases
         minute_capacity = model['request_count'] < (model['rpm'] - 1)
         daily_capacity = model['daily_count'] < (model['rpd'] - 5)  # 5-request daily buffer
 
-        if minute_capacity and daily_capacity:
+        # Token limit checks (90% safety margin)
+        token_minute_capacity = (model['token_count'] + estimated_tokens) < (model['tpm'] * 0.9)
+        token_daily_capacity = (model['daily_token_count'] + estimated_tokens) < (model['tpd'] * 0.9)
+
+        if minute_capacity and daily_capacity and token_minute_capacity and token_daily_capacity:
             return True, 0.0
-        elif not minute_capacity:
+        elif not minute_capacity or not token_minute_capacity:
             # Wait for next minute window
             wait_time = 60 - (current_time - self.minute_start) + 0.5  # +0.5s safety margin
             return False, wait_time
@@ -63,16 +70,19 @@ class ProactiveRateLimiter:
             # Daily limit approaching - this model unavailable
             return False, float('inf')
 
-    def reserve_request(self, model_name: str):
+    def reserve_request(self, model_name: str, estimated_tokens: int = 0):
         """
         Reserve a request slot (call BEFORE making API call)
 
         Args:
             model_name: Name of the model
+            estimated_tokens: Estimated tokens for this request
         """
         model = self.models[model_name]
         model['request_count'] += 1
         model['daily_count'] += 1
+        model['token_count'] += estimated_tokens
+        model['daily_token_count'] += estimated_tokens
 
     def get_stats(self) -> Dict:
         """Get current rate limit usage statistics"""
@@ -84,9 +94,56 @@ class ProactiveRateLimiter:
                 'rpd_used': model['daily_count'],
                 'rpd_limit': model['rpd'],
                 'rpm_remaining': model['rpm'] - model['request_count'],
-                'rpd_remaining': model['rpd'] - model['daily_count']
+                'rpd_remaining': model['rpd'] - model['daily_count'],
+                # Token stats
+                'tpm_used': model.get('token_count', 0),
+                'tpm_limit': model.get('tpm', 0),
+                'tpd_used': model.get('daily_token_count', 0),
+                'tpd_limit': model.get('tpd', 0),
+                'tpm_remaining': model.get('tpm', 0) - model.get('token_count', 0),
+                'tpd_remaining': model.get('tpd', 0) - model.get('daily_token_count', 0)
             }
         return stats
+
+
+def estimate_batch_tokens(batch: List[Dict]) -> int:
+    """
+    Estimate total tokens for a batch (input + output)
+
+    Uses multiple estimation methods:
+    - Text: 4 characters = 1 token
+    - Binary/Images: 750 bytes = 1 token (conservative estimate)
+    - Adds 500 tokens per file for output summary
+
+    Args:
+        batch: List of file dicts with 'text_content' or 'file_size'
+
+    Returns:
+        Estimated total tokens
+    """
+    input_tokens = 0
+
+    for f in batch:
+        # Try to get text content length first
+        text_content = f.get('text_content', '')
+        if text_content:
+            # Text-based estimation: 4 chars = 1 token
+            input_tokens += len(text_content) // 4
+        else:
+            # Fallback to file size for binary files (images, PDFs, etc.)
+            # Conservative estimate: 750 bytes = 1 token for binary data
+            file_size = f.get('file_size', 0)
+            if file_size > 0:
+                input_tokens += file_size // 750
+            else:
+                # Default fallback: assume 2000 tokens per file if no info available
+                input_tokens += 2000
+
+    output_tokens = len(batch) * 500  # 500 tokens per summary (conservative)
+    total = input_tokens + output_tokens
+
+    # Add 10% safety margin
+    return int(total * 1.1)
 
 
 class MultiModelBatchProcessor:
@@ -116,27 +173,39 @@ class MultiModelBatchProcessor:
                 'summarizer': FileSummarizer(google_api_key, 'gemini-2.0-flash-lite'),
                 'rpm': 30,
                 'rpd': 200,
-                'weight': 0.50,  # 50% of batches (highest RPM)
+                'tpm': 1_000_000,      # Tokens per minute limit (official)
+                'tpd': 4_800_000,      # Tokens per day (200 RPD * 24k avg tokens)
+                'weight': 0.50,        # 50% of batches (highest RPM)
                 'request_count': 0,
-                'daily_count': 0
+                'daily_count': 0,
+                'token_count': 0,      # Current minute token usage
+                'daily_token_count': 0 # Today's token usage
             },
             {
                 'name': 'gemini-2.0-flash',
                 'summarizer': FileSummarizer(google_api_key, 'gemini-2.0-flash'),
                 'rpm': 15,
                 'rpd': 200,
-                'weight': 0.25,  # 25% of batches
+                'tpm': 1_000_000,      # Tokens per minute limit (official)
+                'tpd': 4_800_000,      # Tokens per day (200 RPD * 24k avg tokens)
+                'weight': 0.25,        # 25% of batches
                 'request_count': 0,
-                'daily_count': 0
+                'daily_count': 0,
+                'token_count': 0,      # Current minute token usage
+                'daily_token_count': 0 # Today's token usage
             },
             {
                 'name': 'gemini-2.5-flash-lite',
                 'summarizer': FileSummarizer(google_api_key, 'gemini-2.5-flash-lite'),
                 'rpm': 15,
-                'rpd': 1000,  # Much higher daily limit
-                'weight': 0.25,  # 25% of batches
+                'rpd': 1000,           # Much higher daily limit
+                'tpm': 250_000,        # Tokens per minute limit (official)
+                'tpd': 6_000_000,      # Tokens per day (1000 RPD * 6k avg tokens)
+                'weight': 0.25,        # 25% of batches
                 'request_count': 0,
-                'daily_count': 0
+                'daily_count': 0,
+                'token_count': 0,      # Current minute token usage
+                'daily_token_count': 0 # Today's token usage
             }
         ]
 
@@ -146,16 +215,19 @@ class MultiModelBatchProcessor:
         # Proactive rate limiter
         self.rate_limiter = ProactiveRateLimiter(self.models)
 
-    def _get_available_model(self) -> Optional[Dict]:
+    def _get_available_model(self, estimated_tokens: int = 0) -> Optional[Dict]:
         """
         Get a model that has capacity (proactive selection)
+
+        Args:
+            estimated_tokens: Estimated tokens for the batch
 
         Returns:
             Model dict or None if all models at capacity
         """
         # Try models in order of priority (highest RPM first)
         for model in sorted(self.models, key=lambda m: m['rpm'], reverse=True):
-            can_submit, wait_time = self.rate_limiter.can_submit_request(model['name'])
+            can_submit, wait_time = self.rate_limiter.can_submit_request(model['name'], estimated_tokens)
             if can_submit:
                 return model
 
@@ -190,14 +262,17 @@ class MultiModelBatchProcessor:
         batch_assignments = []
 
         for batch_idx, batch in enumerate(batches):
-            # Get model with available capacity
-            model = await self._get_or_wait_for_model()
+            # Estimate tokens for this batch
+            estimated_tokens = estimate_batch_tokens(batch)
 
-            # Reserve request slot BEFORE submitting
-            self.rate_limiter.reserve_request(model['name'])
+            # Get model with available capacity (considering token limits)
+            model = await self._get_or_wait_for_model(estimated_tokens)
 
-            # Track assignment for logging
-            batch_assignments.append((batch_idx, model['name']))
+            # Reserve request slot BEFORE submitting (with token count)
+            self.rate_limiter.reserve_request(model['name'], estimated_tokens)
+
+            # Track assignment for logging (include token count)
+            batch_assignments.append((batch_idx, model['name'], estimated_tokens))
 
             # Create task (will execute in parallel)
             task = self._process_single_batch(
@@ -231,15 +306,18 @@ class MultiModelBatchProcessor:
 
         return all_results
 
-    async def _get_or_wait_for_model(self) -> Dict:
+    async def _get_or_wait_for_model(self, estimated_tokens: int = 0) -> Dict:
         """
         Get a model with available capacity, waiting if needed
+
+        Args:
+            estimated_tokens: Estimated tokens for the batch
 
         Returns:
             Model dict
         """
         while True:
-            model = self._get_available_model()
+            model = self._get_available_model(estimated_tokens)
             if model:
                 return model
 
@@ -248,7 +326,7 @@ class MultiModelBatchProcessor:
             minute_elapsed = current_time - self.rate_limiter.minute_start
             wait_time = 60 - minute_elapsed + 0.5
 
-            print(f"   ⏳ All models at capacity, waiting {wait_time:.1f}s for next minute window...")
+            print(f"   ⏳ All models at capacity (token limits), waiting {wait_time:.1f}s for next minute window...")
             await asyncio.sleep(wait_time)
 
     async def _process_single_batch(
@@ -315,15 +393,18 @@ class MultiModelBatchProcessor:
                 for f in batch
             ]
 
-    def _log_model_distribution(self, batch_assignments: List[Tuple[int, str]]):
+    def _log_model_distribution(self, batch_assignments: List[Tuple[int, str, int]]):
         """Log how batches are distributed across models"""
         distribution = {}
-        for _, model_name in batch_assignments:
+        token_distribution = {}
+        for _, model_name, tokens in batch_assignments:
             distribution[model_name] = distribution.get(model_name, 0) + 1
+            token_distribution[model_name] = token_distribution.get(model_name, 0) + tokens
 
         print(f"   📊 Model distribution:")
         for model_name, count in sorted(distribution.items(), key=lambda x: x[1], reverse=True):
-            print(f"      {model_name}: {count} batches")
+            total_tokens = token_distribution.get(model_name, 0)
+            print(f"      {model_name}: {count} batches (~{total_tokens:,} tokens)")
 
     def _log_final_stats(self):
         """Log final rate limit usage statistics"""
@@ -332,6 +413,11 @@ class MultiModelBatchProcessor:
         for model_name, stat in stats.items():
             rpm_pct = (stat['rpm_used'] / stat['rpm_limit']) * 100 if stat['rpm_limit'] > 0 else 0
             rpd_pct = (stat['rpd_used'] / stat['rpd_limit']) * 100 if stat['rpd_limit'] > 0 else 0
+            tpm_pct = (stat.get('tpm_used', 0) / stat.get('tpm_limit', 1)) * 100
+            tpd_pct = (stat.get('tpd_used', 0) / stat.get('tpd_limit', 1)) * 100
+
             print(f"      {model_name}:")
             print(f"         RPM: {stat['rpm_used']}/{stat['rpm_limit']} ({rpm_pct:.0f}%)")
             print(f"         RPD: {stat['rpd_used']}/{stat['rpd_limit']} ({rpd_pct:.0f}%)")
+            print(f"         TPM: {stat.get('tpm_used', 0):,}/{stat.get('tpm_limit', 0):,} ({tpm_pct:.0f}%)")
+            print(f"         TPD: {stat.get('tpd_used', 0):,}/{stat.get('tpd_limit', 0):,} ({tpd_pct:.0f}%)")
