@@ -577,22 +577,23 @@ class ChatStorage:
             logger.error(f"Error saving chat session (SQLite): {e}")
             return False
 
-    def get_chat_session(self, session_id: str) -> Optional[Dict]:
+    def get_chat_session(self, session_id: str, canvas_user_id: str = None) -> Optional[Dict]:
         """
         Retrieve a chat session by ID
 
         Args:
             session_id: Session identifier
+            canvas_user_id: Optional user ID to validate ownership
 
         Returns:
-            Dict with session info and messages, or None if not found
+            Dict with session info and messages, or None if not found or user doesn't own it
         """
         if self.use_postgres:
-            return self._get_chat_session_postgres(session_id)
+            return self._get_chat_session_postgres(session_id, canvas_user_id)
         else:
-            return self._get_chat_session_sqlite(session_id)
+            return self._get_chat_session_sqlite(session_id, canvas_user_id)
 
-    def _get_chat_session_postgres(self, session_id):
+    def _get_chat_session_postgres(self, session_id, canvas_user_id=None):
         """Get chat session from PostgreSQL"""
         try:
             with self.engine.connect() as conn:
@@ -606,6 +607,11 @@ class ChatStorage:
                     return None
 
                 session = dict(session_row._mapping)
+
+                # Validate user ownership if canvas_user_id provided
+                if canvas_user_id and session.get('canvas_user_id') and session.get('canvas_user_id') != canvas_user_id:
+                    logger.warning(f"User {canvas_user_id} attempted to access session {session_id} owned by {session.get('canvas_user_id')}")
+                    return None
 
                 # Get messages
                 result = conn.execute(text("""
@@ -630,7 +636,7 @@ class ChatStorage:
             logger.error(f"Error retrieving chat session (PostgreSQL): {e}")
             return None
 
-    def _get_chat_session_sqlite(self, session_id):
+    def _get_chat_session_sqlite(self, session_id, canvas_user_id=None):
         """Get chat session from SQLite"""
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -647,6 +653,11 @@ class ChatStorage:
                     return None
 
                 session = dict(session_row)
+
+                # Validate user ownership if canvas_user_id provided
+                if canvas_user_id and session.get('canvas_user_id') and session.get('canvas_user_id') != canvas_user_id:
+                    logger.warning(f"User {canvas_user_id} attempted to access session {session_id} owned by {session.get('canvas_user_id')}")
+                    return None
 
                 # Get messages
                 cursor.execute("""
@@ -671,39 +682,60 @@ class ChatStorage:
             logger.error(f"Error retrieving chat session (SQLite): {e}")
             return None
 
-    def get_recent_chats(self, course_id: str, limit: int = 20) -> List[Dict]:
+    def get_recent_chats(self, course_id: str, limit: int = 20, canvas_user_id: str = None) -> List[Dict]:
         """
         Get recent chat sessions for a course
 
         Args:
             course_id: Course identifier
             limit: Maximum number of sessions to return
+            canvas_user_id: Optional user ID to filter chats by owner
 
         Returns:
             List of session dicts (without full message content)
         """
         if self.use_postgres:
-            return self._get_recent_chats_postgres(course_id, limit)
+            return self._get_recent_chats_postgres(course_id, limit, canvas_user_id)
         else:
-            return self._get_recent_chats_sqlite(course_id, limit)
+            return self._get_recent_chats_sqlite(course_id, limit, canvas_user_id)
 
-    def _get_recent_chats_postgres(self, course_id, limit):
+    def _get_recent_chats_postgres(self, course_id, limit, canvas_user_id=None):
         """Get recent chats from PostgreSQL"""
         try:
             with self.engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT
-                        session_id,
-                        course_id,
-                        title,
-                        created_at,
-                        updated_at,
-                        message_count
-                    FROM chat_sessions
-                    WHERE course_id = :course_id
-                    ORDER BY updated_at DESC
-                    LIMIT :limit
-                """), {"course_id": course_id, "limit": limit})
+                # Build query with optional user filter
+                if canvas_user_id:
+                    query = text("""
+                        SELECT
+                            session_id,
+                            course_id,
+                            title,
+                            created_at,
+                            updated_at,
+                            message_count
+                        FROM chat_sessions
+                        WHERE course_id = :course_id AND canvas_user_id = :canvas_user_id
+                        ORDER BY updated_at DESC
+                        LIMIT :limit
+                    """)
+                    params = {"course_id": course_id, "limit": limit, "canvas_user_id": canvas_user_id}
+                else:
+                    query = text("""
+                        SELECT
+                            session_id,
+                            course_id,
+                            title,
+                            created_at,
+                            updated_at,
+                            message_count
+                        FROM chat_sessions
+                        WHERE course_id = :course_id
+                        ORDER BY updated_at DESC
+                        LIMIT :limit
+                    """)
+                    params = {"course_id": course_id, "limit": limit}
+
+                result = conn.execute(query, params)
 
                 sessions = []
                 for row in result:
@@ -715,26 +747,42 @@ class ChatStorage:
             logger.error(f"Error retrieving recent chats (PostgreSQL): {e}")
             return []
 
-    def _get_recent_chats_sqlite(self, course_id, limit):
+    def _get_recent_chats_sqlite(self, course_id, limit, canvas_user_id=None):
         """Get recent chats from SQLite"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
-                cursor.execute("""
-                    SELECT
-                        session_id,
-                        course_id,
-                        title,
-                        created_at,
-                        updated_at,
-                        message_count
-                    FROM chat_sessions
-                    WHERE course_id = ?
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                """, (course_id, limit))
+                # Build query with optional user filter
+                if canvas_user_id:
+                    cursor.execute("""
+                        SELECT
+                            session_id,
+                            course_id,
+                            title,
+                            created_at,
+                            updated_at,
+                            message_count
+                        FROM chat_sessions
+                        WHERE course_id = ? AND canvas_user_id = ?
+                        ORDER BY updated_at DESC
+                        LIMIT ?
+                    """, (course_id, canvas_user_id, limit))
+                else:
+                    cursor.execute("""
+                        SELECT
+                            session_id,
+                            course_id,
+                            title,
+                            created_at,
+                            updated_at,
+                            message_count
+                        FROM chat_sessions
+                        WHERE course_id = ?
+                        ORDER BY updated_at DESC
+                        LIMIT ?
+                    """, (course_id, limit))
 
                 sessions = []
                 for row in cursor.fetchall():
@@ -746,18 +794,32 @@ class ChatStorage:
             logger.error(f"Error retrieving recent chats (SQLite): {e}")
             return []
 
-    def delete_chat_session(self, session_id: str) -> bool:
-        """Delete a chat session and all its messages"""
+    def delete_chat_session(self, session_id: str, canvas_user_id: str = None) -> bool:
+        """Delete a chat session and all its messages
+
+        Args:
+            session_id: Session identifier
+            canvas_user_id: Optional user ID to validate ownership before delete
+        """
         try:
             if self.use_postgres:
                 with self.engine.connect() as conn:
-                    conn.execute(text("DELETE FROM chat_sessions WHERE session_id = :session_id"),
-                               {"session_id": session_id})
+                    if canvas_user_id:
+                        # Only delete if user owns the session
+                        conn.execute(text("DELETE FROM chat_sessions WHERE session_id = :session_id AND canvas_user_id = :canvas_user_id"),
+                                   {"session_id": session_id, "canvas_user_id": canvas_user_id})
+                    else:
+                        conn.execute(text("DELETE FROM chat_sessions WHERE session_id = :session_id"),
+                                   {"session_id": session_id})
                     conn.commit()
             else:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
-                    cursor.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
+                    if canvas_user_id:
+                        # Only delete if user owns the session
+                        cursor.execute("DELETE FROM chat_sessions WHERE session_id = ? AND canvas_user_id = ?", (session_id, canvas_user_id))
+                    else:
+                        cursor.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
                     conn.commit()
 
             logger.info(f"Deleted chat session {session_id}")

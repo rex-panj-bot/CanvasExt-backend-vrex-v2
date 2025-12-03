@@ -2080,13 +2080,18 @@ async def regenerate_missing_summaries(
 # ========== CHAT HISTORY ENDPOINTS ==========
 
 @app.get("/chats/{course_id}")
-async def get_recent_chats(course_id: str, limit: int = 20):
+async def get_recent_chats(
+    course_id: str,
+    limit: int = 20,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Get recent chat sessions for a course
 
     Args:
         course_id: Course identifier
         limit: Maximum number of sessions to return (default 20)
+        x_canvas_user_id: Optional user ID to filter chats by owner
 
     Returns:
         JSON with:
@@ -2094,7 +2099,7 @@ async def get_recent_chats(course_id: str, limit: int = 20):
         - chats: List[Dict] with session info (id, title, timestamps, message count)
     """
     try:
-        chats = chat_storage.get_recent_chats(course_id, limit)
+        chats = chat_storage.get_recent_chats(course_id, limit, canvas_user_id=x_canvas_user_id)
         return {
             "success": True,
             "chats": chats
@@ -2107,13 +2112,18 @@ async def get_recent_chats(course_id: str, limit: int = 20):
 
 
 @app.get("/chats/{course_id}/{session_id}")
-async def get_chat_session(course_id: str, session_id: str):
+async def get_chat_session(
+    course_id: str,
+    session_id: str,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Load a specific chat session
 
     Args:
         course_id: Course identifier (for validation)
         session_id: Session identifier
+        x_canvas_user_id: Optional user ID to validate ownership
 
     Returns:
         JSON with:
@@ -2121,7 +2131,7 @@ async def get_chat_session(course_id: str, session_id: str):
         - session: Dict with session info and full message history
     """
     try:
-        session = chat_storage.get_chat_session(session_id)
+        session = chat_storage.get_chat_session(session_id, canvas_user_id=x_canvas_user_id)
 
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
@@ -2144,7 +2154,11 @@ async def get_chat_session(course_id: str, session_id: str):
 
 
 @app.post("/chats/{course_id}")
-async def save_chat_session(course_id: str, session_data: dict):
+async def save_chat_session(
+    course_id: str,
+    session_data: dict,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Save a chat session
 
@@ -2154,6 +2168,7 @@ async def save_chat_session(course_id: str, session_data: dict):
             - session_id: str
             - messages: List[Dict] with role and content
             - title: str (optional)
+        x_canvas_user_id: Optional user ID to associate with the chat
 
     Returns:
         JSON with success status
@@ -2170,7 +2185,8 @@ async def save_chat_session(course_id: str, session_data: dict):
             session_id=session_id,
             course_id=course_id,
             messages=messages,
-            title=title
+            title=title,
+            canvas_user_id=x_canvas_user_id
         )
 
         return {
@@ -2187,27 +2203,32 @@ async def save_chat_session(course_id: str, session_data: dict):
 
 
 @app.delete("/chats/{course_id}/{session_id}")
-async def delete_chat_session(course_id: str, session_id: str):
+async def delete_chat_session(
+    course_id: str,
+    session_id: str,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Delete a chat session
 
     Args:
         course_id: Course identifier (for validation)
         session_id: Session identifier
+        x_canvas_user_id: Optional user ID to validate ownership
 
     Returns:
         JSON with success status
     """
     try:
-        # Verify session exists and belongs to this course
-        session = chat_storage.get_chat_session(session_id)
+        # Verify session exists and belongs to this course (and user if provided)
+        session = chat_storage.get_chat_session(session_id, canvas_user_id=x_canvas_user_id)
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
 
         if session.get('course_id') != course_id:
             raise HTTPException(status_code=403, detail="Course ID mismatch")
 
-        success = chat_storage.delete_chat_session(session_id)
+        success = chat_storage.delete_chat_session(session_id, canvas_user_id=x_canvas_user_id)
 
         return {
             "success": success,
@@ -2223,7 +2244,12 @@ async def delete_chat_session(course_id: str, session_id: str):
 
 
 @app.patch("/chats/{course_id}/{session_id}/title")
-async def update_chat_title(course_id: str, session_id: str, data: dict):
+async def update_chat_title(
+    course_id: str,
+    session_id: str,
+    data: dict,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Update the title of a chat session
 
@@ -2232,13 +2258,14 @@ async def update_chat_title(course_id: str, session_id: str, data: dict):
         session_id: Session identifier
         data: Dict containing:
             - title: str (new title)
+        x_canvas_user_id: Optional user ID to validate ownership
 
     Returns:
         JSON with success status
     """
     try:
-        # Verify session exists and belongs to this course
-        session = chat_storage.get_chat_session(session_id)
+        # Verify session exists and belongs to this course (and user if provided)
+        session = chat_storage.get_chat_session(session_id, canvas_user_id=x_canvas_user_id)
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
 
@@ -2464,6 +2491,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             selected_docs = message_data.get("selected_docs", [])
             syllabus_id = message_data.get("syllabus_id")
             chat_session_id = message_data.get("session_id")  # For saving chat history
+            canvas_user_id = message_data.get("canvas_user_id")  # User ID for data isolation
             enable_web_search = message_data.get("enable_web_search", False)  # Web search toggle
             user_api_key = message_data.get("api_key")  # User's Gemini API key
             use_smart_selection = message_data.get("use_smart_selection", False)  # Smart file selection toggle
@@ -2540,13 +2568,14 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                         {"role": "assistant", "content": assistant_response}
                     ]
 
-                    # Save to database
+                    # Save to database with user ID for data isolation
                     chat_storage.save_chat_session(
                         session_id=chat_session_id,
                         course_id=course_id,
-                        messages=updated_history
+                        messages=updated_history,
+                        canvas_user_id=canvas_user_id
                     )
-                    print(f"💾 Chat session saved: {chat_session_id}")
+                    print(f"💾 Chat session saved: {chat_session_id} (user: {canvas_user_id})")
                 except Exception as e:
                     print(f"⚠️  Failed to save chat session: {e}")
 
