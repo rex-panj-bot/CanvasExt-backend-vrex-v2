@@ -873,6 +873,40 @@ class ChatStorage:
             logger.error(f"Error retrieving courses with chats: {e}")
             return []
 
+    def get_user_doc_ids_for_course(self, course_id: str, canvas_user_id: str) -> set:
+        """
+        Get all doc_ids uploaded by a specific user in a course
+
+        Args:
+            course_id: Course identifier
+            canvas_user_id: Canvas user ID
+
+        Returns:
+            Set of doc_ids owned by this user in this course
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT DISTINCT doc_id FROM file_summaries
+                        WHERE course_id = :course_id AND canvas_user_id = :canvas_user_id
+                        AND deleted_at IS NULL
+                    """), {"course_id": course_id, "canvas_user_id": canvas_user_id})
+                    return {row.doc_id for row in result}
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT DISTINCT doc_id FROM file_summaries
+                        WHERE course_id = ? AND canvas_user_id = ?
+                        AND deleted_at IS NULL
+                    """, (course_id, canvas_user_id))
+                    return {row[0] for row in cursor.fetchall()}
+
+        except Exception as e:
+            logger.error(f"Error retrieving user doc_ids for course: {e}")
+            return set()
+
     def save_file_summary(
         self,
         doc_id: str,

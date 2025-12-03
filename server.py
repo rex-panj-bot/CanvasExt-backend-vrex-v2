@@ -2292,7 +2292,12 @@ async def update_chat_title(
 
 
 @app.post("/chats/{course_id}/{session_id}/generate-title")
-async def generate_chat_title(course_id: str, session_id: str, data: dict):
+async def generate_chat_title(
+    course_id: str,
+    session_id: str,
+    data: dict,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Generate AI title for chat based on first message
 
@@ -2304,13 +2309,14 @@ async def generate_chat_title(course_id: str, session_id: str, data: dict):
         session_id: Session identifier
         data: Dict containing:
             - first_message: str (user's first question)
+        x_canvas_user_id: Optional user ID to validate ownership
 
     Returns:
         JSON with success status and generated title
     """
     try:
-        # Verify session exists and belongs to this course
-        session = chat_storage.get_chat_session(session_id)
+        # Verify session exists and belongs to this course (and user if provided)
+        session = chat_storage.get_chat_session(session_id, canvas_user_id=x_canvas_user_id)
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
 
@@ -2617,12 +2623,16 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
 
 
 @app.get("/collections/{course_id}/status")
-async def get_collection_status(course_id: str):
+async def get_collection_status(
+    course_id: str,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Get status of a course collection (for upload caching)
 
     Args:
         course_id: Course identifier
+        x_canvas_user_id: Optional user ID to filter by owner
 
     Returns:
         JSON with:
@@ -2635,7 +2645,12 @@ async def get_collection_status(course_id: str):
     enabling smart caching and skipping re-uploads.
     """
     try:
-        catalog = document_manager.get_material_catalog(course_id)
+        # Get user's doc_ids if filtering by user
+        user_doc_ids = None
+        if x_canvas_user_id:
+            user_doc_ids = chat_storage.get_user_doc_ids_for_course(course_id, x_canvas_user_id)
+
+        catalog = document_manager.get_material_catalog(course_id, user_doc_ids=user_doc_ids)
 
         response = {
             "success": True,
@@ -2654,12 +2669,16 @@ async def get_collection_status(course_id: str):
 
 
 @app.get("/collections/{course_id}/materials")
-async def get_course_materials(course_id: str):
+async def get_course_materials(
+    course_id: str,
+    x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
+):
     """
     Get full materials catalog with hash-based IDs for a course
 
     Args:
         course_id: Course identifier
+        x_canvas_user_id: Optional user ID to filter by owner
 
     Returns:
         JSON with:
@@ -2674,7 +2693,12 @@ async def get_course_materials(course_id: str):
         if not document_manager:
             raise HTTPException(status_code=500, detail="Document manager not initialized")
 
-        catalog = document_manager.get_material_catalog(course_id)
+        # Get user's doc_ids if filtering by user
+        user_doc_ids = None
+        if x_canvas_user_id:
+            user_doc_ids = chat_storage.get_user_doc_ids_for_course(course_id, x_canvas_user_id)
+
+        catalog = document_manager.get_material_catalog(course_id, user_doc_ids=user_doc_ids)
 
         return {
             "success": True,

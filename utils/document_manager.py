@@ -249,17 +249,23 @@ class DocumentManager:
         else:
             return 'document'
 
-    def get_material_catalog(self, course_id: str) -> Dict:
+    def get_material_catalog(self, course_id: str, canvas_user_id: str = None, user_doc_ids: set = None) -> Dict:
         """
-        Get catalog of all materials for a course
+        Get catalog of materials for a course, optionally filtered by user
 
         Args:
             course_id: Course identifier
+            canvas_user_id: Optional user ID (for logging only)
+            user_doc_ids: Optional set of doc_ids to filter by (from chat_storage.get_user_doc_ids_for_course)
 
         Returns:
             Dict with materials list and summary stats
         """
         materials = self.catalog.get(course_id, [])
+
+        # Filter by user's doc_ids if provided
+        if user_doc_ids is not None:
+            materials = [m for m in materials if m.get('id') in user_doc_ids]
 
         # Calculate stats
         total_size = sum(m['size_mb'] for m in materials)
