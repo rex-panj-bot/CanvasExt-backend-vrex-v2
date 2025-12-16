@@ -469,7 +469,8 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                 course_id,
                 hash_filename,  # Use hash-based filename with correct extension
                 content,
-                mime_type  # Pass MIME type
+                mime_type,  # Pass MIME type
+                original_filename  # Store original filename in GCS metadata
             )
             # HASH-BASED: doc_id is now {course_id}_{hash} instead of {course_id}_{filename}
             doc_id = f"{course_id}_{content_hash}"
@@ -3775,6 +3776,103 @@ async def cleanup_duplicate_summaries(course_id: str, dry_run: bool = True):
         raise
     except Exception as e:
         print(f"❌ Error in cleanup duplicate summaries: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/migrate_gcs_metadata/{course_id}")
+async def migrate_gcs_metadata(course_id: str):
+    """
+    Migrate GCS blob metadata for existing files that are missing original_filename.
+
+    Reads the file_uploads table (which has original filenames) and updates GCS blob
+    metadata to include original_filename. This allows the document catalog to show
+    human-readable filenames instead of hash-based ones.
+
+    Args:
+        course_id: Course identifier
+
+    Returns:
+        {
+            "updated": int,
+            "skipped": int,
+            "errors": [...]
+        }
+    """
+    try:
+        if not storage_manager:
+            raise HTTPException(status_code=503, detail="Storage manager not available")
+        if not chat_storage:
+            raise HTTPException(status_code=503, detail="Chat storage not available")
+
+        print(f"\n{'='*80}")
+        print(f"🔄 MIGRATE GCS METADATA REQUEST:")
+        print(f"   Course ID: {course_id}")
+        print(f"{'='*80}")
+
+        updated = 0
+        skipped = 0
+        errors = []
+
+        # Get all file uploads for this course from the database
+        with chat_storage.engine.connect() as conn:
+            from sqlalchemy import text
+            result = conn.execute(text("""
+                SELECT content_hash, gcs_path, original_filename
+                FROM file_uploads
+                WHERE course_id = :course_id
+            """), {"course_id": course_id})
+            file_uploads = [dict(row._mapping) for row in result]
+
+        print(f"   Found {len(file_uploads)} files in database")
+
+        for upload in file_uploads:
+            try:
+                gcs_path = upload['gcs_path']
+                original_filename = upload['original_filename']
+
+                # Get the blob
+                blob = storage_manager.bucket.blob(gcs_path)
+                if not blob.exists():
+                    print(f"   ⚠️  Blob not found: {gcs_path}")
+                    skipped += 1
+                    continue
+
+                # Check current metadata
+                blob.reload()
+                existing_metadata = blob.metadata or {}
+
+                if existing_metadata.get('original_filename') == original_filename:
+                    print(f"   ✓ Already has metadata: {gcs_path}")
+                    skipped += 1
+                    continue
+
+                # Update metadata
+                blob.metadata = {**existing_metadata, 'original_filename': original_filename}
+                blob.patch()
+                print(f"   ✅ Updated: {gcs_path} → {original_filename}")
+                updated += 1
+
+            except Exception as e:
+                error_msg = f"Error updating {upload.get('gcs_path', 'unknown')}: {str(e)}"
+                print(f"   ❌ {error_msg}")
+                errors.append(error_msg)
+
+        print(f"\n📊 Migration complete: {updated} updated, {skipped} skipped, {len(errors)} errors")
+
+        return {
+            "course_id": course_id,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+            "message": f"Migration complete: {updated} files updated, {skipped} skipped"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in GCS metadata migration: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

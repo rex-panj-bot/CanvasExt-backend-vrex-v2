@@ -74,7 +74,14 @@ class StorageManager:
                 blob.reload()  # Load metadata to check size
                 if blob.size == len(file_content):
                     ext = get_file_extension(filename) or 'file'
-                    logger.info(f"⚡ File already in GCS, skipping upload: {blob_name} ({blob.size} bytes, {ext.upper()})")
+                    # Even if file exists, update metadata if original_filename is provided but not set
+                    existing_metadata = blob.metadata or {}
+                    if original_filename and existing_metadata.get('original_filename') != original_filename:
+                        blob.metadata = {**existing_metadata, 'original_filename': original_filename}
+                        blob.patch()  # Update metadata without re-uploading content
+                        logger.info(f"⚡ File exists, updated metadata: {blob_name} (original: {original_filename})")
+                    else:
+                        logger.info(f"⚡ File already in GCS, skipping upload: {blob_name} ({blob.size} bytes, {ext.upper()})")
                     return blob_name
                 else:
                     logger.info(f"⚠️  File exists but size mismatch ({blob.size} != {len(file_content)}), re-uploading: {filename}")
