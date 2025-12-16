@@ -114,6 +114,9 @@ class ChatStorage:
                         content_hash VARCHAR(64),
                         gcs_path TEXT,
                         canvas_user_id VARCHAR(255),
+                        canvas_created_at TIMESTAMP NULL,
+                        canvas_updated_at TIMESTAMP NULL,
+                        canvas_modified_at TIMESTAMP NULL,
                         created_at TIMESTAMP DEFAULT NOW(),
                         updated_at TIMESTAMP DEFAULT NOW(),
                         deleted_at TIMESTAMP NULL
@@ -293,6 +296,9 @@ class ChatStorage:
                     content_hash TEXT,
                     gcs_path TEXT,
                     canvas_user_id TEXT,
+                    canvas_created_at TIMESTAMP NULL,
+                    canvas_updated_at TIMESTAMP NULL,
+                    canvas_modified_at TIMESTAMP NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     deleted_at TIMESTAMP NULL
@@ -411,6 +417,23 @@ class ChatStorage:
                         logger.info(f"Created index on canvas_user_id for {table_name}")
                 except Exception as e:
                     logger.warning(f"Could not add canvas_user_id column to {table_name} (may already exist): {e}")
+
+            # Migration: Add Canvas timestamp columns for temporal disambiguation in smart file selection
+            for col_name in ['canvas_created_at', 'canvas_updated_at', 'canvas_modified_at']:
+                try:
+                    cursor.execute(f"""
+                        SELECT COUNT(*) FROM pragma_table_info('file_summaries')
+                        WHERE name='{col_name}'
+                    """)
+                    exists = cursor.fetchone()[0] > 0
+
+                    if not exists:
+                        cursor.execute(f"""
+                            ALTER TABLE file_summaries ADD COLUMN {col_name} TIMESTAMP NULL
+                        """)
+                        logger.info(f"Added {col_name} column to file_summaries (SQLite)")
+                except Exception as e:
+                    logger.warning(f"Could not add {col_name} column (may already exist): {e}")
 
             # Course metadata table (stores syllabus_id, etc.)
             cursor.execute("""
@@ -918,7 +941,10 @@ class ChatStorage:
         content_hash: str = None,
         canvas_id: str = None,
         canvas_user_id: str = None,
-        gcs_path: str = None
+        gcs_path: str = None,
+        canvas_created_at: str = None,
+        canvas_updated_at: str = None,
+        canvas_modified_at: str = None
     ) -> bool:
         """
         Save or update a file summary
@@ -934,6 +960,9 @@ class ChatStorage:
             canvas_id: Original Canvas file ID (if available)
             canvas_user_id: Canvas user ID who uploaded the file
             gcs_path: Full path to file in Google Cloud Storage (e.g., "course_id/hash.ext")
+            canvas_created_at: When the file was created in Canvas (ISO format)
+            canvas_updated_at: When the file was last updated in Canvas (ISO format)
+            canvas_modified_at: When the file was last modified in Canvas (ISO format)
 
         Returns:
             True if successful
@@ -947,8 +976,8 @@ class ChatStorage:
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     conn.execute(text("""
-                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, updated_at)
-                        VALUES (:doc_id, :course_id, :canvas_id, :filename, :summary, :topics, :metadata, :content_hash, :canvas_user_id, :gcs_path, NOW())
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at, updated_at)
+                        VALUES (:doc_id, :course_id, :canvas_id, :filename, :summary, :topics, :metadata, :content_hash, :canvas_user_id, :gcs_path, :canvas_created_at, :canvas_updated_at, :canvas_modified_at, NOW())
                         ON CONFLICT (doc_id) DO UPDATE SET
                             summary = EXCLUDED.summary,
                             topics = EXCLUDED.topics,
@@ -957,6 +986,9 @@ class ChatStorage:
                             canvas_id = EXCLUDED.canvas_id,
                             canvas_user_id = COALESCE(EXCLUDED.canvas_user_id, file_summaries.canvas_user_id),
                             gcs_path = COALESCE(EXCLUDED.gcs_path, file_summaries.gcs_path),
+                            canvas_created_at = COALESCE(EXCLUDED.canvas_created_at, file_summaries.canvas_created_at),
+                            canvas_updated_at = COALESCE(EXCLUDED.canvas_updated_at, file_summaries.canvas_updated_at),
+                            canvas_modified_at = COALESCE(EXCLUDED.canvas_modified_at, file_summaries.canvas_modified_at),
                             updated_at = NOW()
                     """), {
                         "doc_id": doc_id,
@@ -968,7 +1000,10 @@ class ChatStorage:
                         "metadata": metadata_json,
                         "content_hash": content_hash,
                         "canvas_user_id": canvas_user_id,
-                        "gcs_path": gcs_path
+                        "gcs_path": gcs_path,
+                        "canvas_created_at": canvas_created_at,
+                        "canvas_updated_at": canvas_updated_at,
+                        "canvas_modified_at": canvas_modified_at
                     })
                     conn.commit()
                     logger.info(f"Successfully saved file_summary for {doc_id} with canvas_user_id: {canvas_user_id}, gcs_path: {gcs_path}")
@@ -976,8 +1011,8 @@ class ChatStorage:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(doc_id) DO UPDATE SET
                             summary = excluded.summary,
                             topics = excluded.topics,
@@ -986,8 +1021,11 @@ class ChatStorage:
                             canvas_id = excluded.canvas_id,
                             canvas_user_id = COALESCE(excluded.canvas_user_id, file_summaries.canvas_user_id),
                             gcs_path = COALESCE(excluded.gcs_path, file_summaries.gcs_path),
+                            canvas_created_at = COALESCE(excluded.canvas_created_at, file_summaries.canvas_created_at),
+                            canvas_updated_at = COALESCE(excluded.canvas_updated_at, file_summaries.canvas_updated_at),
+                            canvas_modified_at = COALESCE(excluded.canvas_modified_at, file_summaries.canvas_modified_at),
                             updated_at = CURRENT_TIMESTAMP
-                    """, (doc_id, course_id, canvas_id, filename, summary, topics_json, metadata_json, content_hash, canvas_user_id, gcs_path))
+                    """, (doc_id, course_id, canvas_id, filename, summary, topics_json, metadata_json, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at))
                     conn.commit()
 
             logger.info(f"Saved file summary for {doc_id}")

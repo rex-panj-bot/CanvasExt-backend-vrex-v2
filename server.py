@@ -8,7 +8,7 @@ Latest updates:
 - Optimized rate limiting (3 concurrent, 3.0s delay)
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Header
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import uvicorn
@@ -746,6 +746,12 @@ async def _generate_single_summary(
         summary_preview = summary[:50] + "..." if len(summary) > 50 else summary
         print(f"✅ Summary: {filename[:40]}... → \"{summary_preview}\"")
         print(f"🔍 DEBUG Saving summary with canvas_user_id={canvas_user_id}, gcs_path={file_path}")
+
+        # Extract Canvas timestamps for temporal disambiguation in smart file selection
+        canvas_created_at = file_info.get('canvas_created_at')
+        canvas_updated_at = file_info.get('canvas_updated_at')
+        canvas_modified_at = file_info.get('canvas_modified_at')
+
         success = chat_storage.save_file_summary(
             doc_id=doc_id,
             course_id=course_id,
@@ -755,7 +761,10 @@ async def _generate_single_summary(
             metadata=metadata,
             content_hash=content_hash,  # Store hash for matching
             canvas_user_id=canvas_user_id,  # Track who uploaded
-            gcs_path=file_path  # Store actual GCS path for deletion
+            gcs_path=file_path,  # Store actual GCS path for deletion
+            canvas_created_at=canvas_created_at,  # Canvas upload timestamp
+            canvas_updated_at=canvas_updated_at,  # Canvas update timestamp
+            canvas_modified_at=canvas_modified_at   # Canvas modification timestamp
         )
 
         if success:
@@ -1362,6 +1371,17 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
                                if isinstance(r, dict) and r.get("status") == "uploaded"]
 
             if successful_batch and file_summarizer and chat_storage:
+                # Enrich successful batch with Canvas timestamps from original files_in_memory
+                batch_files_memory = files_in_memory[i:i + BATCH_SIZE]
+                for result in successful_batch:
+                    filename = result.get('filename')
+                    # Find matching file in memory to get Canvas timestamps
+                    matching_file = next((f for f in batch_files_memory if f.get('filename') == filename), None)
+                    if matching_file:
+                        result['canvas_created_at'] = matching_file.get('canvas_created_at')
+                        result['canvas_updated_at'] = matching_file.get('canvas_updated_at')
+                        result['canvas_modified_at'] = matching_file.get('canvas_modified_at')
+
                 print(f"   ➜ Starting summaries for {len(successful_batch)} new files...")
                 task = asyncio.create_task(
                     _generate_summaries_background(
@@ -1399,6 +1419,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
 async def upload_pdfs(
     course_id: str,
     files: List[UploadFile] = File(...),
+    file_metadata: Optional[str] = Form(None),
     x_canvas_user_id: Optional[str] = Header(None, alias="X-Canvas-User-Id")
 ):
     """
@@ -1410,6 +1431,7 @@ async def upload_pdfs(
     Args:
         course_id: Course identifier (used as filename prefix)
         files: List of files to upload (PDF, DOCX, TXT, images, etc.)
+        file_metadata: JSON string with Canvas timestamps for each file (for temporal disambiguation)
         x_canvas_user_id: Canvas user ID (passed via X-Canvas-User-Id header)
 
     Process:
@@ -1433,6 +1455,23 @@ async def upload_pdfs(
             print(f"      - \"{f.filename}\"")
         print(f"   Storage manager available: {storage_manager is not None}")
         print(f"{'='*80}")
+
+        # Parse Canvas timestamps from file_metadata (for temporal disambiguation in smart file selection)
+        canvas_timestamps_by_name = {}
+        if file_metadata:
+            try:
+                parsed_metadata = json.loads(file_metadata)
+                for item in parsed_metadata:
+                    name = item.get('name')
+                    if name:
+                        canvas_timestamps_by_name[name] = {
+                            'canvas_created_at': item.get('canvas_created_at'),
+                            'canvas_updated_at': item.get('canvas_updated_at'),
+                            'canvas_modified_at': item.get('canvas_modified_at')
+                        }
+                print(f"   📅 Canvas timestamps received for {len(canvas_timestamps_by_name)} files")
+            except json.JSONDecodeError as e:
+                print(f"   ⚠️  Could not parse file_metadata JSON: {e}")
 
         # Read all files into memory and compute hashes IMMEDIATELY
         # Hash computation is fast (~10ms per MB) and critical for file identification
@@ -1459,12 +1498,19 @@ async def upload_pdfs(
             content_hash = hashlib.sha256(content).hexdigest()
             doc_id = f"{course_id}_{content_hash}"
 
+            # Get Canvas timestamps for this file (for temporal disambiguation)
+            timestamps = canvas_timestamps_by_name.get(file.filename, {})
+
             files_in_memory.append({
                 'filename': file.filename,
                 'content': content,
                 'content_type': file.content_type,
                 'hash': content_hash,  # Pre-computed hash for background processing
-                'doc_id': doc_id
+                'doc_id': doc_id,
+                # Canvas timestamps for smart file selection temporal disambiguation
+                'canvas_created_at': timestamps.get('canvas_created_at'),
+                'canvas_updated_at': timestamps.get('canvas_updated_at'),
+                'canvas_modified_at': timestamps.get('canvas_modified_at')
             })
 
             files_metadata.append({

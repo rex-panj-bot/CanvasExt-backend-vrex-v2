@@ -223,15 +223,21 @@ class RootAgent:
                                 materials_to_use.append(syllabus)
                                 print(f"   📌 Added syllabus as anchor doc")
 
-                        # Show selected files to user
-                        file_names = [f.get("filename", "unknown") for f in selected_files[:3]]
+                        # Get all filenames for display (not just first 3)
+                        all_file_names = [f.get("filename", "unknown") for f in selected_files]
+
+                        # Send file selection event for frontend to highlight files in sidebar
+                        # Format: __FILE_SELECTION__:doc_id1,doc_id2,doc_id3
+                        yield f"__FILE_SELECTION__:{','.join(selected_doc_ids)}\n"
+
+                        # Show clean user-friendly message with filenames
+                        display_names = all_file_names[:5]  # Show up to 5 filenames
                         if selected_docs:
                             # Scoped Refinement - show pruning
-                            yield f"\n✅ Pruned selection: {len(selected_docs)} → {len(materials_to_use)} relevant files\n"
-                            yield f"   Files: {', '.join(file_names)}{'...' if len(file_names) > 3 else ''}\n\n"
+                            yield f"\n📋 Reading the following files: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}\n\n"
                         else:
                             # Global Discovery - show selection
-                            yield f"\n✅ Selected {len(materials_to_use)} relevant files: {', '.join(file_names)}{'...' if len(file_names) > 3 else ''}\n\n"
+                            yield f"\n📋 Reading the following files: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}\n\n"
 
                         print(f"   ✅ Anchor Cluster selected {len(materials_to_use)} files:")
                         for file in selected_files[:5]:
