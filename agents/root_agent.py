@@ -223,8 +223,16 @@ class RootAgent:
                                 materials_to_use.append(syllabus)
                                 print(f"   📌 Added syllabus as anchor doc")
 
-                        # Get all filenames for display (not just first 3)
-                        all_file_names = [f.get("filename", "unknown") for f in selected_files]
+                        # Get all filenames for display - prefer material names (original) over summary filenames (may be hash-based)
+                        # Build lookup map from materials for O(1) access
+                        material_name_map = {m["id"]: m.get("name", m.get("filename", "unknown")) for m in all_materials}
+                        all_file_names = []
+                        for f in selected_files:
+                            doc_id = f.get("doc_id")
+                            # Try to get original name from materials catalog first (has display name)
+                            # Fall back to summary filename (may be hash-based for older entries)
+                            display_name = material_name_map.get(doc_id, f.get("filename", "unknown"))
+                            all_file_names.append(display_name)
 
                         # Send file selection event for frontend to highlight files in sidebar
                         # Format: __FILE_SELECTION__:doc_id1,doc_id2,doc_id3
@@ -240,8 +248,9 @@ class RootAgent:
                             yield f"\n📋 Reading the following files: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}\n\n"
 
                         print(f"   ✅ Anchor Cluster selected {len(materials_to_use)} files:")
-                        for file in selected_files[:5]:
-                            print(f"      📄 {file.get('filename')}")
+                        for i, file in enumerate(selected_files[:5]):
+                            display_name = all_file_names[i] if i < len(all_file_names) else file.get('filename')
+                            print(f"      📄 {display_name}")
 
             # Manual selection (original behavior)
             elif selected_docs:

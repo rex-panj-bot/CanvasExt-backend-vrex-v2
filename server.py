@@ -998,7 +998,8 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                         upload_info = {
                             'file_id': file_id,
                             'doc_id': file_id,  # Include doc_id for error handling
-                            'filename': material['filename'],  # Use stored filename with extension for MIME detection
+                            'filename': material.get('name', material['filename']),  # Use display name for DB, fallback to storage filename
+                            'storage_filename': material['filename'],  # Keep storage filename for MIME detection
                             'display_name': material['name'],  # Keep display name for logging
                             'path': material['path'],
                             'gcs_path': f"{course_id}/{material['filename']}",
