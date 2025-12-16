@@ -8,6 +8,7 @@ from google import genai
 from google.genai import types
 from typing import List, Dict, AsyncGenerator, Optional
 from utils.file_upload_manager import FileUploadManager
+from utils.file_summarizer import FileSummarizer
 from agents.file_selector_agent import FileSelectorAgent
 import asyncio
 
@@ -43,8 +44,15 @@ class RootAgent:
             storage_manager=storage_manager
         )
 
-        # Initialize File Selector Agent
-        self.file_selector_agent = FileSelectorAgent(google_api_key=google_api_key)
+        # Initialize File Summarizer (for query embedding generation)
+        self.file_summarizer = FileSummarizer(google_api_key=google_api_key)
+
+        # Initialize File Selector Agent with dependencies for hybrid search
+        self.file_selector_agent = FileSelectorAgent(
+            google_api_key=google_api_key,
+            chat_storage=chat_storage,
+            file_summarizer=self.file_summarizer
+        )
 
         # Session tracking: {session_id: {doc_ids: set(), file_uris: list()}}
         self.session_uploads = {}
@@ -192,16 +200,17 @@ class RootAgent:
                             print(f"   📊 User requested {requested} files, using max_files={max_files}")
                             break
 
-                    # Route to Anchor Cluster file selector
-                    # Pass selected_docs if user made manual selection (Scoped Refinement)
+                    # Route to Hybrid File Selector (Vector Search + LLM Reranking)
+                    # Pass selected_docs if user made manual selection (Scoped mode)
                     # Pass None if no selection (Global Discovery)
                     yield "__STATUS__:Analyzing your question and selecting relevant materials..."
-                    selected_files = await self.file_selector_agent.select_relevant_files(
+                    selected_files, selection_reasoning = await self.file_selector_agent.select_relevant_files(
                         user_query=user_message,
                         file_summaries=file_summaries,
+                        course_id=course_id,  # NEW: For vector search
                         syllabus_summary=syllabus_summary,
                         syllabus_doc_id=syllabus_id,
-                        selected_docs=selected_docs,  # NEW: Pass user's manual selection
+                        selected_docs=selected_docs,  # Pass user's manual selection
                         max_files=max_files
                     )
 
@@ -238,6 +247,14 @@ class RootAgent:
                         # Format: __FILE_SELECTION__:doc_id1,doc_id2,doc_id3
                         yield f"__FILE_SELECTION__:{','.join(selected_doc_ids)}\n"
 
+                        # Send file reasoning for frontend UI (why each file was selected)
+                        # Format: __FILE_REASONING__:JSON array of {file_id, filename, score, reason}
+                        import json
+                        if selection_reasoning:
+                            reasoning_json = json.dumps(selection_reasoning)
+                            yield f"__FILE_REASONING__:{reasoning_json}\n"
+                            print(f"   📝 Sent {len(selection_reasoning)} file reasons to frontend")
+
                         # Show clean user-friendly message with filenames
                         display_names = all_file_names[:5]  # Show up to 5 filenames
                         if selected_docs:
@@ -247,7 +264,7 @@ class RootAgent:
                             # Global Discovery - show selection
                             yield f"__STATUS__:Reading: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}"
 
-                        print(f"   ✅ Anchor Cluster selected {len(materials_to_use)} files:")
+                        print(f"   ✅ Hybrid File Selector selected {len(materials_to_use)} files:")
                         for i, file in enumerate(selected_files[:5]):
                             display_name = all_file_names[i] if i < len(all_file_names) else file.get('filename')
                             print(f"      📄 {display_name}")

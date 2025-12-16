@@ -532,13 +532,13 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
         }
 
 
-def _sync_summarize_file(summarizer, file_uri, filename, mime_type):
+def _sync_summarize_file(summarizer, file_uri, filename, mime_type, generate_embedding=True):
     """Synchronous wrapper for file summarization - runs in thread pool"""
     import asyncio
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(
-            summarizer.summarize_file(file_uri, filename, mime_type)
+            summarizer.summarize_file(file_uri, filename, mime_type, generate_embedding)
         )
     finally:
         loop.close()
@@ -719,6 +719,12 @@ async def _generate_single_summary(
                     text_content,
                     filename
                 )
+                # Generate embedding for text content separately
+                # Combine summary and topics for embedding
+                text_for_embedding = f"{summary}\n\nTopics: {', '.join(topics)}"
+                embedding = await asyncio.to_thread(
+                    lambda: asyncio.run(file_summarizer.generate_embedding(text_for_embedding))
+                )
             except Exception as e:
                 error_msg = str(e)
                 print(f"❌ Failed to generate summary for text file {filename}: {error_msg[:100]}")
@@ -729,13 +735,15 @@ async def _generate_single_summary(
             mime_type = upload_result["mime_type"]
 
             # Generate summary (run in thread pool - BLOCKING LLM call)
+            # Returns 4-tuple: (summary, topics, metadata, embedding)
             try:
-                summary, topics, metadata = await asyncio.to_thread(
+                summary, topics, metadata, embedding = await asyncio.to_thread(
                     _sync_summarize_file,
                     file_summarizer,
                     file_uri,
                     filename,
-                    mime_type
+                    mime_type,
+                    True  # generate_embedding
                 )
             except Exception as e:
                 # Don't save errors as summaries - return error status for retry later
@@ -765,7 +773,8 @@ async def _generate_single_summary(
             gcs_path=file_path,  # Store actual GCS path for deletion
             canvas_created_at=canvas_created_at,  # Canvas upload timestamp
             canvas_updated_at=canvas_updated_at,  # Canvas update timestamp
-            canvas_modified_at=canvas_modified_at   # Canvas modification timestamp
+            canvas_modified_at=canvas_modified_at,   # Canvas modification timestamp
+            summary_embedding=embedding  # Vector embedding for similarity search
         )
 
         if success:

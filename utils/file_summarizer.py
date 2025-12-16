@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 class FileSummarizer:
     """Generates summaries of uploaded files using Gemini"""
 
+    # Embedding model for vector search
+    EMBEDDING_MODEL = "text-embedding-004"
+
     def __init__(self, google_api_key: str, model_id: str = "gemini-2.5-flash-lite"):
         """
         Initialize File Summarizer
@@ -38,6 +41,52 @@ class FileSummarizer:
             self.fallback_model = "gemini-2.5-flash-lite"  # Migrate to 2.5
         else:
             self.fallback_model = "gemini-2.5-flash-lite"  # Safe default
+
+    async def generate_embedding(self, text: str) -> Optional[List[float]]:
+        """
+        Generate embedding vector for text using text-embedding-004.
+
+        Args:
+            text: Text to embed (typically summary + topics)
+
+        Returns:
+            List of floats representing the embedding vector, or None on error
+        """
+        if not text or not text.strip():
+            return None
+
+        try:
+            # Run embedding generation in thread pool (synchronous API)
+            result = await asyncio.to_thread(
+                self.client.models.embed_content,
+                model=self.EMBEDDING_MODEL,
+                contents=text[:8000]  # Truncate if too long
+            )
+
+            # Extract embedding from response
+            if result and result.embeddings:
+                embedding = result.embeddings[0].values
+                logger.info(f"Generated embedding: {len(embedding)} dimensions")
+                return list(embedding)
+            else:
+                logger.warning("No embedding returned from API")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}")
+            return None
+
+    async def generate_query_embedding(self, query: str) -> Optional[List[float]]:
+        """
+        Generate embedding for a user query (used in search).
+
+        Args:
+            query: User's question/query
+
+        Returns:
+            List of floats representing the embedding vector
+        """
+        return await self.generate_embedding(query)
 
     def _is_retryable_error(self, error: Exception) -> bool:
         """Check if an error is retryable (rate limit, server error, timeout)"""
@@ -82,8 +131,9 @@ class FileSummarizer:
         self,
         file_uri: str,
         filename: str,
-        mime_type: str
-    ) -> Tuple[str, List[str], Dict]:
+        mime_type: str,
+        generate_embedding: bool = True
+    ) -> Tuple[str, List[str], Dict, Optional[List[float]]]:
         """
         Generate a summary of a file with exponential backoff retry logic
 
@@ -91,9 +141,11 @@ class FileSummarizer:
             file_uri: Gemini File API URI
             filename: Original filename
             mime_type: MIME type of the file
+            generate_embedding: Whether to generate embedding for the summary (default: True)
 
         Returns:
-            Tuple of (summary, topics_list, metadata_dict)
+            Tuple of (summary, topics_list, metadata_dict, embedding)
+            - embedding is None if generate_embedding is False or on error
 
         Raises:
             Exception: After 5 retry attempts fail
@@ -170,7 +222,21 @@ Return ONLY valid JSON with no explanatory text."""
                     }
 
                     logger.info(f"✅ Generated summary for {filename}: {len(summary)} chars, {len(topics)} topics")
-                    return summary, topics, metadata
+
+                    # Generate embedding for the summary (for vector search)
+                    embedding = None
+                    if generate_embedding and summary:
+                        try:
+                            # Combine summary and topics for richer embedding
+                            text_for_embedding = f"{summary}\n\nTopics: {', '.join(topics)}"
+                            embedding = await self.generate_embedding(text_for_embedding)
+                            if embedding:
+                                logger.info(f"✅ Generated embedding for {filename}: {len(embedding)} dimensions")
+                        except Exception as embed_error:
+                            logger.warning(f"⚠️ Failed to generate embedding for {filename}: {embed_error}")
+                            # Continue without embedding - not critical
+
+                    return summary, topics, metadata, embedding
 
                 except json.JSONDecodeError as e:
                     # Invalid JSON response - raise error instead of saving raw text

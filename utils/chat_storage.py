@@ -119,10 +119,20 @@ class ChatStorage:
                         canvas_modified_at TIMESTAMP NULL,
                         created_at TIMESTAMP DEFAULT NOW(),
                         updated_at TIMESTAMP DEFAULT NOW(),
-                        deleted_at TIMESTAMP NULL
+                        deleted_at TIMESTAMP NULL,
+                        summary_embedding TEXT
                     )
                 """))
                 logger.info("✅ file_summaries table created")
+
+                # Migration: Add summary_embedding column if it doesn't exist
+                try:
+                    conn.execute(text("""
+                        ALTER TABLE file_summaries ADD COLUMN IF NOT EXISTS summary_embedding TEXT
+                    """))
+                    logger.info("✅ summary_embedding column added/verified")
+                except Exception as e:
+                    logger.warning(f"Could not add summary_embedding column (may already exist): {e}")
 
                 # Course metadata table (stores syllabus_id, etc.)
                 logger.info("Creating course_metadata table...")
@@ -322,7 +332,8 @@ class ChatStorage:
                     canvas_modified_at TIMESTAMP NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    deleted_at TIMESTAMP NULL
+                    deleted_at TIMESTAMP NULL,
+                    summary_embedding TEXT
                 )
             """)
 
@@ -455,6 +466,22 @@ class ChatStorage:
                         logger.info(f"Added {col_name} column to file_summaries (SQLite)")
                 except Exception as e:
                     logger.warning(f"Could not add {col_name} column (may already exist): {e}")
+
+            # Migration: Add summary_embedding column for vector search
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM pragma_table_info('file_summaries')
+                    WHERE name='summary_embedding'
+                """)
+                exists = cursor.fetchone()[0] > 0
+
+                if not exists:
+                    cursor.execute("""
+                        ALTER TABLE file_summaries ADD COLUMN summary_embedding TEXT NULL
+                    """)
+                    logger.info("Added summary_embedding column to file_summaries (SQLite)")
+            except Exception as e:
+                logger.warning(f"Could not add summary_embedding column (may already exist): {e}")
 
             # Course metadata table (stores syllabus_id, etc.)
             cursor.execute("""
@@ -965,7 +992,8 @@ class ChatStorage:
         gcs_path: str = None,
         canvas_created_at: str = None,
         canvas_updated_at: str = None,
-        canvas_modified_at: str = None
+        canvas_modified_at: str = None,
+        summary_embedding: List[float] = None
     ) -> bool:
         """
         Save or update a file summary
@@ -984,6 +1012,7 @@ class ChatStorage:
             canvas_created_at: When the file was created in Canvas (ISO format)
             canvas_updated_at: When the file was last updated in Canvas (ISO format)
             canvas_modified_at: When the file was last modified in Canvas (ISO format)
+            summary_embedding: Vector embedding of the summary for similarity search
 
         Returns:
             True if successful
@@ -991,14 +1020,15 @@ class ChatStorage:
         try:
             topics_json = json.dumps(topics or [])
             metadata_json = json.dumps(metadata or {})
+            embedding_json = json.dumps(summary_embedding) if summary_embedding else None
 
-            logger.info(f"save_file_summary called for {doc_id} with canvas_user_id: {canvas_user_id}, gcs_path: {gcs_path}")
+            logger.info(f"save_file_summary called for {doc_id} with canvas_user_id: {canvas_user_id}, gcs_path: {gcs_path}, has_embedding: {summary_embedding is not None}")
 
             if self.use_postgres:
                 with self.engine.connect() as conn:
                     conn.execute(text("""
-                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at, updated_at)
-                        VALUES (:doc_id, :course_id, :canvas_id, :filename, :summary, :topics, :metadata, :content_hash, :canvas_user_id, :gcs_path, :canvas_created_at, :canvas_updated_at, :canvas_modified_at, NOW())
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at, summary_embedding, updated_at)
+                        VALUES (:doc_id, :course_id, :canvas_id, :filename, :summary, :topics, :metadata, :content_hash, :canvas_user_id, :gcs_path, :canvas_created_at, :canvas_updated_at, :canvas_modified_at, :summary_embedding, NOW())
                         ON CONFLICT (doc_id) DO UPDATE SET
                             summary = EXCLUDED.summary,
                             topics = EXCLUDED.topics,
@@ -1010,6 +1040,7 @@ class ChatStorage:
                             canvas_created_at = COALESCE(EXCLUDED.canvas_created_at, file_summaries.canvas_created_at),
                             canvas_updated_at = COALESCE(EXCLUDED.canvas_updated_at, file_summaries.canvas_updated_at),
                             canvas_modified_at = COALESCE(EXCLUDED.canvas_modified_at, file_summaries.canvas_modified_at),
+                            summary_embedding = COALESCE(EXCLUDED.summary_embedding, file_summaries.summary_embedding),
                             updated_at = NOW()
                     """), {
                         "doc_id": doc_id,
@@ -1024,7 +1055,8 @@ class ChatStorage:
                         "gcs_path": gcs_path,
                         "canvas_created_at": canvas_created_at,
                         "canvas_updated_at": canvas_updated_at,
-                        "canvas_modified_at": canvas_modified_at
+                        "canvas_modified_at": canvas_modified_at,
+                        "summary_embedding": embedding_json
                     })
                     conn.commit()
                     logger.info(f"Successfully saved file_summary for {doc_id} with canvas_user_id: {canvas_user_id}, gcs_path: {gcs_path}")
@@ -1032,8 +1064,8 @@ class ChatStorage:
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO file_summaries (doc_id, course_id, canvas_id, filename, summary, topics, metadata, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at, summary_embedding, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(doc_id) DO UPDATE SET
                             summary = excluded.summary,
                             topics = excluded.topics,
@@ -1045,8 +1077,9 @@ class ChatStorage:
                             canvas_created_at = COALESCE(excluded.canvas_created_at, file_summaries.canvas_created_at),
                             canvas_updated_at = COALESCE(excluded.canvas_updated_at, file_summaries.canvas_updated_at),
                             canvas_modified_at = COALESCE(excluded.canvas_modified_at, file_summaries.canvas_modified_at),
+                            summary_embedding = COALESCE(excluded.summary_embedding, file_summaries.summary_embedding),
                             updated_at = CURRENT_TIMESTAMP
-                    """, (doc_id, course_id, canvas_id, filename, summary, topics_json, metadata_json, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at))
+                    """, (doc_id, course_id, canvas_id, filename, summary, topics_json, metadata_json, content_hash, canvas_user_id, gcs_path, canvas_created_at, canvas_updated_at, canvas_modified_at, embedding_json))
                     conn.commit()
 
             logger.info(f"Saved file summary for {doc_id}")
@@ -1276,6 +1309,202 @@ class ChatStorage:
         except Exception as e:
             logger.error(f"Error counting summaries for course: {e}")
             return 0
+
+    def search_similar_summaries(
+        self,
+        course_id: str,
+        query_embedding: List[float],
+        limit: int = 30
+    ) -> List[Dict]:
+        """
+        Search for similar file summaries using cosine similarity on embeddings.
+
+        This is the fast retrieval step (Step A) of the hybrid search system.
+        Returns top candidates to be reranked by the LLM.
+
+        Args:
+            course_id: Course identifier
+            query_embedding: Vector embedding of the user's query
+            limit: Maximum number of candidates to return (default: 30)
+
+        Returns:
+            List of dicts sorted by similarity score (highest first), each containing:
+            - doc_id, filename, summary, topics, metadata
+            - similarity_score: Cosine similarity (0-1)
+        """
+        import math
+
+        def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+            """Compute cosine similarity between two vectors"""
+            if not vec1 or not vec2 or len(vec1) != len(vec2):
+                return 0.0
+
+            dot_product = sum(a * b for a, b in zip(vec1, vec2))
+            magnitude1 = math.sqrt(sum(a * a for a in vec1))
+            magnitude2 = math.sqrt(sum(b * b for b in vec2))
+
+            if magnitude1 == 0 or magnitude2 == 0:
+                return 0.0
+
+            return dot_product / (magnitude1 * magnitude2)
+
+        try:
+            # Fetch all summaries with embeddings for this course
+            summaries_with_scores = []
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT doc_id, filename, summary, topics, metadata, summary_embedding
+                        FROM file_summaries
+                        WHERE course_id = :course_id
+                        AND deleted_at IS NULL
+                        AND summary_embedding IS NOT NULL
+                    """), {"course_id": course_id})
+
+                    for row in result:
+                        data = dict(row._mapping)
+                        stored_embedding = json.loads(data.get('summary_embedding', '[]'))
+
+                        if stored_embedding:
+                            similarity = cosine_similarity(query_embedding, stored_embedding)
+                            data['similarity_score'] = similarity
+                            data['topics'] = json.loads(data.get('topics', '[]'))
+                            data['metadata'] = json.loads(data.get('metadata', '{}'))
+                            # Remove embedding from response (too large)
+                            del data['summary_embedding']
+                            summaries_with_scores.append(data)
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT doc_id, filename, summary, topics, metadata, summary_embedding
+                        FROM file_summaries
+                        WHERE course_id = ?
+                        AND deleted_at IS NULL
+                        AND summary_embedding IS NOT NULL
+                    """, (course_id,))
+
+                    for row in cursor.fetchall():
+                        data = dict(row)
+                        stored_embedding = json.loads(data.get('summary_embedding', '[]'))
+
+                        if stored_embedding:
+                            similarity = cosine_similarity(query_embedding, stored_embedding)
+                            data['similarity_score'] = similarity
+                            data['topics'] = json.loads(data.get('topics', '[]'))
+                            data['metadata'] = json.loads(data.get('metadata', '{}'))
+                            # Remove embedding from response
+                            del data['summary_embedding']
+                            summaries_with_scores.append(data)
+
+            # Sort by similarity (highest first) and return top N
+            summaries_with_scores.sort(key=lambda x: x['similarity_score'], reverse=True)
+
+            logger.info(f"Vector search found {len(summaries_with_scores)} candidates for course {course_id}, returning top {limit}")
+
+            return summaries_with_scores[:limit]
+
+        except Exception as e:
+            logger.error(f"Error searching similar summaries: {e}")
+            return []
+
+    def get_summaries_without_embeddings(self, course_id: str, limit: int = 100) -> List[Dict]:
+        """
+        Get file summaries that don't have embeddings yet (for backfilling).
+
+        Args:
+            course_id: Course identifier
+            limit: Maximum number to return
+
+        Returns:
+            List of summaries without embeddings
+        """
+        try:
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT doc_id, filename, summary, topics, metadata
+                        FROM file_summaries
+                        WHERE course_id = :course_id
+                        AND deleted_at IS NULL
+                        AND (summary_embedding IS NULL OR summary_embedding = '')
+                        LIMIT :limit
+                    """), {"course_id": course_id, "limit": limit})
+
+                    summaries = []
+                    for row in result:
+                        data = dict(row._mapping)
+                        data['topics'] = json.loads(data.get('topics', '[]'))
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        summaries.append(data)
+                    return summaries
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT doc_id, filename, summary, topics, metadata
+                        FROM file_summaries
+                        WHERE course_id = ?
+                        AND deleted_at IS NULL
+                        AND (summary_embedding IS NULL OR summary_embedding = '')
+                        LIMIT ?
+                    """, (course_id, limit))
+
+                    summaries = []
+                    for row in cursor.fetchall():
+                        data = dict(row)
+                        data['topics'] = json.loads(data.get('topics', '[]'))
+                        data['metadata'] = json.loads(data.get('metadata', '{}'))
+                        summaries.append(data)
+                    return summaries
+
+        except Exception as e:
+            logger.error(f"Error getting summaries without embeddings: {e}")
+            return []
+
+    def update_file_embedding(self, doc_id: str, embedding: List[float]) -> bool:
+        """
+        Update only the embedding for an existing file summary.
+
+        Useful for backfilling embeddings on existing summaries.
+
+        Args:
+            doc_id: Document identifier
+            embedding: Vector embedding to store
+
+        Returns:
+            True if successful
+        """
+        try:
+            embedding_json = json.dumps(embedding)
+
+            if self.use_postgres:
+                with self.engine.connect() as conn:
+                    conn.execute(text("""
+                        UPDATE file_summaries
+                        SET summary_embedding = :embedding, updated_at = NOW()
+                        WHERE doc_id = :doc_id
+                    """), {"doc_id": doc_id, "embedding": embedding_json})
+                    conn.commit()
+            else:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE file_summaries
+                        SET summary_embedding = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE doc_id = ?
+                    """, (embedding_json, doc_id))
+                    conn.commit()
+
+            logger.info(f"Updated embedding for {doc_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error updating embedding for {doc_id}: {e}")
+            return False
 
     # ========== PHASE 3: Gemini File API URI Cache ==========
 
