@@ -3815,9 +3815,12 @@ async def migrate_gcs_metadata(course_id: str):
         skipped = 0
         errors = []
 
-        # Get all file uploads for this course from the database
+        # Try file_uploads table first (has original_filename)
+        # Fall back to file_summaries table (uses filename field)
         with chat_storage.engine.connect() as conn:
             from sqlalchemy import text
+
+            # Try file_uploads first
             result = conn.execute(text("""
                 SELECT content_hash, gcs_path, original_filename
                 FROM file_uploads
@@ -3825,7 +3828,41 @@ async def migrate_gcs_metadata(course_id: str):
             """), {"course_id": course_id})
             file_uploads = [dict(row._mapping) for row in result]
 
-        print(f"   Found {len(file_uploads)} files in database")
+            print(f"   Found {len(file_uploads)} files in file_uploads table")
+
+            # If file_uploads is empty, try file_summaries
+            if len(file_uploads) == 0:
+                print(f"   Falling back to file_summaries table...")
+                result = conn.execute(text("""
+                    SELECT doc_id, filename
+                    FROM file_summaries
+                    WHERE course_id = :course_id
+                """), {"course_id": course_id})
+                summaries = [dict(row._mapping) for row in result]
+
+                print(f"   Found {len(summaries)} files in file_summaries table")
+
+                # Convert to file_uploads format
+                # doc_id is {course_id}_{hash}, extract hash and build gcs_path
+                for s in summaries:
+                    doc_id = s['doc_id']
+                    filename = s['filename']
+                    # Extract hash from doc_id (e.g., "1421639_abc123..." -> "abc123...")
+                    if '_' in doc_id:
+                        content_hash = doc_id.split('_', 1)[1]
+                    else:
+                        content_hash = doc_id
+                    # Determine file extension from filename
+                    import os
+                    ext = os.path.splitext(filename)[1] or '.pdf'
+                    gcs_path = f"{course_id}/{content_hash}{ext}"
+                    file_uploads.append({
+                        'content_hash': content_hash,
+                        'gcs_path': gcs_path,
+                        'original_filename': filename
+                    })
+
+                print(f"   Total files to migrate: {len(file_uploads)}")
 
         for upload in file_uploads:
             try:
