@@ -967,7 +967,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         )
 
         # Semaphore to limit concurrent processing (reduced to 3 to prevent rate limit bursts)
-        # Keep low to avoid Gemini API rate limits on free tier (30 RPM for gemini-2.0-flash-lite)
+        # Keep low to avoid Gemini API rate limits (Dec 2025: 15 RPM for gemini-2.5-flash-lite)
         semaphore = asyncio.Semaphore(3)
 
         # Check ALL files in catalog for missing summaries (not just newly uploaded)
@@ -2397,7 +2397,7 @@ Title:"""
 
             # Call Gemini Flash-Lite (fast and cheap) - uses separate quota from main model
             response = client.models.generate_content(
-                model='gemini-2.0-flash-lite',
+                model='gemini-2.5-flash-lite',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.7,

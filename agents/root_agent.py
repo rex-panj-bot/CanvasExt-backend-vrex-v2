@@ -34,7 +34,7 @@ class RootAgent:
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = "gemini-2.5-flash"
         self.fallback_model = "gemini-2.0-flash"  # Fallback for rate limits/503
-        self.fallback_model_2 = "gemini-2.0-flash-lite"  # Second fallback tier
+        self.fallback_model_2 = "gemini-2.5-flash-lite"  # Second fallback tier (Dec 2025)
 
         # Initialize File Upload Manager
         self.file_upload_manager = FileUploadManager(

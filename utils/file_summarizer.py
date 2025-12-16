@@ -17,26 +17,27 @@ logger = logging.getLogger(__name__)
 class FileSummarizer:
     """Generates summaries of uploaded files using Gemini"""
 
-    def __init__(self, google_api_key: str, model_id: str = "gemini-2.0-flash-lite"):
+    def __init__(self, google_api_key: str, model_id: str = "gemini-2.5-flash-lite"):
         """
         Initialize File Summarizer
 
         Args:
             google_api_key: Google API key for Gemini
-            model_id: Gemini model to use (default: gemini-2.0-flash-lite)
+            model_id: Gemini model to use (default: gemini-2.5-flash-lite as of Dec 2025)
         """
         self.client = genai.Client(api_key=google_api_key)
         self.model_id = model_id
 
         # Auto-set fallback based on model family (avoid 2.5-flash - reserved for user queries)
-        if "2.0-flash-lite" in model_id:
+        # Updated Dec 2025: gemini-2.0-flash-lite deprecated, prefer 2.5 variants
+        if "2.5-flash-lite" in model_id:
             self.fallback_model = "gemini-2.0-flash"
         elif "2.0-flash" in model_id:
             self.fallback_model = "gemini-2.5-flash-lite"
-        elif "2.5-flash-lite" in model_id:
-            self.fallback_model = "gemini-2.0-flash"
+        elif "2.0-flash-lite" in model_id:
+            self.fallback_model = "gemini-2.5-flash-lite"  # Migrate to 2.5
         else:
-            self.fallback_model = "gemini-2.0-flash-lite"  # Safe default
+            self.fallback_model = "gemini-2.5-flash-lite"  # Safe default
 
     def _is_retryable_error(self, error: Exception) -> bool:
         """Check if an error is retryable (rate limit, server error, timeout)"""

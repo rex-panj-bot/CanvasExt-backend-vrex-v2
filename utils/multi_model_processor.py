@@ -166,46 +166,36 @@ class MultiModelBatchProcessor:
         """
         from .file_summarizer import FileSummarizer
 
-        # Initialize 3 models (exclude gemini-2.5-flash - reserved for user queries)
+        # Initialize 2 models with UPDATED Dec 2025 rate limits
+        # Google reduced quotas significantly on Dec 7, 2025
+        # Using only gemini-2.5-flash-lite (best free tier limits) and gemini-2.0-flash as backup
+        # Note: gemini-2.0-flash-lite has been deprecated, use 2.5 variants instead
         self.models = [
             {
-                'name': 'gemini-2.0-flash-lite',
-                'summarizer': FileSummarizer(google_api_key, 'gemini-2.0-flash-lite'),
-                'rpm': 30,
-                'rpd': 200,
-                'tpm': 1_000_000,      # Tokens per minute limit (official)
-                'tpd': 4_800_000,      # Tokens per day (200 RPD * 24k avg tokens)
-                'weight': 0.50,        # 50% of batches (highest RPM)
+                'name': 'gemini-2.5-flash-lite',
+                'summarizer': FileSummarizer(google_api_key, 'gemini-2.5-flash-lite'),
+                'rpm': 15,             # Dec 2025: 15 RPM free tier
+                'rpd': 1000,           # Dec 2025: 1000 RPD (best available)
+                'tpm': 250_000,        # Tokens per minute limit
+                'tpd': 6_000_000,      # Tokens per day
+                'weight': 0.75,        # Primary model - 75% of batches
                 'request_count': 0,
                 'daily_count': 0,
-                'token_count': 0,      # Current minute token usage
-                'daily_token_count': 0 # Today's token usage
+                'token_count': 0,
+                'daily_token_count': 0
             },
             {
                 'name': 'gemini-2.0-flash',
                 'summarizer': FileSummarizer(google_api_key, 'gemini-2.0-flash'),
-                'rpm': 15,
-                'rpd': 200,
-                'tpm': 1_000_000,      # Tokens per minute limit (official)
-                'tpd': 4_800_000,      # Tokens per day (200 RPD * 24k avg tokens)
-                'weight': 0.25,        # 25% of batches
+                'rpm': 10,             # Dec 2025: Reduced to 10 RPM
+                'rpd': 1500,           # Dec 2025: 1500 RPD free tier
+                'tpm': 1_000_000,      # Tokens per minute limit
+                'tpd': 4_000_000,      # Tokens per day
+                'weight': 0.25,        # Backup model - 25% of batches
                 'request_count': 0,
                 'daily_count': 0,
-                'token_count': 0,      # Current minute token usage
-                'daily_token_count': 0 # Today's token usage
-            },
-            {
-                'name': 'gemini-2.5-flash-lite',
-                'summarizer': FileSummarizer(google_api_key, 'gemini-2.5-flash-lite'),
-                'rpm': 15,
-                'rpd': 1000,           # Much higher daily limit
-                'tpm': 250_000,        # Tokens per minute limit (official)
-                'tpd': 6_000_000,      # Tokens per day (1000 RPD * 6k avg tokens)
-                'weight': 0.25,        # 25% of batches
-                'request_count': 0,
-                'daily_count': 0,
-                'token_count': 0,      # Current minute token usage
-                'daily_token_count': 0 # Today's token usage
+                'token_count': 0,
+                'daily_token_count': 0
             }
         ]
 
