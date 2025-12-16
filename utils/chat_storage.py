@@ -239,6 +239,27 @@ class ChatStorage:
 
                 conn.commit()
                 logger.info("✅ All indices created")
+
+                # MIGRATION: Fix hash-based filenames in file_summaries
+                # Copy original_filename from file_uploads to file_summaries where content_hash matches
+                # This fixes files that were stored with hash-based filenames instead of original names
+                logger.info("Running filename migration...")
+                result = conn.execute(text("""
+                    UPDATE file_summaries fs
+                    SET filename = fu.original_filename
+                    FROM file_uploads fu
+                    WHERE fs.content_hash = fu.content_hash
+                    AND fs.filename LIKE '%' || fs.content_hash || '%'
+                    AND fu.original_filename IS NOT NULL
+                    AND fu.original_filename != ''
+                """))
+                conn.commit()
+                rows_updated = result.rowcount
+                if rows_updated > 0:
+                    logger.info(f"✅ Fixed {rows_updated} filename(s) from hash-based to original names")
+                else:
+                    logger.info("✅ No filename migrations needed")
+
                 logger.info("PostgreSQL chat storage tables initialized")
 
                 # Verify tables were created
