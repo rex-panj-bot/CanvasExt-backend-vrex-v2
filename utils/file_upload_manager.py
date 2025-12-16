@@ -301,52 +301,62 @@ class FileUploadManager:
             traceback.print_exc()
             return {"error": error_msg}
 
-    async def _upload_single_pdf_async(self, file_path: str) -> Dict:
+    async def _upload_single_pdf_async(self, file_path: str, display_name: Optional[str] = None) -> Dict:
         """Upload a single PDF asynchronously"""
         # Run synchronous upload in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self.upload_pdf, file_path)
+        result = await loop.run_in_executor(None, self.upload_pdf, file_path, display_name)
         return result
 
-    async def upload_multiple_pdfs_async(self, file_paths: List[str]) -> Dict:
+    async def upload_multiple_pdfs_async(self, file_info_list) -> Dict:
         """
         Upload multiple files in batches (async version)
         Supports PDFs, documents, images, etc.
 
         Args:
-            file_paths: List of file paths
+            file_info_list: List of (file_path, display_name) tuples or just file paths
 
         Returns:
             Dict with uploaded files and stats
         """
+        # Normalize input: accept both tuples and plain strings
+        normalized_list = []
+        for item in file_info_list:
+            if isinstance(item, tuple):
+                normalized_list.append(item)
+            else:
+                # Plain string path - use None for display_name (will use filename)
+                normalized_list.append((item, None))
+
         # Process in batches to avoid memory issues with large file sets
         BATCH_SIZE = 100  # Allow full parallel uploads for speed
-        print(f"📤 Uploading {len(file_paths)} files to Gemini in batches of {BATCH_SIZE}...")
+        print(f"Uploading {len(normalized_list)} files to Gemini in batches of {BATCH_SIZE}...")
 
         uploaded = []
         failed = []
         total_bytes = 0
 
-        for i in range(0, len(file_paths), BATCH_SIZE):
-            batch = file_paths[i:i + BATCH_SIZE]
+        for i in range(0, len(normalized_list), BATCH_SIZE):
+            batch = normalized_list[i:i + BATCH_SIZE]
             batch_num = (i // BATCH_SIZE) + 1
-            total_batches = (len(file_paths) + BATCH_SIZE - 1) // BATCH_SIZE
+            total_batches = (len(normalized_list) + BATCH_SIZE - 1) // BATCH_SIZE
             print(f"   Batch {batch_num}/{total_batches}: Processing {len(batch)} files...")
 
-            # Upload batch in parallel
-            upload_tasks = [self._upload_single_pdf_async(fp) for fp in batch]
+            # Upload batch in parallel - pass both path and display_name
+            upload_tasks = [self._upload_single_pdf_async(fp, dn) for fp, dn in batch]
             results = await asyncio.gather(*upload_tasks, return_exceptions=True)
 
             # Process batch results
             for j, result in enumerate(results):
+                file_path = batch[j][0]
                 if isinstance(result, Exception):
                     failed.append({
-                        'path': batch[j],
+                        'path': file_path,
                         'error': str(result)
                     })
                 elif 'error' in result:
                     failed.append({
-                        'path': batch[j],
+                        'path': file_path,
                         'error': result['error']
                     })
                 else:
@@ -354,7 +364,7 @@ class FileUploadManager:
                     total_bytes += result.get('size_bytes', 0)
 
         # Log summary
-        print(f"✅ Batch upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
+        print(f"Batch upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
 
         if uploaded:
             # Group by file type

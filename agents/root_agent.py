@@ -147,7 +147,7 @@ class RootAgent:
 
                 if not file_summaries:
                     print(f"   ⚠️  No summaries available, falling back to manual selection")
-                    yield "\n⚠️ No file summaries available. Using all materials.\n"
+                    yield "\nNo file summaries available. Using all materials.\n"
                     materials_to_use = all_materials
                 else:
                     # ALWAYS fetch syllabus for ground truth (needed for both scenarios)
@@ -195,7 +195,7 @@ class RootAgent:
                     # Route to Anchor Cluster file selector
                     # Pass selected_docs if user made manual selection (Scoped Refinement)
                     # Pass None if no selection (Global Discovery)
-                    yield "📋 Analyzing your question and selecting relevant materials..."
+                    yield "__STATUS__:Analyzing your question and selecting relevant materials..."
                     selected_files = await self.file_selector_agent.select_relevant_files(
                         user_query=user_message,
                         file_summaries=file_summaries,
@@ -207,7 +207,7 @@ class RootAgent:
 
                     if not selected_files:
                         print(f"   ⚠️  File selector returned no files, using all materials")
-                        yield "\n⚠️ Could not determine relevant files. Using all materials.\n"
+                        yield "\nCould not determine relevant files. Using all materials.\n"
                         materials_to_use = all_materials
                     else:
                         # Get the actual materials based on selected doc_ids
@@ -242,10 +242,10 @@ class RootAgent:
                         display_names = all_file_names[:5]  # Show up to 5 filenames
                         if selected_docs:
                             # Scoped Refinement - show pruning
-                            yield f"\n📋 Reading the following files: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}\n\n"
+                            yield f"__STATUS__:Reading: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}"
                         else:
                             # Global Discovery - show selection
-                            yield f"\n📋 Reading the following files: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}\n\n"
+                            yield f"__STATUS__:Reading: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}"
 
                         print(f"   ✅ Anchor Cluster selected {len(materials_to_use)} files:")
                         for i, file in enumerate(selected_files[:5]):
@@ -383,21 +383,26 @@ class RootAgent:
                     need_upload = True
                     print(f"   📤 Uploading {len(materials_to_use)} files to Gemini...")
 
-                    file_paths = [mat["path"] for mat in materials_to_use if mat.get("path")]
-                    print(f"   📂 Files with paths: {len(file_paths)}/{len(materials_to_use)}")
-                    print(f"   📂 Sample paths: {file_paths[:2]}...")
+                    # Build list of (path, display_name) tuples for upload
+                    # This ensures Gemini receives friendly names instead of hash IDs
+                    file_info_list = [
+                        (mat["path"], mat.get("name", mat.get("filename", "document")))
+                        for mat in materials_to_use if mat.get("path")
+                    ]
+                    print(f"   Files with paths: {len(file_info_list)}/{len(materials_to_use)}")
+                    print(f"   Sample files: {[(f[1], f[0][:30]) for f in file_info_list[:2]]}...")
 
-                    if not file_paths:
-                        print(f"   ❌ ERROR: No valid file paths found!")
-                        yield "❌ Error: No valid file paths found in materials. Please re-scan course materials.\n\n"
+                    if not file_info_list:
+                        print(f"   ERROR: No valid file paths found!")
+                        yield "Error: No valid file paths found in materials. Please re-scan course materials.\n\n"
                         return
 
-                    upload_result = await file_upload_manager.upload_multiple_pdfs_async(file_paths)
+                    upload_result = await file_upload_manager.upload_multiple_pdfs_async(file_info_list)
 
                     if not upload_result.get('success'):
                         error_msg = upload_result.get('error', 'Unknown error')
                         print(f"   ❌ Upload failed: {error_msg}")
-                        yield f"❌ Error uploading files: {error_msg}"
+                        yield f"Error uploading files: {error_msg}"
                         return
 
                     uploaded_files = upload_result.get('files', [])
@@ -413,7 +418,7 @@ class RootAgent:
 
                     # Inform user if no files could be uploaded
                     if len(uploaded_files) == 0:
-                        yield "⚠️ **No files could be uploaded to Gemini.**\n\n"
+                        yield "**No files could be uploaded to Gemini.**\n\n"
                         if failed_files:
                             yield f"**Failed uploads ({len(failed_files)} files):**\n"
                             for failed in failed_files[:5]:  # Show first 5
@@ -436,9 +441,9 @@ class RootAgent:
                         print(f"   💾 Cached {len(uploaded_files)} files for session")
 
                     # Yield upload status to user
-                    status_msg = f"📤 **Loaded {len(uploaded_files)} of {len(materials_to_use)} files** (~{total_mb:.1f}MB)"
+                    status_msg = f"__STATUS__:Loaded {len(uploaded_files)} of {len(materials_to_use)} files (~{total_mb:.1f}MB)"
                     if failed_files:
-                        status_msg += f"\n⚠️ **{len(failed_files)} files could not be uploaded:**\n"
+                        status_msg += f"\n**{len(failed_files)} files could not be uploaded:**\n"
                         for failed in failed_files[:3]:  # Show first 3
                             path = failed.get('path', 'unknown')
                             filename = path.split('/')[-1] if '/' in path else path
