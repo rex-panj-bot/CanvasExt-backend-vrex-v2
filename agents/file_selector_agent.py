@@ -285,12 +285,15 @@ Return ONLY a JSON array, ordered by relevance (highest first):
 
 Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
 
+            print(f"      Calling LLM for reranking {len(candidates)} candidates...")
             response = await self._call_ai_with_fallback(prompt, max_tokens=3000)
 
             if not response:
+                print(f"      ⚠️ LLM reranking returned no response")
                 logger.warning("LLM reranking returned no response")
                 return []
 
+            print(f"      ✅ LLM response received ({len(response)} chars)")
             # Parse JSON response
             response_text = response.strip()
             if response_text.startswith("```json"):
@@ -327,6 +330,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
             return valid_results
 
         except Exception as e:
+            print(f"      ❌ Error in LLM reranking: {e}")
             logger.error(f"Error in LLM reranking: {e}")
             import traceback
             traceback.print_exc()
@@ -421,8 +425,12 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
         temperature: float = 0.2
     ) -> Optional[str]:
         """Call AI with fallback to secondary model on rate limit"""
+        import asyncio
         try:
-            response = self.client.models.generate_content(
+            print(f"      📡 Calling {self.model_id}...")
+            # Run synchronous API call in thread pool
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
                 model=self.model_id,
                 contents=prompt,
                 config=types.GenerateContentConfig(
@@ -432,16 +440,20 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
             )
 
             if not response or not response.text:
+                print(f"      ⚠️ No response text from {self.model_id}")
                 return None
 
             return response.text.strip()
 
         except Exception as api_error:
             error_str = str(api_error).lower()
+            print(f"      ⚠️ API error: {api_error}")
             if '429' in error_str or 'quota' in error_str or 'rate' in error_str:
+                print(f"      🔄 Rate limited, trying fallback model {self.fallback_model}")
                 logger.warning(f"Rate limited, trying fallback model")
                 try:
-                    response = self.client.models.generate_content(
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
                         model=self.fallback_model,
                         contents=prompt,
                         config=types.GenerateContentConfig(
@@ -450,7 +462,8 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
                         )
                     )
                     return response.text.strip() if response and response.text else None
-                except:
+                except Exception as fallback_error:
+                    print(f"      ❌ Fallback also failed: {fallback_error}")
                     return None
             logger.error(f"AI call failed: {api_error}")
             return None
