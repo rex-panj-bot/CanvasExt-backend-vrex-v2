@@ -310,19 +310,31 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
             # Validate and clean results
             valid_results = []
             candidate_ids = {c.get('doc_id') for c in candidates}
+            print(f"      Validating {len(results)} results against {len(candidate_ids)} candidates")
+            # Show sample IDs for debugging
+            sample_candidate_ids = list(candidate_ids)[:2]
+            print(f"      Sample candidate IDs: {sample_candidate_ids}")
 
+            matched = 0
+            unmatched = 0
             for r in results:
                 if not isinstance(r, dict):
                     continue
                 file_id = r.get('file_id')
                 if file_id not in candidate_ids:
+                    unmatched += 1
+                    if unmatched <= 3:
+                        print(f"      ⚠️ Unmatched file_id: {file_id[:50] if file_id else 'None'}...")
                     continue
 
+                matched += 1
                 valid_results.append({
                     'file_id': file_id,
                     'score': min(1.0, max(0.0, float(r.get('score', 0.5)))),
                     'reason': str(r.get('reason', 'Selected as relevant'))[:200]
                 })
+
+            print(f"      Matched: {matched}, Unmatched: {unmatched}")
 
             # Sort by score descending
             valid_results.sort(key=lambda x: x['score'], reverse=True)
