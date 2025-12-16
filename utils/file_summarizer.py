@@ -339,6 +339,7 @@ Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_typ
                             summaries.append({
                                 'file_id': file_info['file_id'],
                                 'filename': file_info['filename'],
+                                'file_index': file_idx,  # CRITICAL: Track index for validation
                                 'summary': summary,
                                 'topics': topics,
                                 'metadata': {
@@ -350,6 +351,7 @@ Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_typ
                             failed.append({
                                 'file_id': file_info['file_id'],
                                 'filename': file_info['filename'],
+                                'file_index': file_idx,  # CRITICAL: Track index for validation
                                 'error': 'Empty summary or topics'
                             })
 
@@ -367,6 +369,7 @@ Format: [{{"file_index": 0, "summary": "...", "topics": ["...", "..."], "doc_typ
                             failed.append({
                                 'file_id': file_info['file_id'],
                                 'filename': file_info['filename'],
+                                'file_index': idx,  # Track index for consistency
                                 'error': 'Not included in API response (possible token limit exceeded)'
                             })
 
