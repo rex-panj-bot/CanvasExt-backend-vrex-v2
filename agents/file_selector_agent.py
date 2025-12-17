@@ -307,9 +307,10 @@ CRITICAL: Use the EXACT file_id string from each file entry (the long hash like 
 Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
 
             print(f"      Calling LLM for reranking {len(candidates)} candidates...")
-            # Need enough tokens for JSON array with file_id, score, reason for each candidate
-            # Roughly ~200 tokens per candidate, so 30 candidates needs ~6000+ tokens
-            response = await self._call_ai_with_fallback(prompt, max_tokens=8000, user_api_key=user_api_key)
+            # Need enough tokens for JSON array with full hash file_ids, score, reason
+            # Each entry with 64-char hash + score + reason ~= 300-400 tokens
+            # 30 candidates needs ~12000+ tokens to be safe
+            response = await self._call_ai_with_fallback(prompt, max_tokens=16000, user_api_key=user_api_key)
 
             if not response:
                 print(f"      ⚠️ LLM reranking returned no response")
