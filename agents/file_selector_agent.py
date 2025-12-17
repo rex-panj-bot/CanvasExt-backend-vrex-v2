@@ -292,10 +292,12 @@ AVOID (0.0-0.29) - Score these LOW:
 - Unrelated assignments or readings
 
 **Output Format:**
-Return ONLY a JSON array, ordered by relevance (highest first):
+Return ONLY a JSON array, ordered by relevance (highest first).
+CRITICAL: Use the EXACT file_id string from each file entry (the long hash like "1424277_abc123..."). Do NOT use filenames.
+
 [
   {{
-    "file_id": "doc_id_here",
+    "file_id": "1424277_abc123def456...",
     "score": 0.95,
     "reason": "Contains the study guide for Exam 1 covering mitosis"
   }},
@@ -431,8 +433,10 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
             topics_str = ", ".join(topics[:5]) if topics else "N/A"
             truncated_summary = summary[:200] + '...' if len(summary) > 200 else summary
 
+            # Format: Put file_id first and prominently - LLM must use this exact ID
             context_lines.append(
-                f"{idx}. **{filename}** (ID: {doc_id})\n"
+                f"{idx}. file_id: \"{doc_id}\"\n"
+                f"   Filename: {filename}\n"
                 f"   Topics: {topics_str}\n"
                 f"   Summary: {truncated_summary}\n"
             )
