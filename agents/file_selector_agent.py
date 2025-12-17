@@ -24,7 +24,7 @@ class FileSelectorAgent:
     # Configuration
     MAX_CANDIDATES = 30  # Vector search retrieval limit
     MAX_FILES_HARD_CAP = 18  # Maximum files to return
-    RELATIVE_THRESHOLD_DELTA = 0.25  # Score cutoff relative to max score
+    RELATIVE_THRESHOLD_DELTA = 0.50  # Score cutoff relative to max score (wider = more files)
 
     # Embedding model for query embedding
     EMBEDDING_MODEL = "text-embedding-004"
@@ -269,13 +269,27 @@ class FileSelectorAgent:
 2. Assign a relevance score (0.0 to 1.0)
 3. Provide a brief reason for selection (1 sentence, for display to student)
 
-**Scoring Guidelines:**
-- 1.0: Directly answers the question (study guide for exam, lecture on exact topic)
-- 0.8: Highly relevant (covers main concepts, related material)
-- 0.6: Moderately relevant (provides useful context)
-- 0.4: Somewhat relevant (tangentially related)
-- 0.2: Low relevance (only vaguely connected)
-- 0.0: Not relevant
+**PRIORITY SCORING - Use these guidelines carefully:**
+
+HIGH VALUE (0.85-1.0) - Prioritize these:
+- Study guides, review sheets, exam prep materials
+- Lecture slides/notes covering the exact topic
+- Practice problems or sample exams
+- Chapter summaries or key concept documents
+
+MEDIUM VALUE (0.60-0.84):
+- Lectures covering related topics
+- Readings that provide context
+- Assignments that reinforce concepts
+
+LOW VALUE (0.30-0.59):
+- Tangentially related materials
+- General course documents
+
+AVOID (0.0-0.29) - Score these LOW:
+- Administrative documents (extra credit, class evaluation)
+- Technical/browser requirements
+- Unrelated assignments or readings
 
 **Output Format:**
 Return ONLY a JSON array, ordered by relevance (highest first):
