@@ -291,7 +291,9 @@ Return ONLY a JSON array, ordered by relevance (highest first):
 Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
 
             print(f"      Calling LLM for reranking {len(candidates)} candidates...")
-            response = await self._call_ai_with_fallback(prompt, max_tokens=3000, user_api_key=user_api_key)
+            # Need enough tokens for JSON array with file_id, score, reason for each candidate
+            # Roughly ~200 tokens per candidate, so 30 candidates needs ~6000+ tokens
+            response = await self._call_ai_with_fallback(prompt, max_tokens=8000, user_api_key=user_api_key)
 
             if not response:
                 print(f"      ⚠️ LLM reranking returned no response")
