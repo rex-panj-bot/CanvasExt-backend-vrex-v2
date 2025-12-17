@@ -52,7 +52,8 @@ class FileSelectorAgent:
         syllabus_summary: Optional[str] = None,
         syllabus_doc_id: Optional[str] = None,
         selected_docs: Optional[List[str]] = None,
-        max_files: int = 18
+        max_files: int = 18,
+        user_api_key: Optional[str] = None
     ) -> Tuple[List[Dict], List[Dict]]:
         """
         Select relevant files using hybrid search (vector + LLM reranking)
@@ -111,10 +112,12 @@ class FileSelectorAgent:
             print(f"      Step A (Vector Retrieval): {len(candidates)} candidates")
 
             # STEP B: LLM Reranking with Reasoning
+            # Use user's API key if provided to avoid server rate limits
             reranked_results = await self._llm_rerank_with_reasoning(
                 user_query,
                 candidates,
-                syllabus_summary
+                syllabus_summary,
+                user_api_key=user_api_key
             )
 
             if not reranked_results:
@@ -225,7 +228,8 @@ class FileSelectorAgent:
         self,
         user_query: str,
         candidates: List[Dict],
-        syllabus_summary: Optional[str]
+        syllabus_summary: Optional[str],
+        user_api_key: Optional[str] = None
     ) -> List[Dict]:
         """
         Step B: LLM reranking with reasoning in a single call
@@ -234,6 +238,7 @@ class FileSelectorAgent:
             user_query: User's question
             candidates: Candidate files from vector search
             syllabus_summary: Optional syllabus for context
+            user_api_key: User's API key (use instead of server key to avoid rate limits)
 
         Returns:
             List of dicts with file_id, score (0-1), reason
@@ -286,7 +291,7 @@ Return ONLY a JSON array, ordered by relevance (highest first):
 Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
 
             print(f"      Calling LLM for reranking {len(candidates)} candidates...")
-            response = await self._call_ai_with_fallback(prompt, max_tokens=3000)
+            response = await self._call_ai_with_fallback(prompt, max_tokens=3000, user_api_key=user_api_key)
 
             if not response:
                 print(f"      ⚠️ LLM reranking returned no response")
@@ -434,15 +439,24 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
         self,
         prompt: str,
         max_tokens: int = 1000,
-        temperature: float = 0.2
+        temperature: float = 0.2,
+        user_api_key: Optional[str] = None
     ) -> Optional[str]:
         """Call AI with fallback to secondary model on rate limit"""
         import asyncio
+
+        # Use user's API key if provided to avoid server rate limits
+        if user_api_key:
+            client = genai.Client(api_key=user_api_key)
+            print(f"      📡 Calling {self.model_id} (using user API key)...")
+        else:
+            client = self.client
+            print(f"      📡 Calling {self.model_id} (using server API key)...")
+
         try:
-            print(f"      📡 Calling {self.model_id}...")
             # Run synchronous API call in thread pool
             response = await asyncio.to_thread(
-                self.client.models.generate_content,
+                client.models.generate_content,
                 model=self.model_id,
                 contents=prompt,
                 config=types.GenerateContentConfig(
@@ -465,7 +479,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
                 logger.warning(f"Rate limited, trying fallback model")
                 try:
                     response = await asyncio.to_thread(
-                        self.client.models.generate_content,
+                        client.models.generate_content,  # Use same client (user's key if provided)
                         model=self.fallback_model,
                         contents=prompt,
                         config=types.GenerateContentConfig(

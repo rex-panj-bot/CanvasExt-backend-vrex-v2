@@ -211,7 +211,8 @@ class RootAgent:
                         syllabus_summary=syllabus_summary,
                         syllabus_doc_id=syllabus_id,
                         selected_docs=selected_docs,  # Pass user's manual selection
-                        max_files=max_files
+                        max_files=max_files,
+                        user_api_key=user_api_key  # Use user's key to avoid server rate limits
                     )
 
                     if not selected_files:
