@@ -458,20 +458,20 @@ class RootAgent:
                         }
                         print(f"   💾 Cached {len(uploaded_files)} files for session")
 
-                    # Yield upload status to user
-                    status_msg = f"__STATUS__:Loaded {len(uploaded_files)} of {len(materials_to_use)} files (~{total_mb:.1f}MB)"
-                    if failed_files:
-                        status_msg += f"\n**{len(failed_files)} files could not be uploaded:**\n"
-                        for failed in failed_files[:3]:  # Show first 3
-                            path = failed.get('path', 'unknown')
-                            filename = path.split('/')[-1] if '/' in path else path
-                            error = failed.get('error', 'unknown error')
-                            # Show short error message
-                            short_error = error.split('.')[0] if '.' in error else error
-                            status_msg += f"  - {filename}: {short_error}\n"
-                        if len(failed_files) > 3:
-                            status_msg += f"  - ... and {len(failed_files) - 3} more\n"
-                    yield status_msg + "\n"
+                    # DISABLED: Status message for this release
+                    # status_msg = f"__STATUS__:Loaded {len(uploaded_files)} of {len(materials_to_use)} files (~{total_mb:.1f}MB)"
+                    # if failed_files:
+                    #     status_msg += f"\n**{len(failed_files)} files could not be uploaded:**\n"
+                    #     for failed in failed_files[:3]:  # Show first 3
+                    #         path = failed.get('path', 'unknown')
+                    #         filename = path.split('/')[-1] if '/' in path else path
+                    #         error = failed.get('error', 'unknown error')
+                    #         # Show short error message
+                    #         short_error = error.split('.')[0] if '.' in error else error
+                    #         status_msg += f"  - {filename}: {short_error}\n"
+                    #     if len(failed_files) > 3:
+                    #         status_msg += f"  - ... and {len(failed_files) - 3} more\n"
+                    # yield status_msg + "\n"
 
             # Step 4: Build system instruction
             file_names = [mat['name'] for mat in materials_to_use]

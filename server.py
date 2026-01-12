@@ -1377,30 +1377,31 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             batch_failed = sum(1 for r in batch_results if isinstance(r, Exception) or (isinstance(r, dict) and r.get("status") == "failed"))
             print(f"✅ Batch complete: {batch_successful} uploaded, {batch_skipped} skipped, {batch_failed} failed")
 
+            # DISABLED: Progressive summarization for smart file select (save API calls)
             # Progressive summarization: Start summaries for this batch immediately
-            successful_batch = [r for r in batch_results
-                               if isinstance(r, dict) and r.get("status") == "uploaded"]
-
-            if successful_batch and file_summarizer and chat_storage:
-                # Enrich successful batch with Canvas timestamps from original files_in_memory
-                batch_files_memory = files_in_memory[i:i + BATCH_SIZE]
-                for result in successful_batch:
-                    filename = result.get('filename')
-                    # Find matching file in memory to get Canvas timestamps
-                    matching_file = next((f for f in batch_files_memory if f.get('filename') == filename), None)
-                    if matching_file:
-                        result['canvas_created_at'] = matching_file.get('canvas_created_at')
-                        result['canvas_updated_at'] = matching_file.get('canvas_updated_at')
-                        result['canvas_modified_at'] = matching_file.get('canvas_modified_at')
-
-                print(f"   ➜ Starting summaries for {len(successful_batch)} new files...")
-                task = asyncio.create_task(
-                    _generate_summaries_background(
-                        course_id, successful_batch, canvas_user_id
-                    )
-                )
-                if canvas_user_id:
-                    register_user_task(canvas_user_id, task)
+            # successful_batch = [r for r in batch_results
+            #                    if isinstance(r, dict) and r.get("status") == "uploaded"]
+            #
+            # if successful_batch and file_summarizer and chat_storage:
+            #     # Enrich successful batch with Canvas timestamps from original files_in_memory
+            #     batch_files_memory = files_in_memory[i:i + BATCH_SIZE]
+            #     for result in successful_batch:
+            #         filename = result.get('filename')
+            #         # Find matching file in memory to get Canvas timestamps
+            #         matching_file = next((f for f in batch_files_memory if f.get('filename') == filename), None)
+            #         if matching_file:
+            #             result['canvas_created_at'] = matching_file.get('canvas_created_at')
+            #             result['canvas_updated_at'] = matching_file.get('canvas_updated_at')
+            #             result['canvas_modified_at'] = matching_file.get('canvas_modified_at')
+            #
+            #     print(f"   ➜ Starting summaries for {len(successful_batch)} new files...")
+            #     task = asyncio.create_task(
+            #         _generate_summaries_background(
+            #             course_id, successful_batch, canvas_user_id
+            #         )
+            #     )
+            #     if canvas_user_id:
+            #         register_user_task(canvas_user_id, task)
 
         # Count results
         successful = [r for r in processed_results if r["status"] == "uploaded"]
@@ -2012,14 +2013,15 @@ async def process_canvas_files(
             except Exception as e:
                 print(f"⚠️ Catalog update failed: {e}")
 
+        # DISABLED: Summary generation for smart file select (save API calls)
         # Generate summaries for uploaded files AFTER catalog is updated
         # This prevents race conditions where summary status shows incomplete counts
-        if file_summarizer and chat_storage and processed > 0:
-            print(f"📝 Triggering summary generation for {processed} uploaded files...")
-            # uploaded_files already has correct format with doc_id, hash, etc.
-            task = asyncio.create_task(_generate_summaries_background(course_id, uploaded_files, x_canvas_user_id))
-            if x_canvas_user_id:
-                register_user_task(x_canvas_user_id, task)
+        # if file_summarizer and chat_storage and processed > 0:
+        #     print(f"📝 Triggering summary generation for {processed} uploaded files...")
+        #     # uploaded_files already has correct format with doc_id, hash, etc.
+        #     task = asyncio.create_task(_generate_summaries_background(course_id, uploaded_files, x_canvas_user_id))
+        #     if x_canvas_user_id:
+        #         register_user_task(x_canvas_user_id, task)
 
         return {
             "success": True,
