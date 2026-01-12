@@ -359,7 +359,7 @@ class RootAgent:
                     # Skip to chat generation without files
                 else:
                     print(f"   ❌ No materials to use after filtering!")
-                    yield "No documents selected. Please select at least one document or enable Smart Selection."
+                    yield "No documents selected. Please select at least one document."
                     return
 
             print(f"   📚 Final materials to use: {len(materials_to_use)} PDF files")
