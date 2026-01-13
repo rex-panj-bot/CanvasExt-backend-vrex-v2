@@ -23,6 +23,7 @@ MIME_TYPE_MAP = {
     # Presentations
     'ppt': 'application/vnd.ms-powerpoint',
     'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'key': 'application/x-iwork-keynote-sffkey',
 
     # Images
     'png': 'image/png',
@@ -78,6 +79,7 @@ NEEDS_CONVERSION = {
     'xlsx',  # Convert to PDF
     'ppt',   # Convert to PDF
     'pptx',  # Convert to PDF
+    'key',   # Apple Keynote → PDF
     'rtf',   # Convert to PDF or TXT
 
     # OpenDocument formats → PDF
@@ -175,6 +177,7 @@ def get_display_type(filename: str) -> str:
         'csv': 'CSV Spreadsheet',
         'ppt': 'PowerPoint (Legacy)',
         'pptx': 'PowerPoint Presentation',
+        'key': 'Keynote Presentation',
         'png': 'PNG Image',
         'jpg': 'JPEG Image',
         'jpeg': 'JPEG Image',
