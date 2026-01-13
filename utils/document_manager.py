@@ -4,6 +4,7 @@ Handles full document text extraction and material catalog management
 Provides tools for the agentic system to load complete documents
 """
 
+import os
 from pathlib import Path
 from typing import List, Dict, Optional
 import json
@@ -11,6 +12,14 @@ from pypdf import PdfReader
 import re
 from io import BytesIO
 from .mime_types import get_mime_type
+
+# Production mode - suppress verbose logging
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+
+def debug_debug_print(*args, **kwargs):
+    """Print only in development mode"""
+    if not PRODUCTION_MODE:
+        debug_print(*args, **kwargs)
 
 
 class DocumentManager:
@@ -58,7 +67,7 @@ class DocumentManager:
                     # These files should not be uploaded, but if they exist in GCS from old sessions, skip them
                     mime_type = get_mime_type(filename)
                     if mime_type and (mime_type.startswith('audio/') or mime_type.startswith('video/')):
-                        print(f"   🚫 Skipping media file in catalog: {filename} ({mime_type})")
+                        debug_print(f"   🚫 Skipping media file in catalog: {filename} ({mime_type})")
                         continue
 
                     # CRITICAL: Keep the full filename with extension for document IDs
@@ -82,7 +91,7 @@ class DocumentManager:
                             display_name = metadata['original_filename']
                             # Extract hash from filename (e.g., "abc123def.pdf" → "abc123def")
                             content_hash = filename.rsplit('.', 1)[0] if '.' in filename else filename
-                            print(f"   📝 Found original filename: {display_name} (hash: {content_hash[:16]}...)")
+                            debug_print(f"   📝 Found original filename: {display_name} (hash: {content_hash[:16]}...)")
 
                         # HASH-BASED: doc_id format
                         # For hash-based files: filename is "abc123.pdf", doc_id = "course_abc123"
@@ -105,12 +114,12 @@ class DocumentManager:
                             "type": self._infer_type(display_name),
                             "storage": "gcs"
                         })
-                        print(f"   📄 Cataloged: {display_name} → ID: {doc_id}")
+                        debug_print(f"   📄 Cataloged: {display_name} → ID: {doc_id}")
                     except Exception as e:
-                        print(f"Error getting metadata for {blob_name}: {e}")
+                        debug_print(f"Error getting metadata for {blob_name}: {e}")
 
             except Exception as e:
-                print(f"Error building catalog from GCS: {e}")
+                debug_print(f"Error building catalog from GCS: {e}")
                 return catalog
 
         else:
@@ -163,9 +172,9 @@ class DocumentManager:
                         "type": self._infer_type(original_name),
                         "storage": "local"
                     })
-                    print(f"   📄 Cataloged: {filename} → ID: {doc_id}")
+                    debug_print(f"   📄 Cataloged: {filename} → ID: {doc_id}")
 
-        print(f"📚 Built catalog: {sum(len(docs) for docs in catalog.values())} documents across {len(catalog)} courses")
+        debug_print(f"📚 Built catalog: {sum(len(docs) for docs in catalog.values())} documents across {len(catalog)} courses")
 
         # Log catalog summary by file type
         for course_id, docs in catalog.items():
@@ -173,7 +182,7 @@ class DocumentManager:
             for doc in docs:
                 doc_type = doc.get('type', 'unknown')
                 type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
-            print(f"   Course {course_id}: {len(docs)} files - {type_counts}")
+            debug_print(f"   Course {course_id}: {len(docs)} files - {type_counts}")
 
         return catalog
 
@@ -194,13 +203,13 @@ class DocumentManager:
             storage_type = result.get("storage", "unknown")
 
             if not doc_id or not content_hash or not path:
-                print(f"   ⚠️  Skipping file with missing metadata")
+                debug_print(f"   ⚠️  Skipping file with missing metadata")
                 continue
 
             # Extract course_id from doc_id
             parts = doc_id.split('_', 1)
             if len(parts) != 2:
-                print(f"   ⚠️  Invalid doc_id format: {doc_id}")
+                debug_print(f"   ⚠️  Invalid doc_id format: {doc_id}")
                 continue
             course_id = parts[0]
 
@@ -209,7 +218,7 @@ class DocumentManager:
 
             # Check if already in catalog by hash
             if any(doc['id'] == doc_id for doc in self.catalog[course_id]):
-                print(f"   ⏭️  Skipping duplicate: {original_filename} (hash: {content_hash[:16]}...)")
+                debug_print(f"   ⏭️  Skipping duplicate: {original_filename} (hash: {content_hash[:16]}...)")
                 continue
 
             # Convert size to MB
@@ -228,9 +237,9 @@ class DocumentManager:
                 "type": self._infer_type(original_filename),
                 "storage": storage_type
             })
-            print(f"   ➕ Added to catalog: {original_filename} → ID: {doc_id[:24]}... (hash: {content_hash[:16]}...)")
+            debug_print(f"   ➕ Added to catalog: {original_filename} → ID: {doc_id[:24]}... (hash: {content_hash[:16]}...)")
 
-        print(f"✅ Added {len(upload_results)} files to catalog")
+        debug_print(f"✅ Added {len(upload_results)} files to catalog")
 
     def _infer_type(self, name: str) -> str:
         """Infer document type from filename"""
@@ -299,20 +308,20 @@ class DocumentManager:
         This should be called after uploading new files to ensure they appear
         in the catalog immediately.
         """
-        print(f"🔄 Refreshing catalog{f' for course {course_id}' if course_id else ''}...")
+        debug_print(f"🔄 Refreshing catalog{f' for course {course_id}' if course_id else ''}...")
 
         if course_id:
             # Rebuild just this course's catalog
             old_count = len(self.catalog.get(course_id, []))
             self.catalog = self._build_catalog()
             new_count = len(self.catalog.get(course_id, []))
-            print(f"   ✅ Catalog refreshed: {old_count} → {new_count} materials")
+            debug_print(f"   ✅ Catalog refreshed: {old_count} → {new_count} materials")
         else:
             # Rebuild entire catalog
             old_total = sum(len(materials) for materials in self.catalog.values())
             self.catalog = self._build_catalog()
             new_total = sum(len(materials) for materials in self.catalog.values())
-            print(f"   ✅ Full catalog refreshed: {old_total} → {new_total} materials")
+            debug_print(f"   ✅ Full catalog refreshed: {old_total} → {new_total} materials")
 
     def search_materials(self, course_id: str, query: str, max_results: int = 10) -> List[Dict]:
         """
@@ -381,7 +390,7 @@ class DocumentManager:
 
         removed = len(self.catalog[course_id]) < original_count
         if removed:
-            print(f"🗑️  Removed {doc_id} from catalog for course {course_id}")
+            debug_print(f"🗑️  Removed {doc_id} from catalog for course {course_id}")
 
         return removed
 

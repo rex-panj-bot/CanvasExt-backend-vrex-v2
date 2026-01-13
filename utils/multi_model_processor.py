@@ -3,10 +3,19 @@ Multi-Model Batch Processor for Parallel Summarization
 Distributes batch summarization across multiple Gemini models with proactive rate limiting
 """
 
+import os
 import asyncio
 import time
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+
+# Production mode - suppress verbose logging
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+
+def debug_debug_print(*args, **kwargs):
+    """Print only in development mode"""
+    if not PRODUCTION_MODE:
+        debug_print(*args, **kwargs)
 
 
 class ProactiveRateLimiter:
@@ -244,8 +253,8 @@ class MultiModelBatchProcessor:
         Returns:
             List of result dicts with status for each file
         """
-        print(f"🚀 PARALLEL PROCESSING: {len(batches)} batches across {len(self.models)} models")
-        print(f"   Max throughput: {self.total_rpm} batches/minute (vs. 30 sequential)")
+        debug_print(f"🚀 PARALLEL PROCESSING: {len(batches)} batches across {len(self.models)} models")
+        debug_print(f"   Max throughput: {self.total_rpm} batches/minute (vs. 30 sequential)")
 
         # Phase 1: Assign batches to models and create tasks (start immediately, no waiting)
         tasks = []
@@ -278,7 +287,7 @@ class MultiModelBatchProcessor:
             tasks.append(task)
 
         # Phase 2: Execute ALL batches in parallel
-        print(f"   ⚡ Submitting {len(tasks)} batches in parallel...")
+        debug_print(f"   ⚡ Submitting {len(tasks)} batches in parallel...")
         self._log_model_distribution(batch_assignments)
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -289,7 +298,7 @@ class MultiModelBatchProcessor:
             if isinstance(result, list):
                 all_results.extend(result)
             elif isinstance(result, Exception):
-                print(f"   ❌ Batch failed with exception: {result}")
+                debug_print(f"   ❌ Batch failed with exception: {result}")
 
         # Log final stats
         self._log_final_stats()
@@ -316,7 +325,7 @@ class MultiModelBatchProcessor:
             minute_elapsed = current_time - self.rate_limiter.minute_start
             wait_time = 60 - minute_elapsed + 0.5
 
-            print(f"   ⏳ All models at capacity (token limits), waiting {wait_time:.1f}s for next minute window...")
+            debug_print(f"   ⏳ All models at capacity (token limits), waiting {wait_time:.1f}s for next minute window...")
             await asyncio.sleep(wait_time)
 
     async def _process_single_batch(
@@ -370,11 +379,11 @@ class MultiModelBatchProcessor:
                 canvas_user_id
             )
 
-            print(f"   ✅ Batch {batch_idx+1} complete ({model_name}): {len(batch_results)} files")
+            debug_print(f"   ✅ Batch {batch_idx+1} complete ({model_name}): {len(batch_results)} files")
             return batch_results
 
         except Exception as e:
-            print(f"   ❌ Batch {batch_idx+1} failed ({model_name}): {e}")
+            debug_print(f"   ❌ Batch {batch_idx+1} failed ({model_name}): {e}")
             import traceback
             traceback.print_exc()
             # Return error results for all files in batch
@@ -391,23 +400,23 @@ class MultiModelBatchProcessor:
             distribution[model_name] = distribution.get(model_name, 0) + 1
             token_distribution[model_name] = token_distribution.get(model_name, 0) + tokens
 
-        print(f"   📊 Model distribution:")
+        debug_print(f"   📊 Model distribution:")
         for model_name, count in sorted(distribution.items(), key=lambda x: x[1], reverse=True):
             total_tokens = token_distribution.get(model_name, 0)
-            print(f"      {model_name}: {count} batches (~{total_tokens:,} tokens)")
+            debug_print(f"      {model_name}: {count} batches (~{total_tokens:,} tokens)")
 
     def _log_final_stats(self):
         """Log final rate limit usage statistics"""
         stats = self.rate_limiter.get_stats()
-        print(f"   📈 Rate limit usage:")
+        debug_print(f"   📈 Rate limit usage:")
         for model_name, stat in stats.items():
             rpm_pct = (stat['rpm_used'] / stat['rpm_limit']) * 100 if stat['rpm_limit'] > 0 else 0
             rpd_pct = (stat['rpd_used'] / stat['rpd_limit']) * 100 if stat['rpd_limit'] > 0 else 0
             tpm_pct = (stat.get('tpm_used', 0) / stat.get('tpm_limit', 1)) * 100
             tpd_pct = (stat.get('tpd_used', 0) / stat.get('tpd_limit', 1)) * 100
 
-            print(f"      {model_name}:")
-            print(f"         RPM: {stat['rpm_used']}/{stat['rpm_limit']} ({rpm_pct:.0f}%)")
-            print(f"         RPD: {stat['rpd_used']}/{stat['rpd_limit']} ({rpd_pct:.0f}%)")
-            print(f"         TPM: {stat.get('tpm_used', 0):,}/{stat.get('tpm_limit', 0):,} ({tpm_pct:.0f}%)")
-            print(f"         TPD: {stat.get('tpd_used', 0):,}/{stat.get('tpd_limit', 0):,} ({tpd_pct:.0f}%)")
+            debug_print(f"      {model_name}:")
+            debug_print(f"         RPM: {stat['rpm_used']}/{stat['rpm_limit']} ({rpm_pct:.0f}%)")
+            debug_print(f"         RPD: {stat['rpd_used']}/{stat['rpd_limit']} ({rpd_pct:.0f}%)")
+            debug_print(f"         TPM: {stat.get('tpm_used', 0):,}/{stat.get('tpm_limit', 0):,} ({tpm_pct:.0f}%)")
+            debug_print(f"         TPD: {stat.get('tpd_used', 0):,}/{stat.get('tpd_limit', 0):,} ({tpd_pct:.0f}%)")

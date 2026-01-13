@@ -15,6 +15,14 @@ from .mime_types import get_mime_type, get_file_extension
 
 logger = logging.getLogger(__name__)
 
+# Production mode - suppress verbose logging
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+
+def debug_debug_print(*args, **kwargs):
+    """Print only in development mode"""
+    if not PRODUCTION_MODE:
+        debug_print(*args, **kwargs)
+
 
 class StorageManager:
     """Manages file storage in Google Cloud Storage (PDFs, documents, images, etc.)"""
@@ -63,7 +71,7 @@ class StorageManager:
             # Forward slashes in filenames cause issues with GCS blob paths
             sanitized_filename = filename.replace('/', '-')
             if sanitized_filename != filename:
-                print(f"   ⚠️  Sanitized filename: '{filename}' → '{sanitized_filename}'")
+                debug_print(f"   ⚠️  Sanitized filename: '{filename}' → '{sanitized_filename}'")
 
             # Create blob name: {course_id}/{filename}
             blob_name = f"{course_id}/{sanitized_filename}"

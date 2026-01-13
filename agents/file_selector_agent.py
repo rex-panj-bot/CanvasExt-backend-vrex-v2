@@ -5,6 +5,7 @@ Efficiently selects relevant files using a 2-step approach:
 2. Single LLM call for intelligent reranking with reasoning
 """
 
+import os
 from google import genai
 from google.genai import types
 from typing import List, Dict, Optional, Tuple
@@ -12,6 +13,14 @@ import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Production mode - suppress verbose logging
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+
+def debug_debug_print(*args, **kwargs):
+    """Print only in development mode"""
+    if not PRODUCTION_MODE:
+        debug_print(*args, **kwargs)
 
 
 class FileSelectorAgent:
@@ -76,13 +85,13 @@ class FileSelectorAgent:
             # Cap max_files
             max_files = min(max_files, self.MAX_FILES_HARD_CAP)
 
-            print(f"\n   HYBRID FILE SELECTOR")
-            print(f"      Query: {user_query[:100]}...")
-            print(f"      Available summaries: {len(file_summaries)}")
-            print(f"      Manual selection: {len(selected_docs) if selected_docs else 'None (global)'}")
+            debug_print(f"\n   HYBRID FILE SELECTOR")
+            debug_print(f"      Query: {user_query[:100]}...")
+            debug_print(f"      Available summaries: {len(file_summaries)}")
+            debug_print(f"      Manual selection: {len(selected_docs) if selected_docs else 'None (global)'}")
 
             if not file_summaries:
-                print(f"      No file summaries available")
+                debug_print(f"      No file summaries available")
                 return [], []
 
             # Get syllabus summary if not provided but doc_id is given
@@ -94,7 +103,7 @@ class FileSelectorAgent:
                 # Scoped mode: Filter to user's selection
                 selected_set = set(selected_docs)
                 working_summaries = [f for f in file_summaries if f.get('doc_id') in selected_set]
-                print(f"      Scoped to {len(working_summaries)} user-selected files")
+                debug_print(f"      Scoped to {len(working_summaries)} user-selected files")
             else:
                 working_summaries = file_summaries
 
@@ -106,10 +115,10 @@ class FileSelectorAgent:
             )
 
             if not candidates:
-                print(f"      Vector search returned no candidates, using all files")
+                debug_print(f"      Vector search returned no candidates, using all files")
                 candidates = working_summaries[:self.MAX_CANDIDATES]
 
-            print(f"      Step A (Vector Retrieval): {len(candidates)} candidates")
+            debug_print(f"      Step A (Vector Retrieval): {len(candidates)} candidates")
 
             # STEP B: LLM Reranking with Reasoning
             # Use user's API key if provided to avoid server rate limits
@@ -121,7 +130,7 @@ class FileSelectorAgent:
             )
 
             if not reranked_results:
-                print(f"      LLM reranking failed, using vector scores")
+                debug_print(f"      LLM reranking failed, using vector scores")
                 # Fallback: use vector similarity scores
                 for c in candidates:
                     c['_score'] = c.get('similarity_score', 0.5)
@@ -154,12 +163,12 @@ class FileSelectorAgent:
                         'reason': result.get('reason', 'Selected as relevant')
                     })
 
-            print(f"      Step B (LLM Reranking): {len(selected_files)} files selected")
-            print(f"      Dynamic Filtering: {len(filtered_results)} files after threshold")
+            debug_print(f"      Step B (LLM Reranking): {len(selected_files)} files selected")
+            debug_print(f"      Dynamic Filtering: {len(filtered_results)} files after threshold")
 
             for r in reasoning_output[:5]:
-                print(f"         {r['filename'][:40]}... (score: {r['score']:.2f})")
-                print(f"            Reason: {r['reason'][:60]}...")
+                debug_print(f"         {r['filename'][:40]}... (score: {r['score']:.2f})")
+                debug_print(f"            Reason: {r['reason'][:60]}...")
 
             return selected_files, reasoning_output
 
@@ -189,19 +198,19 @@ class FileSelectorAgent:
         try:
             # Check if vector search is available
             if not self.chat_storage or not self.file_summarizer or not course_id:
-                print(f"      Vector search unavailable, using fallback")
+                debug_print(f"      Vector search unavailable, using fallback")
                 return fallback_summaries[:self.MAX_CANDIDATES]
 
             # Generate query embedding
-            print(f"      Generating query embedding...")
+            debug_print(f"      Generating query embedding...")
             query_embedding = await self.file_summarizer.generate_query_embedding(user_query)
 
             if not query_embedding:
-                print(f"      Failed to generate query embedding, using fallback")
+                debug_print(f"      Failed to generate query embedding, using fallback")
                 return fallback_summaries[:self.MAX_CANDIDATES]
 
             # Perform vector search
-            print(f"      Searching vector database...")
+            debug_print(f"      Searching vector database...")
             candidates = self.chat_storage.search_similar_summaries(
                 course_id=course_id,
                 query_embedding=query_embedding,
@@ -209,14 +218,14 @@ class FileSelectorAgent:
             )
 
             if not candidates:
-                print(f"      Vector search returned no results, using fallback")
+                debug_print(f"      Vector search returned no results, using fallback")
                 return fallback_summaries[:self.MAX_CANDIDATES]
 
-            print(f"      Vector search found {len(candidates)} candidates")
+            debug_print(f"      Vector search found {len(candidates)} candidates")
 
             # Top 3 candidates for debugging
             for c in candidates[:3]:
-                print(f"         {c.get('filename', 'Unknown')[:40]}... (similarity: {c.get('similarity_score', 0):.3f})")
+                debug_print(f"         {c.get('filename', 'Unknown')[:40]}... (similarity: {c.get('similarity_score', 0):.3f})")
 
             return candidates
 
@@ -306,18 +315,18 @@ CRITICAL: Use the EXACT file_id string from each file entry (the long hash like 
 
 Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
 
-            print(f"      Calling LLM for reranking {len(candidates)} candidates...")
+            debug_print(f"      Calling LLM for reranking {len(candidates)} candidates...")
             # Need enough tokens for JSON array with full hash file_ids, score, reason
             # Each entry with 64-char hash + score + reason ~= 300-400 tokens
             # 30 candidates needs ~12000+ tokens to be safe
             response = await self._call_ai_with_fallback(prompt, max_tokens=16000, user_api_key=user_api_key)
 
             if not response:
-                print(f"      ⚠️ LLM reranking returned no response")
+                debug_print(f"      ⚠️ LLM reranking returned no response")
                 logger.warning("LLM reranking returned no response")
                 return []
 
-            print(f"      ✅ LLM response received ({len(response)} chars)")
+            debug_print(f"      ✅ LLM response received ({len(response)} chars)")
             # Parse JSON response
             response_text = response.strip()
             if response_text.startswith("```json"):
@@ -334,10 +343,10 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
             # Validate and clean results
             valid_results = []
             candidate_ids = {c.get('doc_id') for c in candidates}
-            print(f"      Validating {len(results)} results against {len(candidate_ids)} candidates")
+            debug_print(f"      Validating {len(results)} results against {len(candidate_ids)} candidates")
             # Show sample IDs for debugging
             sample_candidate_ids = list(candidate_ids)[:2]
-            print(f"      Sample candidate IDs: {sample_candidate_ids}")
+            debug_print(f"      Sample candidate IDs: {sample_candidate_ids}")
 
             matched = 0
             unmatched = 0
@@ -348,7 +357,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
                 if file_id not in candidate_ids:
                     unmatched += 1
                     if unmatched <= 3:
-                        print(f"      ⚠️ Unmatched file_id: {file_id[:50] if file_id else 'None'}...")
+                        debug_print(f"      ⚠️ Unmatched file_id: {file_id[:50] if file_id else 'None'}...")
                     continue
 
                 matched += 1
@@ -358,7 +367,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
                     'reason': str(r.get('reason', 'Selected as relevant'))[:200]
                 })
 
-            print(f"      Matched: {matched}, Unmatched: {unmatched}")
+            debug_print(f"      Matched: {matched}, Unmatched: {unmatched}")
 
             # Sort by score descending
             valid_results.sort(key=lambda x: x['score'], reverse=True)
@@ -366,7 +375,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
             return valid_results
 
         except Exception as e:
-            print(f"      ❌ Error in LLM reranking: {e}")
+            debug_print(f"      ❌ Error in LLM reranking: {e}")
             logger.error(f"Error in LLM reranking: {e}")
             import traceback
             traceback.print_exc()
@@ -402,7 +411,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
         # Calculate dynamic cutoff
         cutoff = max(0.0, max_score - self.RELATIVE_THRESHOLD_DELTA)
 
-        print(f"      Dynamic threshold: max_score={max_score:.2f}, cutoff={cutoff:.2f}")
+        debug_print(f"      Dynamic threshold: max_score={max_score:.2f}, cutoff={cutoff:.2f}")
 
         # Filter by cutoff
         filtered = [r for r in reranked_results if r.get('score', 0) >= cutoff]
@@ -410,7 +419,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
         # Apply hard cap
         filtered = filtered[:max_files]
 
-        print(f"      After filtering: {len(filtered)} files (from {len(reranked_results)})")
+        debug_print(f"      After filtering: {len(filtered)} files (from {len(reranked_results)})")
 
         return filtered
 
@@ -469,10 +478,10 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
         # Use user's API key if provided to avoid server rate limits
         if user_api_key:
             client = genai.Client(api_key=user_api_key)
-            print(f"      📡 Calling {self.model_id} (using user API key)...")
+            debug_print(f"      📡 Calling {self.model_id} (using user API key)...")
         else:
             client = self.client
-            print(f"      📡 Calling {self.model_id} (using server API key)...")
+            debug_print(f"      📡 Calling {self.model_id} (using server API key)...")
 
         try:
             # Run synchronous API call in thread pool
@@ -487,16 +496,16 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
             )
 
             if not response or not response.text:
-                print(f"      ⚠️ No response text from {self.model_id}")
+                debug_print(f"      ⚠️ No response text from {self.model_id}")
                 return None
 
             return response.text.strip()
 
         except Exception as api_error:
             error_str = str(api_error).lower()
-            print(f"      ⚠️ API error: {api_error}")
+            debug_print(f"      ⚠️ API error: {api_error}")
             if '429' in error_str or 'quota' in error_str or 'rate' in error_str:
-                print(f"      🔄 Rate limited, trying fallback model {self.fallback_model}")
+                debug_print(f"      🔄 Rate limited, trying fallback model {self.fallback_model}")
                 logger.warning(f"Rate limited, trying fallback model")
                 try:
                     response = await asyncio.to_thread(
@@ -510,7 +519,7 @@ Include ALL files that have score >= 0.2. Return ONLY the JSON array."""
                     )
                     return response.text.strip() if response and response.text else None
                 except Exception as fallback_error:
-                    print(f"      ❌ Fallback also failed: {fallback_error}")
+                    debug_print(f"      ❌ Fallback also failed: {fallback_error}")
                     return None
             logger.error(f"AI call failed: {api_error}")
             return None

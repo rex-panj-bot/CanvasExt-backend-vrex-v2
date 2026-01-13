@@ -3,6 +3,7 @@ File Upload Manager for Gemini File API
 Handles file uploads to Gemini (PDFs, documents, images, etc.)
 """
 
+import os
 from google import genai
 from pathlib import Path
 from typing import Dict, Optional, List
@@ -11,6 +12,14 @@ import asyncio
 from .mime_types import get_mime_type, get_file_extension, is_supported_by_gemini
 from .file_converter import convert_office_to_pdf, needs_conversion
 from .file_validator import FileValidator
+
+# Production mode - suppress verbose logging
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+
+def debug_debug_print(*args, **kwargs):
+    """Print only in development mode"""
+    if not PRODUCTION_MODE:
+        debug_print(*args, **kwargs)
 
 
 class FileUploadManager:
@@ -55,7 +64,7 @@ class FileUploadManager:
             if not mime_type:
                 # Unknown file type - skip it
                 ext = get_file_extension(filename) or 'unknown'
-                print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), skipping")
+                debug_print(f"⚠️  Unknown MIME type for {filename} ({ext.upper()}), skipping")
                 return {
                     'error': f'Unknown file type ({ext.upper()})',
                     'filename': filename,
@@ -66,7 +75,7 @@ class FileUploadManager:
         # Filter out audio files - NOT supported by Gemini
         if mime_type.startswith('audio/'):
             ext = get_file_extension(filename) or 'audio'
-            print(f"⚠️  Audio file not supported: {filename} ({ext.upper()}), skipping")
+            debug_print(f"⚠️  Audio file not supported: {filename} ({ext.upper()}), skipping")
             return {
                 'error': f'Audio files not supported ({ext.upper()})',
                 'filename': filename,
@@ -132,7 +141,7 @@ class FileUploadManager:
 
             # Validate file is not empty
             if not file_bytes or len(file_bytes) == 0:
-                print(f"⚠️  File is empty (0 bytes): {filename}")
+                debug_print(f"⚠️  File is empty (0 bytes): {filename}")
                 return {
                     'error': f'File is empty (0 bytes)',
                     'filename': filename,
@@ -152,10 +161,10 @@ class FileUploadManager:
                         filename = filename.rsplit('.', 1)[0] + '.pdf'
                         mime_type = 'application/pdf'
                     else:
-                        print(f"⚠️  Conversion failed for {filename}, will try uploading original format")
+                        debug_print(f"⚠️  Conversion failed for {filename}, will try uploading original format")
                 except Exception as conv_error:
-                    print(f"⚠️  Conversion error for {filename}: {conv_error}")
-                    print(f"    Will try uploading original format")
+                    debug_print(f"⚠️  Conversion error for {filename}: {conv_error}")
+                    debug_print(f"    Will try uploading original format")
 
             ext = get_file_extension(filename) or 'file'
 
@@ -163,7 +172,7 @@ class FileUploadManager:
             if mime_type == 'application/pdf':
                 is_valid, error_reason = FileValidator.validate_pdf(file_bytes, filename)
                 if not is_valid:
-                    print(f"❌ [VALIDATION] PDF validation failed for {filename}: {error_reason}")
+                    debug_print(f"❌ [VALIDATION] PDF validation failed for {filename}: {error_reason}")
                     return {
                         'error': error_reason,
                         'filename': filename,
@@ -175,7 +184,7 @@ class FileUploadManager:
             if mime_type and mime_type.startswith('video/'):
                 is_valid, error_reason = FileValidator.validate_video(file_bytes, filename)
                 if not is_valid:
-                    print(f"❌ [VALIDATION] Video validation failed for {filename}: {error_reason}")
+                    debug_print(f"❌ [VALIDATION] Video validation failed for {filename}: {error_reason}")
                     return {
                         'error': error_reason,
                         'filename': filename,
@@ -187,14 +196,14 @@ class FileUploadManager:
             # Gemini File API expects documents with pages (PDFs, images), not plain text
             # Instead, return the text content directly for inline use
             if mime_type == 'text/plain' or filename.endswith('.txt'):
-                print(f"📝 [TXT FILE] Skipping Gemini upload for {filename} - will use text content directly")
+                debug_print(f"📝 [TXT FILE] Skipping Gemini upload for {filename} - will use text content directly")
                 try:
                     text_content = file_bytes.decode('utf-8')
 
                     # Proactive validation for text files
                     is_valid, error_reason = FileValidator.validate_text(text_content, filename)
                     if not is_valid:
-                        print(f"❌ [VALIDATION] Text validation failed for {filename}: {error_reason}")
+                        debug_print(f"❌ [VALIDATION] Text validation failed for {filename}: {error_reason}")
                         return {
                             'error': error_reason,
                             'filename': filename,
@@ -217,7 +226,7 @@ class FileUploadManager:
                     self._file_cache[file_path] = result
                     return result
                 except UnicodeDecodeError as e:
-                    print(f"❌ Failed to decode text file {filename}: {e}")
+                    debug_print(f"❌ Failed to decode text file {filename}: {e}")
                     # Fall through to try file upload anyway
 
             # Silently upload - batch summary will show totals
@@ -244,7 +253,7 @@ class FileUploadManager:
                     file_obj = self.client.files.get(name=file_obj.name)
 
                 if file_obj.state.name != 'ACTIVE':
-                    print(f"⚠️  Warning: {filename} uploaded but not ACTIVE after {max_wait}s (state: {file_obj.state.name})")
+                    debug_print(f"⚠️  Warning: {filename} uploaded but not ACTIVE after {max_wait}s (state: {file_obj.state.name})")
 
                 # Cache the result
                 result = {
@@ -284,8 +293,8 @@ class FileUploadManager:
                 ext = get_file_extension(filename) or 'file'
                 error_msg = str(upload_error)
                 if 'not supported' in error_msg.lower() or 'mime' in error_msg.lower():
-                    print(f"❌ Gemini rejected {filename}: {ext.upper()} format not supported by Gemini API")
-                    print(f"   Error: {error_msg}")
+                    debug_print(f"❌ Gemini rejected {filename}: {ext.upper()} format not supported by Gemini API")
+                    debug_print(f"   Error: {error_msg}")
                     return {
                         "error": f"File type {ext.upper()} not supported by Gemini API. Supported: PDF, TXT, MD, CSV, PNG, JPG, JPEG, GIF, WEBP, MOV, MP4, AVI, WEBM, WMV, MPEG, MPG, FLV, 3GP",
                         "filename": filename,
@@ -296,7 +305,7 @@ class FileUploadManager:
 
         except Exception as e:
             error_msg = f"Failed to upload {filename}: {str(e)}"
-            print(f"❌ {error_msg}")
+            debug_print(f"❌ {error_msg}")
             import traceback
             traceback.print_exc()
             return {"error": error_msg}
@@ -330,7 +339,7 @@ class FileUploadManager:
 
         # Process in batches to avoid memory issues with large file sets
         BATCH_SIZE = 100  # Allow full parallel uploads for speed
-        print(f"Uploading {len(normalized_list)} files to Gemini in batches of {BATCH_SIZE}...")
+        debug_print(f"Uploading {len(normalized_list)} files to Gemini in batches of {BATCH_SIZE}...")
 
         uploaded = []
         failed = []
@@ -340,7 +349,7 @@ class FileUploadManager:
             batch = normalized_list[i:i + BATCH_SIZE]
             batch_num = (i // BATCH_SIZE) + 1
             total_batches = (len(normalized_list) + BATCH_SIZE - 1) // BATCH_SIZE
-            print(f"   Batch {batch_num}/{total_batches}: Processing {len(batch)} files...")
+            debug_print(f"   Batch {batch_num}/{total_batches}: Processing {len(batch)} files...")
 
             # Upload batch in parallel - pass both path and display_name
             upload_tasks = [self._upload_single_pdf_async(fp, dn) for fp, dn in batch]
@@ -364,7 +373,7 @@ class FileUploadManager:
                     total_bytes += result.get('size_bytes', 0)
 
         # Log summary
-        print(f"Batch upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
+        debug_print(f"Batch upload complete: {len(uploaded)} succeeded, {len(failed)} failed")
 
         if uploaded:
             # Group by file type
@@ -373,17 +382,17 @@ class FileUploadManager:
                 display_name = file_info.get('display_name', '')
                 ext = display_name.split('.')[-1].lower() if '.' in display_name else 'unknown'
                 type_counts[ext] = type_counts.get(ext, 0) + 1
-            print(f"📊 Uploaded file types: {type_counts}")
-            print(f"📊 Total size: {total_bytes:,} bytes ({total_bytes / (1024*1024):.1f} MB)")
+            debug_print(f"📊 Uploaded file types: {type_counts}")
+            debug_print(f"📊 Total size: {total_bytes:,} bytes ({total_bytes / (1024*1024):.1f} MB)")
 
             # Show sample files
             sample_files = [f.get('display_name', 'unknown') for f in uploaded[:5]]
-            print(f"📄 Sample files: {sample_files}")
+            debug_print(f"📄 Sample files: {sample_files}")
 
         if failed:
-            print(f"❌ Failed uploads:")
+            debug_print(f"❌ Failed uploads:")
             for fail in failed[:3]:  # Show first 3 failures
-                print(f"   - {fail.get('path', 'unknown')}: {fail.get('error', 'unknown error')}")
+                debug_print(f"   - {fail.get('path', 'unknown')}: {fail.get('error', 'unknown error')}")
 
         return {
             'success': True,
@@ -446,10 +455,10 @@ class FileUploadManager:
         """
         if file_path:
             self._file_cache.pop(file_path, None)
-            print(f"🗑️  Cleared cache for {Path(file_path).name}")
+            debug_print(f"🗑️  Cleared cache for {Path(file_path).name}")
         else:
             self._file_cache.clear()
-            print(f"🗑️  Cleared all file upload cache")
+            debug_print(f"🗑️  Cleared all file upload cache")
 
     def get_cache_stats(self) -> Dict:
         """Get cache statistics"""

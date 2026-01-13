@@ -4,6 +4,7 @@ Root Agent - Query Processing for Study Assistant
 Uses Gemini 2.5 Flash with native PDF processing for optimal performance.
 """
 
+import os
 from google import genai
 from google.genai import types
 from typing import List, Dict, AsyncGenerator, Optional
@@ -11,6 +12,14 @@ from utils.file_upload_manager import FileUploadManager
 from utils.file_summarizer import FileSummarizer
 from agents.file_selector_agent import FileSelectorAgent
 import asyncio
+
+# Production mode - suppress verbose logging
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+
+def debug_debug_print(*args, **kwargs):
+    """Print only in development mode"""
+    if not PRODUCTION_MODE:
+        debug_print(*args, **kwargs)
 
 
 class RootAgent:
@@ -61,7 +70,7 @@ class RootAgent:
         """Clear uploaded files for a session"""
         if session_id in self.session_uploads:
             del self.session_uploads[session_id]
-            print(f"🗑️  Cleared session: {session_id}")
+            debug_print(f"🗑️  Cleared session: {session_id}")
 
     async def process_query_stream(
         self,
@@ -107,20 +116,20 @@ class RootAgent:
                     cache_duration_hours=48,
                     storage_manager=self.storage_manager
                 )
-                print(f"🔑 Using user-provided API key")
+                debug_print(f"🔑 Using user-provided API key")
 
-            print(f"\n{'='*80}")
-            print(f"🔍 DEBUG: Starting query processing")
-            print(f"   Course ID: {course_id}")
-            print(f"   Session ID: {session_id}")
-            print(f"   Web Search: {'Enabled' if enable_web_search else 'Disabled'}")
-            print(f"   Smart Selection: {'Enabled' if use_smart_selection else 'Disabled'}")
-            print(f"   Conversation history length: {len(conversation_history)}")
+            debug_print(f"\n{'='*80}")
+            debug_print(f"🔍 DEBUG: Starting query processing")
+            debug_print(f"   Course ID: {course_id}")
+            debug_print(f"   Session ID: {session_id}")
+            debug_print(f"   Web Search: {'Enabled' if enable_web_search else 'Disabled'}")
+            debug_print(f"   Smart Selection: {'Enabled' if use_smart_selection else 'Disabled'}")
+            debug_print(f"   Conversation history length: {len(conversation_history)}")
 
             # Step 1: Get all available documents
             catalog = self.document_manager.get_material_catalog(course_id)
             all_materials = catalog.get("materials", [])
-            print(f"   📂 Total materials in catalog: {len(all_materials)}")
+            debug_print(f"   📂 Total materials in catalog: {len(all_materials)}")
 
             # Enrich materials with canvas_id from database (for fallback matching)
             # Priority: catalog canvas_id > summary canvas_id
@@ -145,16 +154,16 @@ class RootAgent:
 
             # ANCHOR CLUSTER: Smart selection with Global Discovery or Scoped Refinement
             if use_smart_selection and self.chat_storage:
-                print(f"\n   🤖 ANCHOR CLUSTER SMART SELECTION ENABLED")
-                print(f"   ❓ User query: {user_message[:200]}{'...' if len(user_message) > 200 else ''}")
-                print(f"   📋 Manual selection provided: {len(selected_docs) if selected_docs else 0} files")
+                debug_print(f"\n   🤖 ANCHOR CLUSTER SMART SELECTION ENABLED")
+                debug_print(f"   ❓ User query: {user_message[:200]}{'...' if len(user_message) > 200 else ''}")
+                debug_print(f"   📋 Manual selection provided: {len(selected_docs) if selected_docs else 0} files")
 
                 # Get file summaries from database
                 file_summaries = self.chat_storage.get_all_summaries_for_course(course_id)
-                print(f"   📚 Found {len(file_summaries)} file summaries")
+                debug_print(f"   📚 Found {len(file_summaries)} file summaries")
 
                 if not file_summaries:
-                    print(f"   ⚠️  No summaries available, falling back to manual selection")
+                    debug_print(f"   ⚠️  No summaries available, falling back to manual selection")
                     yield "\nNo file summaries available. Using all materials.\n"
                     materials_to_use = all_materials
                 else:
@@ -163,20 +172,20 @@ class RootAgent:
                     if not syllabus_id and self.chat_storage:
                         syllabus_id = self.chat_storage.get_course_syllabus(course_id)
                         if syllabus_id:
-                            print(f"      ✅ Found stored syllabus_id in database: {syllabus_id}")
+                            debug_print(f"      ✅ Found stored syllabus_id in database: {syllabus_id}")
 
                     syllabus_summary = None
                     if syllabus_id:
-                        print(f"      Fetching syllabus for ground truth: {syllabus_id}")
+                        debug_print(f"      Fetching syllabus for ground truth: {syllabus_id}")
                         syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
                             syllabus_id, file_summaries
                         )
                         if syllabus_summary:
-                            print(f"   ✅ Syllabus found ({len(syllabus_summary)} chars)")
+                            debug_print(f"   ✅ Syllabus found ({len(syllabus_summary)} chars)")
                         else:
-                            print(f"   ⚠️  Syllabus not found")
+                            debug_print(f"   ⚠️  Syllabus not found")
                     else:
-                        print(f"      No syllabus_id stored, searching for 'syllabus' in filenames...")
+                        debug_print(f"      No syllabus_id stored, searching for 'syllabus' in filenames...")
                         syllabus_summary = await self.file_selector_agent.get_syllabus_summary(
                             None, file_summaries
                         )
@@ -197,7 +206,7 @@ class RootAgent:
                         if match:
                             requested = int(match.group(1))
                             max_files = min(requested, 30)  # Cap at 30
-                            print(f"   📊 User requested {requested} files, using max_files={max_files}")
+                            debug_print(f"   📊 User requested {requested} files, using max_files={max_files}")
                             break
 
                     # Route to Hybrid File Selector (Vector Search + LLM Reranking)
@@ -216,22 +225,22 @@ class RootAgent:
                     )
 
                     if not selected_files:
-                        print(f"   ⚠️  File selector returned no files, using all materials")
+                        debug_print(f"   ⚠️  File selector returned no files, using all materials")
                         yield "\nCould not determine relevant files. Using all materials.\n"
                         materials_to_use = all_materials
                     else:
                         # Get the actual materials based on selected doc_ids
                         selected_doc_ids = [f.get("doc_id") for f in selected_files]
-                        print(f"   🔍 Selected doc IDs from Anchor Cluster: {selected_doc_ids[:5]}...")
+                        debug_print(f"   🔍 Selected doc IDs from Anchor Cluster: {selected_doc_ids[:5]}...")
                         materials_to_use = [m for m in all_materials if m["id"] in selected_doc_ids]
-                        print(f"   🔍 Matched {len(materials_to_use)} materials from {len(selected_doc_ids)} selected IDs")
+                        debug_print(f"   🔍 Matched {len(materials_to_use)} materials from {len(selected_doc_ids)} selected IDs")
 
                         # Always include syllabus if available (anchor doc)
                         if syllabus_id and syllabus_id not in selected_doc_ids:
                             syllabus = next((m for m in all_materials if m["id"] == syllabus_id), None)
                             if syllabus:
                                 materials_to_use.append(syllabus)
-                                print(f"   📌 Added syllabus as anchor doc")
+                                debug_print(f"   📌 Added syllabus as anchor doc")
 
                         # Get all filenames for display - prefer material names (original) over summary filenames (may be hash-based)
                         # Build lookup map from materials for O(1) access
@@ -254,7 +263,7 @@ class RootAgent:
                         if selection_reasoning:
                             reasoning_json = json.dumps(selection_reasoning)
                             yield f"__FILE_REASONING__:{reasoning_json}\n"
-                            print(f"   📝 Sent {len(selection_reasoning)} file reasons to frontend")
+                            debug_print(f"   📝 Sent {len(selection_reasoning)} file reasons to frontend")
 
                         # Show clean user-friendly message with filenames
                         display_names = all_file_names[:5]  # Show up to 5 filenames
@@ -265,26 +274,26 @@ class RootAgent:
                             # Global Discovery - show selection
                             yield f"__STATUS__:Reading: {', '.join(display_names)}{'...' if len(all_file_names) > 5 else ''}"
 
-                        print(f"   ✅ Hybrid File Selector selected {len(materials_to_use)} files:")
+                        debug_print(f"   ✅ Hybrid File Selector selected {len(materials_to_use)} files:")
                         for i, file in enumerate(selected_files[:5]):
                             display_name = all_file_names[i] if i < len(all_file_names) else file.get('filename')
-                            print(f"      📄 {display_name}")
+                            debug_print(f"      📄 {display_name}")
 
             # Manual selection (original behavior)
             elif selected_docs:
-                print(f"   📋 Using manual selection")
-                print(f"   📋 Selected docs from client: {selected_docs}")
-                print(f"   📋 Number of selected docs: {len(selected_docs)}")
+                debug_print(f"   📋 Using manual selection")
+                debug_print(f"   📋 Selected docs from client: {selected_docs}")
+                debug_print(f"   📋 Number of selected docs: {len(selected_docs)}")
 
                 # Debug: Show all material IDs available
                 available_ids = [m["id"] for m in all_materials]
-                print(f"   🔑 Available material IDs ({len(available_ids)}):")
+                debug_print(f"   🔑 Available material IDs ({len(available_ids)}):")
                 for avail_id in available_ids[:10]:  # Show first 10
-                    print(f"      - {avail_id}")
+                    debug_print(f"      - {avail_id}")
 
-                print(f"\n   📋 Selected doc IDs from frontend ({len(selected_docs)}):")
+                debug_print(f"\n   📋 Selected doc IDs from frontend ({len(selected_docs)}):")
                 for sel_id in selected_docs[:10]:  # Show first 10
-                    print(f"      - {sel_id}")
+                    debug_print(f"      - {sel_id}")
 
                 # HASH-BASED: Direct ID matching - no fuzzy logic needed
                 # Frontend sends exact doc_id ({course_id}_{hash}) which matches catalog
@@ -318,53 +327,53 @@ class RootAgent:
                         matched_material = canvas_id_map[selected_id]
                         materials_to_use.append(matched_material)
                         matched_by_canvas_id.append(selected_id)
-                        print(f"   🔄 Matched by Canvas ID: {selected_id} → {matched_material['name']}")
+                        debug_print(f"   🔄 Matched by Canvas ID: {selected_id} → {matched_material['name']}")
                     elif str(selected_id) in canvas_id_map:
                         # Try string version if numeric didn't match
                         matched_material = canvas_id_map[str(selected_id)]
                         materials_to_use.append(matched_material)
                         matched_by_canvas_id.append(selected_id)
-                        print(f"   🔄 Matched by Canvas ID (str): {selected_id} → {matched_material['name']}")
+                        debug_print(f"   🔄 Matched by Canvas ID (str): {selected_id} → {matched_material['name']}")
 
-                print(f"\n   ✅ Matched {len(materials_to_use)} materials from selection")
+                debug_print(f"\n   ✅ Matched {len(materials_to_use)} materials from selection")
                 if matched_by_canvas_id:
-                    print(f"   📌 {len(matched_by_canvas_id)} matched using fallback Canvas ID matching")
+                    debug_print(f"   📌 {len(matched_by_canvas_id)} matched using fallback Canvas ID matching")
 
                 if len(materials_to_use) < len(selected_docs):
-                    print(f"   ⚠️  WARNING: {len(selected_docs) - len(materials_to_use)} selected docs not found in catalog!")
+                    debug_print(f"   ⚠️  WARNING: {len(selected_docs) - len(materials_to_use)} selected docs not found in catalog!")
                     matched_ids = {m["id"] for m in materials_to_use}
                     matched_canvas_ids = {m.get("canvas_id") for m in materials_to_use if m.get("canvas_id")}
                     missing = [sid for sid in selected_docs if sid not in available_id_set and sid not in canvas_id_map]
-                    print(f"   ⚠️  Missing IDs:")
+                    debug_print(f"   ⚠️  Missing IDs:")
                     for miss_id in missing[:10]:  # Show first 10
-                        print(f"      - {miss_id}")
+                        debug_print(f"      - {miss_id}")
 
                 # Always include syllabus if provided and not already selected
                 if syllabus_id and syllabus_id not in selected_docs:
                     syllabus = next((m for m in all_materials if m["id"] == syllabus_id), None)
                     if syllabus:
                         materials_to_use.append(syllabus)
-                        print(f"   ⭐ Including syllabus: {syllabus['name']}")
+                        debug_print(f"   ⭐ Including syllabus: {syllabus['name']}")
 
             # No selection - act like regular Gemini (no files)
             else:
-                print(f"   ℹ️  No docs selected and smart selection off - using no materials (regular Gemini mode)")
+                debug_print(f"   ℹ️  No docs selected and smart selection off - using no materials (regular Gemini mode)")
                 materials_to_use = []
 
             # Allow empty materials when user wants regular Gemini mode (no selection + no smart select)
             if not materials_to_use:
                 # Check if this was intentional (no selection + smart select off)
                 if not use_smart_selection and not selected_docs:
-                    print(f"   ℹ️  Using Gemini in chat-only mode (no files)")
+                    debug_print(f"   ℹ️  Using Gemini in chat-only mode (no files)")
                     # Skip to chat generation without files
                 else:
-                    print(f"   ❌ No materials to use after filtering!")
+                    debug_print(f"   ❌ No materials to use after filtering!")
                     yield "No documents selected. Please select at least one document."
                     return
 
-            print(f"   📚 Final materials to use: {len(materials_to_use)} PDF files")
+            debug_print(f"   📚 Final materials to use: {len(materials_to_use)} PDF files")
             if materials_to_use:
-                print(f"   📚 Material names: {[m['name'][:30] for m in materials_to_use[:3]]}...")
+                debug_print(f"   📚 Material names: {[m['name'][:30] for m in materials_to_use[:3]]}...")
 
             # Step 3: Upload files to Gemini (skip if no materials selected)
             need_upload = False
@@ -375,31 +384,31 @@ class RootAgent:
                 session_cache = self.session_uploads.get(session_id, {})
                 cached_doc_ids = session_cache.get("doc_ids", set())
 
-                print(f"   🔍 Session check:")
-                print(f"      Session ID: {session_id}")
-                print(f"      Selected doc IDs ({len(selected_doc_ids)}): {list(selected_doc_ids)[:3]}...")
-                print(f"      Cached doc IDs ({len(cached_doc_ids)}): {list(cached_doc_ids)[:3] if cached_doc_ids else 'None'}...")
-                print(f"      IDs match: {cached_doc_ids == selected_doc_ids}")
+                debug_print(f"   🔍 Session check:")
+                debug_print(f"      Session ID: {session_id}")
+                debug_print(f"      Selected doc IDs ({len(selected_doc_ids)}): {list(selected_doc_ids)[:3]}...")
+                debug_print(f"      Cached doc IDs ({len(cached_doc_ids)}): {list(cached_doc_ids)[:3] if cached_doc_ids else 'None'}...")
+                debug_print(f"      IDs match: {cached_doc_ids == selected_doc_ids}")
 
                 # Verify all materials have paths
                 materials_with_paths = [m for m in materials_to_use if m.get("path")]
                 if len(materials_with_paths) < len(materials_to_use):
-                    print(f"   ⚠️  WARNING: {len(materials_to_use) - len(materials_with_paths)} materials missing paths!")
+                    debug_print(f"   ⚠️  WARNING: {len(materials_to_use) - len(materials_with_paths)} materials missing paths!")
                     missing_path_materials = [m for m in materials_to_use if not m.get("path")]
                     for mat in missing_path_materials[:3]:
-                        print(f"      - {mat.get('name', 'unknown')}: id={mat.get('id', 'unknown')}")
+                        debug_print(f"      - {mat.get('name', 'unknown')}: id={mat.get('id', 'unknown')}")
 
-                print(f"   📂 Materials to upload: {len(materials_with_paths)} with valid paths")
+                debug_print(f"   📂 Materials to upload: {len(materials_with_paths)} with valid paths")
 
                 if session_id and cached_doc_ids == selected_doc_ids:
                     # Same files already uploaded in this session - reuse
-                    print(f"   ✅ Reusing {len(materials_to_use)} files from session cache")
+                    debug_print(f"   ✅ Reusing {len(materials_to_use)} files from session cache")
                     uploaded_files = session_cache.get("file_info", [])
-                    print(f"   ✅ Retrieved {len(uploaded_files)} file URIs from cache")
+                    debug_print(f"   ✅ Retrieved {len(uploaded_files)} file URIs from cache")
                 else:
                     # Need to upload (new session or different file selection)
                     need_upload = True
-                    print(f"   📤 Uploading {len(materials_to_use)} files to Gemini...")
+                    debug_print(f"   📤 Uploading {len(materials_to_use)} files to Gemini...")
 
                     # Build list of (path, display_name) tuples for upload
                     # This ensures Gemini receives friendly names instead of hash IDs
@@ -407,11 +416,11 @@ class RootAgent:
                         (mat["path"], mat.get("name", mat.get("filename", "document")))
                         for mat in materials_to_use if mat.get("path")
                     ]
-                    print(f"   Files with paths: {len(file_info_list)}/{len(materials_to_use)}")
-                    print(f"   Sample files: {[(f[1], f[0][:30]) for f in file_info_list[:2]]}...")
+                    debug_print(f"   Files with paths: {len(file_info_list)}/{len(materials_to_use)}")
+                    debug_print(f"   Sample files: {[(f[1], f[0][:30]) for f in file_info_list[:2]]}...")
 
                     if not file_info_list:
-                        print(f"   ERROR: No valid file paths found!")
+                        debug_print(f"   ERROR: No valid file paths found!")
                         yield "Error: No valid file paths found in materials. Please re-scan course materials.\n\n"
                         return
 
@@ -419,7 +428,7 @@ class RootAgent:
 
                     if not upload_result.get('success'):
                         error_msg = upload_result.get('error', 'Unknown error')
-                        print(f"   ❌ Upload failed: {error_msg}")
+                        debug_print(f"   ❌ Upload failed: {error_msg}")
                         yield f"Error uploading files: {error_msg}"
                         return
 
@@ -427,12 +436,12 @@ class RootAgent:
                     failed_files = upload_result.get('failed', [])
                     total_mb = upload_result['total_bytes'] / (1024 * 1024)
 
-                    print(f"   ✅ Uploaded {len(uploaded_files)} files (~{total_mb:.1f}MB)")
+                    debug_print(f"   ✅ Uploaded {len(uploaded_files)} files (~{total_mb:.1f}MB)")
                     if failed_files:
-                        print(f"   ⚠️  Failed to upload {len(failed_files)} files:")
+                        debug_print(f"   ⚠️  Failed to upload {len(failed_files)} files:")
                         for failed in failed_files:
-                            print(f"      - {failed.get('path', 'unknown')}: {failed.get('error', 'unknown error')}")
-                    print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2] if f.get('uri')]}")
+                            debug_print(f"      - {failed.get('path', 'unknown')}: {failed.get('error', 'unknown error')}")
+                    debug_print(f"   ✅ File URIs: {[f['uri'][:50] + '...' for f in uploaded_files[:2] if f.get('uri')]}")
 
                     # Inform user if no files could be uploaded
                     if len(uploaded_files) == 0:
@@ -456,7 +465,7 @@ class RootAgent:
                             "doc_ids": selected_doc_ids,
                             "file_info": uploaded_files
                         }
-                        print(f"   💾 Cached {len(uploaded_files)} files for session")
+                        debug_print(f"   💾 Cached {len(uploaded_files)} files for session")
 
                     # DISABLED: Status message for this release
                     # status_msg = f"__STATUS__:Loaded {len(uploaded_files)} of {len(materials_to_use)} files (~{total_mb:.1f}MB)"
@@ -576,9 +585,9 @@ INCORRECT examples (DO NOT USE):
             parts = []
 
             # Always attach files when documents are selected (Gemini requires file references on every call)
-            print(f"   📎 Attaching files to API call:")
-            print(f"      materials_to_use: {len(materials_to_use)} files")
-            print(f"      uploaded_files: {len(uploaded_files)} files successfully uploaded")
+            debug_print(f"   📎 Attaching files to API call:")
+            debug_print(f"      materials_to_use: {len(materials_to_use)} files")
+            debug_print(f"      uploaded_files: {len(uploaded_files)} files successfully uploaded")
 
             # Separate text files from regular files
             text_files = []
@@ -597,8 +606,8 @@ INCORRECT examples (DO NOT USE):
                         if file_info.get('uri'):  # Safety check: ensure URI exists
                             parts.append(types.Part(file_data=types.FileData(file_uri=file_info['uri'])))
                         else:
-                            print(f"      ⚠️  Skipping file without URI: {file_info.get('display_name', 'unknown')}")
-                    print(f"      ✅ Attached {len(file_uri_files)} file URIs (PDFs, images, etc.)")
+                            debug_print(f"      ⚠️  Skipping file without URI: {file_info.get('display_name', 'unknown')}")
+                    debug_print(f"      ✅ Attached {len(file_uri_files)} file URIs (PDFs, images, etc.)")
 
                 # Attach text content inline (assignments, pages)
                 if text_files:
@@ -611,32 +620,32 @@ INCORRECT examples (DO NOT USE):
                     # Combine all text files into one text part
                     combined_text = "\n\n---\n\n".join(text_content_parts)
                     parts.append(types.Part(text=f"**Course Materials (Text Files):**\n\n{combined_text}\n\n---\n\n"))
-                    print(f"      ✅ Attached {len(text_files)} text files inline (assignments, pages)")
+                    debug_print(f"      ✅ Attached {len(text_files)} text files inline (assignments, pages)")
 
-                print(f"      Sample materials:")
+                debug_print(f"      Sample materials:")
                 for f in uploaded_files[:3]:
                     display_name = f.get('display_name', 'unknown')
                     if f.get('is_text'):
                         text_len = len(f.get('text_content', ''))
-                        print(f"         - {display_name}: [TEXT, {text_len} chars]")
+                        debug_print(f"         - {display_name}: [TEXT, {text_len} chars]")
                     else:
                         uri = (f['uri'][:60] + '...') if f.get('uri') else 'None'
-                        print(f"         - {display_name}: {uri}")
+                        debug_print(f"         - {display_name}: {uri}")
                 if len(uploaded_files) > 3:
-                    print(f"         ... and {len(uploaded_files) - 3} more")
+                    debug_print(f"         ... and {len(uploaded_files) - 3} more")
             else:
-                print(f"      ⚠️  WARNING: No uploaded_files to attach!")
-                print(f"      This means NO FILES will be sent to the LLM!")
+                debug_print(f"      ⚠️  WARNING: No uploaded_files to attach!")
+                debug_print(f"      This means NO FILES will be sent to the LLM!")
 
             # Add user question
             parts.append(types.Part(text=user_message))
             contents.append(types.Content(role="user", parts=parts))
 
-            print(f"   📨 Message parts: {len(parts)} parts total (files + text)")
-            print(f"   🤖 Calling Gemini API now...")
-            print(f"      Model: {self.model_id}")
-            print(f"      Contents length: {len(contents)}")
-            print(f"      History messages: {len(conversation_history)}")
+            debug_print(f"   📨 Message parts: {len(parts)} parts total (files + text)")
+            debug_print(f"   🤖 Calling Gemini API now...")
+            debug_print(f"      Model: {self.model_id}")
+            debug_print(f"      Contents length: {len(contents)}")
+            debug_print(f"      History messages: {len(conversation_history)}")
 
             # Step 6: Stream response from Gemini
             # Conditionally enable Google Search based on user preference
@@ -649,7 +658,7 @@ INCORRECT examples (DO NOT USE):
             # Only add Google Search tool if enabled
             if enable_web_search:
                 config_params["tools"] = [types.Tool(google_search=types.GoogleSearch())]
-                print(f"   🌐 Google Search enabled for this query")
+                debug_print(f"   🌐 Google Search enabled for this query")
 
             config = types.GenerateContentConfig(**config_params)
 
@@ -666,7 +675,7 @@ INCORRECT examples (DO NOT USE):
                 # Check for rate limit (429), quota, or 503 (model overloaded)
                 if ('429' in error_str or 'quota' in error_str or 'rate' in error_str or
                     '503' in error_str or 'overload' in error_str or 'resource_exhausted' in error_str):
-                    print(f"⚠️ Rate limited/overloaded on {model_to_use}, falling back to {self.fallback_model}")
+                    debug_print(f"⚠️ Rate limited/overloaded on {model_to_use}, falling back to {self.fallback_model}")
                     model_to_use = self.fallback_model
                     # Small delay before retry
                     await asyncio.sleep(2)
@@ -682,7 +691,7 @@ INCORRECT examples (DO NOT USE):
                         # If fallback also rate limited, try second fallback
                         if ('429' in error_str2 or 'quota' in error_str2 or 'rate' in error_str2 or
                             '503' in error_str2 or 'overload' in error_str2 or 'resource_exhausted' in error_str2):
-                            print(f"⚠️ Rate limited/overloaded on {model_to_use}, falling back to {self.fallback_model_2}")
+                            debug_print(f"⚠️ Rate limited/overloaded on {model_to_use}, falling back to {self.fallback_model_2}")
                             model_to_use = self.fallback_model_2
                             await asyncio.sleep(2)
                             # Final retry with second fallback
@@ -707,9 +716,9 @@ INCORRECT examples (DO NOT USE):
                 if stop_check_callback:
                     should_stop = stop_check_callback()
                     if chunk_num % 5 == 0:  # Log every 5 chunks to avoid spam
-                        print(f"   📊 Chunk {chunk_num}: stop_check = {should_stop}")
+                        debug_print(f"   📊 Chunk {chunk_num}: stop_check = {should_stop}")
                     if should_stop:
-                        print(f"   🛑 Stop requested at chunk {chunk_num}, breaking Gemini stream early")
+                        debug_print(f"   🛑 Stop requested at chunk {chunk_num}, breaking Gemini stream early")
                         break
 
                 # Stream text response
@@ -727,7 +736,7 @@ INCORRECT examples (DO NOT USE):
                         if not search_results_shown and hasattr(metadata, 'search_entry_point'):
                             search_entry_point = metadata.search_entry_point
                             if hasattr(search_entry_point, 'rendered_content'):
-                                print(f"   🔍 Web search performed")
+                                debug_print(f"   🔍 Web search performed")
                                 search_results_shown = True
 
                         # Extract and yield grounding chunks (web sources)
@@ -741,13 +750,13 @@ INCORRECT examples (DO NOT USE):
 
                             if sources and not search_results_shown:
                                 yield "\n\n**Web Sources:**\n" + "\n".join(sources[:5]) + "\n"
-                                print(f"   🌐 Included {len(sources)} web sources")
+                                debug_print(f"   🌐 Included {len(sources)} web sources")
 
-            print(f"   ✅ Complete ({total_generated} chars generated)")
+            debug_print(f"   ✅ Complete ({total_generated} chars generated)")
 
         except Exception as e:
             error_msg = f"Error processing query: {str(e)}"
-            print(f"❌ {error_msg}")
+            debug_print(f"❌ {error_msg}")
             import traceback
             traceback.print_exc()
             yield f"\n\n*{error_msg}*"

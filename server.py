@@ -16,8 +16,29 @@ import os
 import json
 import logging
 
-# Create logger
+# Production mode - suppress verbose logging
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+
+# Configure logging - only errors in production
+if PRODUCTION_MODE:
+    logging.basicConfig(level=logging.ERROR, format='%(levelname)s: %(message)s')
+else:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 logger = logging.getLogger(__name__)
+
+# Suppress noisy third-party loggers
+logging.getLogger('google').setLevel(logging.ERROR)
+logging.getLogger('httpx').setLevel(logging.ERROR)
+logging.getLogger('httpcore').setLevel(logging.ERROR)
+logging.getLogger('urllib3').setLevel(logging.ERROR)
+
+# Debug print function - only outputs in non-production mode
+def debug_debug_print(*args, **kwargs):
+    """Print only in development mode to avoid data leaks in production"""
+    if not PRODUCTION_MODE:
+        debug_print(*args, **kwargs)
+
 from pathlib import Path
 from dotenv import load_dotenv
 import asyncio
@@ -133,13 +154,13 @@ async def _summary_retry_worker():
             if not failed_summary_queue:
                 continue
 
-            print(f"🔄 Summary retry worker: checking {sum(len(v) for v in failed_summary_queue.values())} failed summaries...")
+            debug_print(f"🔄 Summary retry worker: checking {sum(len(v) for v in failed_summary_queue.values())} failed summaries...")
 
             for course_id, failed_items in list(failed_summary_queue.items()):
                 if not failed_items:
                     continue
 
-                print(f"   Retrying {len(failed_items)} summaries for course {course_id}")
+                debug_print(f"   Retrying {len(failed_items)} summaries for course {course_id}")
 
                 # Retry each failed item
                 retry_results = []
@@ -148,7 +169,7 @@ async def _summary_retry_worker():
 
                     # Max 3 background retries per file
                     if item["attempts"] > 3:
-                        print(f"   ❌ Max retries reached for {item['filename']}, removing from queue")
+                        debug_print(f"   ❌ Max retries reached for {item['filename']}, removing from queue")
                         failed_items.remove(item)
                         continue
 
@@ -170,18 +191,18 @@ async def _summary_retry_worker():
                         )
 
                         if result.get("status") in ["success", "cached"]:
-                            print(f"   ✅ Retry successful for {item['filename']}")
+                            debug_print(f"   ✅ Retry successful for {item['filename']}")
                             failed_items.remove(item)
                         elif result.get("status") == "removed":
                             # File was removed due to validation failure - don't retry
-                            print(f"   🗑️  Removed invalid file from queue: {item['filename']}")
+                            debug_print(f"   🗑️  Removed invalid file from queue: {item['filename']}")
                             failed_items.remove(item)
                         else:
-                            print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
+                            debug_print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
                             item["last_error"] = result.get('error', 'Unknown')[:200]
 
                     except Exception as e:
-                        print(f"   ❌ Retry exception for {item['filename']}: {e}")
+                        debug_print(f"   ❌ Retry exception for {item['filename']}: {e}")
                         item["last_error"] = str(e)[:200]
 
                 # Clean up empty course entries
@@ -189,7 +210,7 @@ async def _summary_retry_worker():
                     del failed_summary_queue[course_id]
 
         except Exception as e:
-            print(f"❌ Error in retry worker: {e}")
+            debug_print(f"❌ Error in retry worker: {e}")
             import traceback
             traceback.print_exc()
 
@@ -199,7 +220,7 @@ async def startup_event():
     """Initialize services on startup"""
     global root_agent, document_manager, chat_storage, storage_manager, file_summarizer
 
-    print("🚀 Starting AI Study Assistant Backend...")
+    debug_print("🚀 Starting AI Study Assistant Backend...")
 
     # Decode base64 GCP credentials if provided (for Railway deployment)
     if os.getenv("GCP_SERVICE_ACCOUNT_BASE64"):
@@ -211,9 +232,9 @@ async def startup_event():
             with open(temp_creds_path, "wb") as f:
                 f.write(creds_json)
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_creds_path
-            print("✅ Decoded GCP credentials from base64")
+            debug_print("✅ Decoded GCP credentials from base64")
         except Exception as e:
-            print(f"⚠️  Failed to decode GCP credentials: {e}")
+            debug_print(f"⚠️  Failed to decode GCP credentials: {e}")
 
     # Initialize Storage Manager (GCS)
     try:
@@ -222,9 +243,9 @@ async def startup_event():
             project_id=os.getenv("GCS_PROJECT_ID", ""),
             credentials_path=os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         )
-        print(f"✅ Storage Manager (GCS) initialized")
+        debug_print(f"✅ Storage Manager (GCS) initialized")
     except Exception as e:
-        print(f"⚠️  Warning: GCS not configured ({e}), falling back to local storage")
+        debug_print(f"⚠️  Warning: GCS not configured ({e}), falling back to local storage")
         storage_manager = None
 
     # Initialize Document Manager
@@ -232,16 +253,16 @@ async def startup_event():
         document_manager = DocumentManager(storage_manager=storage_manager)
     else:
         document_manager = DocumentManager(upload_dir="./uploads")
-    print(f"✅ Document Manager initialized")
+    debug_print(f"✅ Document Manager initialized")
 
     # Initialize Chat Storage (PostgreSQL or SQLite fallback)
     database_url = os.getenv("DATABASE_URL")
     if database_url and database_url.startswith("postgresql"):
         chat_storage = ChatStorage(database_url=database_url)
-        print(f"✅ Chat Storage (PostgreSQL) initialized")
+        debug_print(f"✅ Chat Storage (PostgreSQL) initialized")
     else:
         chat_storage = ChatStorage(db_path="./data/chats.db")
-        print(f"✅ Chat Storage (SQLite) initialized")
+        debug_print(f"✅ Chat Storage (SQLite) initialized")
 
     # Initialize Root Agent with Gemini 2.5 Flash
     root_agent = RootAgent(
@@ -250,20 +271,20 @@ async def startup_event():
         storage_manager=storage_manager,
         chat_storage=chat_storage
     )
-    print(f"✅ Root Agent initialized")
+    debug_print(f"✅ Root Agent initialized")
 
     # Initialize File Summarizer
     file_summarizer = FileSummarizer(google_api_key=os.getenv("GOOGLE_API_KEY"))
-    print(f"✅ File Summarizer initialized")
+    debug_print(f"✅ File Summarizer initialized")
 
     # PHASE 3: Cleanup expired Gemini URIs on startup
     if chat_storage:
         try:
             deleted = chat_storage.cleanup_expired_gemini_uris()
             if deleted > 0:
-                print(f"🧹 Cleaned up {deleted} expired Gemini URI(s)")
+                debug_print(f"🧹 Cleaned up {deleted} expired Gemini URI(s)")
         except Exception as e:
-            print(f"⚠️  Failed to cleanup expired URIs: {e}")
+            debug_print(f"⚠️  Failed to cleanup expired URIs: {e}")
 
     # PHASE 4: Lazy Loading Cache System (No Startup Pre-Warming)
     # Files are cached on-demand during queries for scalability
@@ -271,36 +292,36 @@ async def startup_event():
     if chat_storage:
         try:
             cache_stats = chat_storage.get_cache_stats()
-            print(f"📊 Gemini Cache Stats:")
-            print(f"   Files cached: {cache_stats.get('total_files', 0)}")
-            print(f"   Courses covered: {cache_stats.get('courses_count', 0)}")
-            print(f"   Expiring soon: {cache_stats.get('expiring_soon_count', 0)}")
-            print(f"   Cache health: {'✅ Excellent' if cache_stats.get('expiring_soon_count', 0) == 0 else '⚠️  Good'}")
+            debug_print(f"📊 Gemini Cache Stats:")
+            debug_print(f"   Files cached: {cache_stats.get('total_files', 0)}")
+            debug_print(f"   Courses covered: {cache_stats.get('courses_count', 0)}")
+            debug_print(f"   Expiring soon: {cache_stats.get('expiring_soon_count', 0)}")
+            debug_print(f"   Cache health: {'✅ Excellent' if cache_stats.get('expiring_soon_count', 0) == 0 else '⚠️  Good'}")
         except Exception as e:
-            print(f"⚠️  Failed to get cache stats: {e}")
+            debug_print(f"⚠️  Failed to get cache stats: {e}")
 
         # Start proactive cache refresh loop (refreshes expiring files every 6 hours)
         try:
             asyncio.create_task(_proactive_cache_refresh_loop())
-            print(f"🔄 Proactive cache refresh loop started")
+            debug_print(f"🔄 Proactive cache refresh loop started")
         except Exception as e:
-            print(f"⚠️  Failed to start cache refresh loop: {e}")
+            debug_print(f"⚠️  Failed to start cache refresh loop: {e}")
 
     # Start background retry worker for failed summaries
     global retry_worker_task
     try:
         retry_worker_task = asyncio.create_task(_summary_retry_worker())
-        print(f"🔄 Summary retry worker started")
+        debug_print(f"🔄 Summary retry worker started")
     except Exception as e:
-        print(f"⚠️  Failed to start retry worker: {e}")
+        debug_print(f"⚠️  Failed to start retry worker: {e}")
 
-    print("🎉 Backend ready!")
+    debug_print("🎉 Backend ready!")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
-    print("👋 Shutting down backend...")
+    debug_print("👋 Shutting down backend...")
 
 
 @app.get("/")
@@ -352,9 +373,9 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
             }
             mime_type = ext_to_mime.get(ext.lower(), 'application/octet-stream')  # Use generic binary for truly unknown types
             if mime_type == 'application/octet-stream':
-                print(f"⚠️  Unknown file type for {file.filename} ({ext.upper()}), treating as binary")
+                debug_print(f"⚠️  Unknown file type for {file.filename} ({ext.upper()}), treating as binary")
 
-        print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
+        debug_print(f"📥 Processing: {file.filename} ({ext.upper()}, {mime_type})")
 
         # Read file content
         content = await file.read()
@@ -365,13 +386,13 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
         # Use pre-computed hash if available, otherwise compute it
         if precomputed_hash:
             content_hash = precomputed_hash
-            print(f"🔑 Using pre-computed hash: {content_hash[:16]}... (optimization)")
+            debug_print(f"🔑 Using pre-computed hash: {content_hash[:16]}... (optimization)")
         else:
             # CRITICAL: Compute SHA-256 hash of ORIGINAL content (before conversion)
             # This ensures same file = same hash even after PPTX→PDF conversion
             import hashlib
             content_hash = hashlib.sha256(content).hexdigest()
-            print(f"🔑 Content hash: {content_hash[:16]}...")
+            debug_print(f"🔑 Content hash: {content_hash[:16]}...")
 
         # PHASE 1: Convert files to AI-readable formats before uploading to GCS
         # This ensures all files stored in GCS are readable by Gemini
@@ -384,7 +405,7 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
 
             if is_web_format:
                 # Convert web/data formats to plain text
-                print(f"🔄 Converting {file.filename} ({ext.upper()}) to TXT before upload...")
+                debug_print(f"🔄 Converting {file.filename} ({ext.upper()}) to TXT before upload...")
                 try:
                     loop = asyncio.get_event_loop()
                     text_bytes = await loop.run_in_executor(
@@ -399,10 +420,10 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                         actual_filename = file.filename.rsplit('.', 1)[0] + '.txt'
                         mime_type = 'text/plain'
                         conversion_info = f"Converted {original_filename} → {actual_filename} ({len(text_bytes):,} bytes)"
-                        print(f"✅ {conversion_info}")
+                        debug_print(f"✅ {conversion_info}")
                     else:
                         # Conversion failed - mark as unreadable
-                        print(f"❌ Failed to convert {file.filename} - file is unreadable by AI")
+                        debug_print(f"❌ Failed to convert {file.filename} - file is unreadable by AI")
                         return {
                             "filename": file.filename,
                             "status": "failed",
@@ -410,7 +431,7 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                             "unreadable": True
                         }
                 except Exception as conv_error:
-                    print(f"❌ Conversion error for {file.filename}: {conv_error}")
+                    debug_print(f"❌ Conversion error for {file.filename}: {conv_error}")
                     import traceback
                     traceback.print_exc()
                     return {
@@ -421,7 +442,7 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                     }
             else:
                 # Convert Office/OpenDocument formats to PDF (with concurrency limit)
-                print(f"🔄 Converting {file.filename} ({ext.upper()}) to PDF before upload...")
+                debug_print(f"🔄 Converting {file.filename} ({ext.upper()}) to PDF before upload...")
                 try:
                     loop = asyncio.get_event_loop()
                     async with conversion_semaphore:  # Limit concurrent conversions
@@ -437,10 +458,10 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                         actual_filename = file.filename.rsplit('.', 1)[0] + '.pdf'
                         mime_type = 'application/pdf'
                         conversion_info = f"Converted {original_filename} → {actual_filename} ({len(pdf_bytes):,} bytes)"
-                        print(f"✅ {conversion_info}")
+                        debug_print(f"✅ {conversion_info}")
                     else:
                         # Conversion failed - mark as unreadable
-                        print(f"❌ Failed to convert {file.filename} - file is unreadable by AI")
+                        debug_print(f"❌ Failed to convert {file.filename} - file is unreadable by AI")
                         return {
                             "filename": file.filename,
                             "status": "failed",
@@ -448,7 +469,7 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                             "unreadable": True
                         }
                 except Exception as conv_error:
-                    print(f"❌ Conversion error for {file.filename}: {conv_error}")
+                    debug_print(f"❌ Conversion error for {file.filename}: {conv_error}")
                     import traceback
                     traceback.print_exc()
                     return {
@@ -526,7 +547,7 @@ async def _process_single_upload(course_id: str, file: UploadFile, precomputed_h
                 result["conversion"] = conversion_info
             return result
     except Exception as e:
-        print(f"❌ Upload error for {file.filename}: {str(e)}")
+        debug_print(f"❌ Upload error for {file.filename}: {str(e)}")
         import traceback
         traceback.print_exc()
         return {
@@ -587,7 +608,7 @@ async def _remove_invalid_file(
     filename = file_info.get('filename')
     gcs_path = file_info.get('gcs_path')
 
-    print(f"🗑️  Removing invalid file: {filename} (Reason: {error_reason})")
+    debug_print(f"🗑️  Removing invalid file: {filename} (Reason: {error_reason})")
 
     # 1. Remove from document catalog
     document_manager.remove_material(course_id, doc_id)
@@ -599,9 +620,9 @@ async def _remove_invalid_file(
     if gcs_path and storage_manager:
         try:
             storage_manager.delete_file(gcs_path)
-            print(f"   ✅ Deleted from GCS: {gcs_path}")
+            debug_print(f"   ✅ Deleted from GCS: {gcs_path}")
         except Exception as e:
-            print(f"   ⚠️  Failed to delete from GCS: {e}")
+            debug_print(f"   ⚠️  Failed to delete from GCS: {e}")
 
     # 4. Track for frontend notification
     if course_id not in removed_files_tracker:
@@ -614,7 +635,7 @@ async def _remove_invalid_file(
         'timestamp': time.time()
     })
 
-    print(f"   ✅ File removed from all systems: {filename}")
+    debug_print(f"   ✅ File removed from all systems: {filename}")
 
 
 async def _generate_single_summary(
@@ -648,12 +669,12 @@ async def _generate_single_summary(
                 content_hash = parts[1]
 
         # DEBUG: Log canvas_user_id to track propagation
-        print(f"🔍 DEBUG _generate_single_summary for {filename}: canvas_user_id={canvas_user_id}")
+        debug_print(f"🔍 DEBUG _generate_single_summary for {filename}: canvas_user_id={canvas_user_id}")
 
         # CRITICAL: doc_id and hash are required for hash-based system
         if not doc_id or not content_hash:
             error_msg = f"Missing doc_id or hash for {filename} - upload may have failed"
-            print(f"❌ {error_msg}")
+            debug_print(f"❌ {error_msg}")
             return {"status": "error", "filename": filename, "error": error_msg}
 
         # Check if summary already exists (cached in database)
@@ -671,9 +692,9 @@ async def _generate_single_summary(
                     content_hash=content_hash,
                     canvas_user_id=canvas_user_id
                 )
-                print(f"✅ Using cached summary for {filename} (updated user tracking)")
+                debug_print(f"✅ Using cached summary for {filename} (updated user tracking)")
             else:
-                print(f"✅ Using cached summary for {filename}")
+                debug_print(f"✅ Using cached summary for {filename}")
             return {"status": "cached", "filename": filename}
 
         # NEVER SKIP: Process all files, even small ones
@@ -731,7 +752,7 @@ async def _generate_single_summary(
                 )
             except Exception as e:
                 error_msg = str(e)
-                print(f"❌ Failed to generate summary for text file {filename}: {error_msg[:100]}")
+                debug_print(f"❌ Failed to generate summary for text file {filename}: {error_msg[:100]}")
                 return {"status": "error", "filename": filename, "error": error_msg}
         else:
             # Regular file with Gemini File API URI
@@ -752,13 +773,13 @@ async def _generate_single_summary(
             except Exception as e:
                 # Don't save errors as summaries - return error status for retry later
                 error_msg = str(e)
-                print(f"❌ Failed to generate summary for {filename}: {error_msg[:100]}")
+                debug_print(f"❌ Failed to generate summary for {filename}: {error_msg[:100]}")
                 return {"status": "error", "filename": filename, "error": error_msg}
 
         # Save to database (cache for future uploads) with hash
         summary_preview = summary[:50] + "..." if len(summary) > 50 else summary
-        print(f"✅ Summary: {filename[:40]}... → \"{summary_preview}\"")
-        print(f"🔍 DEBUG Saving summary with canvas_user_id={canvas_user_id}, gcs_path={file_path}")
+        debug_print(f"✅ Summary: {filename[:40]}... → \"{summary_preview}\"")
+        debug_print(f"🔍 DEBUG Saving summary with canvas_user_id={canvas_user_id}, gcs_path={file_path}")
 
         # Extract Canvas timestamps for temporal disambiguation in smart file selection
         canvas_created_at = file_info.get('canvas_created_at')
@@ -881,7 +902,7 @@ async def _generate_batch_summaries(
 
     except Exception as e:
         # Entire batch failed - return error for all files
-        print(f"❌ Batch summary generation failed: {e}")
+        debug_print(f"❌ Batch summary generation failed: {e}")
         return [
             {"status": "error", "filename": f.get('filename', 'unknown'), "file_id": f.get('file_id'), "error": str(e)}
             for f in files_batch
@@ -901,7 +922,7 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
         # Use default API key
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            print("⚠️  No GOOGLE_API_KEY found, skipping Gemini pre-warm")
+            debug_print("⚠️  No GOOGLE_API_KEY found, skipping Gemini pre-warm")
             return
 
         # Create file upload manager with database caching
@@ -934,25 +955,25 @@ async def _upload_to_gemini_background(course_id: str, successful_uploads: List[
                     )
 
                     if "error" not in upload_result:
-                        print(f"✅ Pre-warmed Gemini cache: {filename}")
+                        debug_print(f"✅ Pre-warmed Gemini cache: {filename}")
                         return {"status": "success", "filename": filename}
                     else:
-                        print(f"⚠️  Gemini pre-warm failed: {filename}: {upload_result['error']}")
+                        debug_print(f"⚠️  Gemini pre-warm failed: {filename}: {upload_result['error']}")
                         return {"status": "error", "filename": filename}
 
                 except Exception as e:
-                    print(f"❌ Gemini pre-warm error for {file_info.get('filename')}: {e}")
+                    debug_print(f"❌ Gemini pre-warm error for {file_info.get('filename')}: {e}")
                     return {"status": "error", "filename": file_info.get("filename")}
 
-        print(f"🔥 Pre-warming Gemini cache for {len(successful_uploads)} files (priority queue, 10 concurrent)...")
+        debug_print(f"🔥 Pre-warming Gemini cache for {len(successful_uploads)} files (priority queue, 10 concurrent)...")
         tasks = [upload_single_file(file_info) for file_info in successful_uploads]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-        print(f"✅ Gemini pre-warm complete: {success_count}/{len(successful_uploads)} files cached (ready for fast queries!)")
+        debug_print(f"✅ Gemini pre-warm complete: {success_count}/{len(successful_uploads)} files cached (ready for fast queries!)")
 
     except Exception as e:
-        print(f"❌ Critical error in Gemini pre-warm: {e}")
+        debug_print(f"❌ Critical error in Gemini pre-warm: {e}")
         import traceback
         traceback.print_exc()
 
@@ -962,13 +983,13 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
     Background task to generate summaries for uploaded files in parallel
     """
     try:
-        print(f"📝 _generate_summaries_background called with canvas_user_id: {canvas_user_id}")
+        debug_print(f"📝 _generate_summaries_background called with canvas_user_id: {canvas_user_id}")
         from utils.file_upload_manager import FileUploadManager
 
         # Use default API key for summary generation
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            print("⚠️  No GOOGLE_API_KEY found, skipping summary generation")
+            debug_print("⚠️  No GOOGLE_API_KEY found, skipping summary generation")
             return
 
         # Create file upload manager for uploading to Gemini
@@ -989,7 +1010,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         catalog = document_manager.get_material_catalog(course_id)
         all_materials = catalog.get("materials", [])
 
-        print(f"🔍 Checking {len(all_materials)} files for missing summaries...")
+        debug_print(f"🔍 Checking {len(all_materials)} files for missing summaries...")
 
         for material in all_materials:
             file_id = material.get('id')
@@ -1020,18 +1041,18 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                             'size_mb': material.get('size_mb', 0),
                             'num_pages': material.get('num_pages', 0)
                         }
-                        print(f"  📝 [CATALOG] Queuing summary for {material['name']} (from catalog, not current batch)")
+                        debug_print(f"  📝 [CATALOG] Queuing summary for {material['name']} (from catalog, not current batch)")
                     else:
-                        print(f"  ⏭️  [SKIP] {material.get('name', 'unknown')} - incomplete metadata, will retry later")
+                        debug_print(f"  ⏭️  [SKIP] {material.get('name', 'unknown')} - incomplete metadata, will retry later")
                         continue
 
                 files_to_summarize.append(upload_info)
 
         if not files_to_summarize:
-            print("✅ All files already have summaries!")
+            debug_print("✅ All files already have summaries!")
             return
 
-        print(f"📝 Found {len(files_to_summarize)} files missing summaries")
+        debug_print(f"📝 Found {len(files_to_summarize)} files missing summaries")
 
         # Replace successful_uploads with files that need summaries
         successful_uploads = files_to_summarize
@@ -1042,7 +1063,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         current_delay = 2.0  # Delay between batches (2s = 30 RPM compliance)
 
         # Step 1: Upload all files to Gemini to get URIs (pre-warming phase)
-        print(f"\n📤 PHASE 1: Uploading {len(successful_uploads)} files to Gemini...")
+        debug_print(f"\n📤 PHASE 1: Uploading {len(successful_uploads)} files to Gemini...")
 
         # Upload files with high concurrency to get URIs quickly
         upload_semaphore = asyncio.Semaphore(10)  # Higher concurrency for uploads
@@ -1111,22 +1132,22 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                 # Exception during upload
                 upload_errors.append((successful_uploads[i], str(result)))
 
-        print(f"✅ UPLOAD PHASE COMPLETE: {len(uploaded_files)} uploaded, {len(removed_files)} removed (validation), {len(upload_errors)} errors\n")
+        debug_print(f"✅ UPLOAD PHASE COMPLETE: {len(uploaded_files)} uploaded, {len(removed_files)} removed (validation), {len(upload_errors)} errors\n")
 
         if removed_files:
-            print(f"🗑️  Removed {len(removed_files)} invalid files:")
+            debug_print(f"🗑️  Removed {len(removed_files)} invalid files:")
             for removed in removed_files[:3]:  # Show first 3
-                print(f"   - {removed['file_info'].get('filename')}: {removed['error'][:100]}")
+                debug_print(f"   - {removed['file_info'].get('filename')}: {removed['error'][:100]}")
 
         if not uploaded_files:
-            print("⚠️  No files to summarize (all failed validation or upload)")
+            debug_print("⚠️  No files to summarize (all failed validation or upload)")
             return
 
         # Step 2: Group files into batches and summarize IN PARALLEL
         BATCH_SIZE = 5  # Reduced from 10 to prevent oversized requests (text files = 8KB each)
         batches = [uploaded_files[i:i + BATCH_SIZE] for i in range(0, len(uploaded_files), BATCH_SIZE)]
 
-        print(f"📝 PHASE 2: Summarizing {len(uploaded_files)} files in {len(batches)} batches ({BATCH_SIZE} files per batch)...\n")
+        debug_print(f"📝 PHASE 2: Summarizing {len(uploaded_files)} files in {len(batches)} batches ({BATCH_SIZE} files per batch)...\n")
 
         # Use parallel multi-model processor (2x faster than sequential)
         from utils.multi_model_processor import MultiModelBatchProcessor
@@ -1148,7 +1169,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
         exception_count = sum(1 for r in results if isinstance(r, Exception))
         removed_count = sum(1 for r in upload_results if isinstance(r, dict) and r.get("status") == "removed")
 
-        print(f"✅ BATCH COMPLETE: {success_count} new, {error_count + exception_count} errors, {removed_count} removed\n")
+        debug_print(f"✅ BATCH COMPLETE: {success_count} new, {error_count + exception_count} errors, {removed_count} removed\n")
 
         # Add failed summaries to retry queue
         if course_id not in failed_summary_queue:
@@ -1156,7 +1177,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
 
         for result in results:
             if isinstance(result, Exception):
-                print(f"❌ Exception: {result}")
+                debug_print(f"❌ Exception: {result}")
                 # We don't have file_info here, skip
                 continue
             elif isinstance(result, dict) and result.get("status") == "error":
@@ -1177,7 +1198,7 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
                     )
 
                     if is_validation_error:
-                        print(f"🗑️  Removing invalid file (validation error): {result['filename']}")
+                        debug_print(f"🗑️  Removing invalid file (validation error): {result['filename']}")
                         await _remove_invalid_file(
                             course_id,
                             file_info,
@@ -1199,10 +1220,10 @@ async def _generate_summaries_background(course_id: str, successful_uploads: Lis
 
         # Log failed queue status
         if failed_summary_queue[course_id]:
-            print(f"📋 Added {len(failed_summary_queue[course_id])} failed summaries to retry queue for course {course_id}")
+            debug_print(f"📋 Added {len(failed_summary_queue[course_id])} failed summaries to retry queue for course {course_id}")
 
     except Exception as e:
-        print(f"❌ Critical error in summary generation: {e}")
+        debug_print(f"❌ Critical error in summary generation: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1220,20 +1241,20 @@ async def _proactive_cache_refresh_loop():
 
         while True:
             try:
-                print(f"\n🔄 Checking for files needing cache refresh...")
+                debug_print(f"\n🔄 Checking for files needing cache refresh...")
 
                 # Get files expiring within 6 hours
                 files_to_refresh = chat_storage.get_files_needing_cache_refresh(hours_before_expiry=6)
 
                 if not files_to_refresh:
-                    print(f"✅ No files need refresh - all caches are fresh")
+                    debug_print(f"✅ No files need refresh - all caches are fresh")
                 else:
-                    print(f"🔄 Refreshing {len(files_to_refresh)} files expiring soon...")
+                    debug_print(f"🔄 Refreshing {len(files_to_refresh)} files expiring soon...")
 
                     # Set up file uploader
                     api_key = os.getenv("GOOGLE_API_KEY")
                     if not api_key:
-                        print("⚠️  No GOOGLE_API_KEY found, skipping refresh")
+                        debug_print("⚠️  No GOOGLE_API_KEY found, skipping refresh")
                         await asyncio.sleep(21600)  # 6 hours
                         continue
 
@@ -1271,17 +1292,17 @@ async def _proactive_cache_refresh_loop():
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
                     success_count = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "success")
-                    print(f"✅ Cache refresh complete: {success_count}/{len(files_to_refresh)} files refreshed")
+                    debug_print(f"✅ Cache refresh complete: {success_count}/{len(files_to_refresh)} files refreshed")
 
             except Exception as e:
-                print(f"⚠️  Error in cache refresh cycle: {e}")
+                debug_print(f"⚠️  Error in cache refresh cycle: {e}")
 
             # Wait 6 hours before next refresh cycle
-            print(f"💤 Next cache refresh check in 6 hours")
+            debug_print(f"💤 Next cache refresh check in 6 hours")
             await asyncio.sleep(21600)  # 6 hours
 
     except Exception as e:
-        print(f"❌ Critical error in cache refresh loop: {e}")
+        debug_print(f"❌ Critical error in cache refresh loop: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1300,9 +1321,9 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
     The user doesn't wait for any of this - they get instant chat access!
     """
     try:
-        print(f"\n🔄 BACKGROUND PROCESSING STARTED: {len(files_in_memory)} files for course {course_id} (user: {canvas_user_id})")
+        debug_print(f"\n🔄 BACKGROUND PROCESSING STARTED: {len(files_in_memory)} files for course {course_id} (user: {canvas_user_id})")
     except asyncio.CancelledError:
-        print(f"🚫 Upload processing cancelled for user {canvas_user_id}")
+        debug_print(f"🚫 Upload processing cancelled for user {canvas_user_id}")
         # Mark uploads as cancelled
         for file_data in files_in_memory:
             chat_storage.update_file_upload_status(file_data['hash'], 'cancelled')
@@ -1345,8 +1366,8 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             BATCH_SIZE = 50  # Default
 
         avg_size_mb = avg_size / (1024 * 1024) if avg_size > 0 else 0
-        print(f"📊 Dynamic batch size: {BATCH_SIZE} (avg file: {avg_size_mb:.2f}MB, target: <200MB per batch)")
-        print(f"📤 Processing {len(upload_files)} files in batches of {BATCH_SIZE}...")
+        debug_print(f"📊 Dynamic batch size: {BATCH_SIZE} (avg file: {avg_size_mb:.2f}MB, target: <200MB per batch)")
+        debug_print(f"📤 Processing {len(upload_files)} files in batches of {BATCH_SIZE}...")
 
         processed_results = []
         for i in range(0, len(upload_files), BATCH_SIZE):
@@ -1354,7 +1375,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             batch_hashes = file_hashes[i:i + BATCH_SIZE]  # Corresponding hashes
             batch_num = (i // BATCH_SIZE) + 1
             total_batches = (len(upload_files) + BATCH_SIZE - 1) // BATCH_SIZE
-            print(f"\n📤 BATCH {batch_num}/{total_batches}: Uploading {len(batch)} files to GCS...")
+            debug_print(f"\n📤 BATCH {batch_num}/{total_batches}: Uploading {len(batch)} files to GCS...")
 
             # Pass pre-computed hashes to avoid re-computation
             upload_tasks = [
@@ -1366,7 +1387,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             # Handle exceptions
             for j, result in enumerate(batch_results):
                 if isinstance(result, Exception):
-                    print(f"❌ Exception for {batch[j].filename}: {result}")
+                    debug_print(f"❌ Exception for {batch[j].filename}: {result}")
                     processed_results.append({
                         "filename": batch[j].filename,
                         "status": "failed",
@@ -1379,7 +1400,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             batch_successful = sum(1 for r in batch_results if isinstance(r, dict) and r.get("status") == "uploaded")
             batch_skipped = sum(1 for r in batch_results if isinstance(r, dict) and r.get("status") == "skipped")
             batch_failed = sum(1 for r in batch_results if isinstance(r, Exception) or (isinstance(r, dict) and r.get("status") == "failed"))
-            print(f"✅ Batch complete: {batch_successful} uploaded, {batch_skipped} skipped, {batch_failed} failed")
+            debug_print(f"✅ Batch complete: {batch_successful} uploaded, {batch_skipped} skipped, {batch_failed} failed")
 
             # DISABLED: Progressive summarization for smart file select (save API calls)
             # Progressive summarization: Start summaries for this batch immediately
@@ -1398,7 +1419,7 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
             #             result['canvas_updated_at'] = matching_file.get('canvas_updated_at')
             #             result['canvas_modified_at'] = matching_file.get('canvas_modified_at')
             #
-            #     print(f"   ➜ Starting summaries for {len(successful_batch)} new files...")
+            #     debug_print(f"   ➜ Starting summaries for {len(successful_batch)} new files...")
             #     task = asyncio.create_task(
             #         _generate_summaries_background(
             #             course_id, successful_batch, canvas_user_id
@@ -1412,21 +1433,21 @@ async def _process_uploads_background(course_id: str, files_in_memory: List[Dict
         failed = [r for r in processed_results if r["status"] == "failed"]
         skipped = [r for r in processed_results if r["status"] == "skipped"]
 
-        print(f"✅ Background upload complete: {len(successful)} succeeded, {len(failed)} failed, {len(skipped)} skipped")
+        debug_print(f"✅ Background upload complete: {len(successful)} succeeded, {len(failed)} failed, {len(skipped)} skipped")
 
         # PHASE 2: Update catalog (include both uploaded and skipped files)
         files_for_catalog = successful + skipped  # Skipped files already exist in GCS, add them too
         if document_manager and files_for_catalog:
-            print(f"📚 Adding {len(files_for_catalog)} files to catalog ({len(successful)} new, {len(skipped)} existing)...")
+            debug_print(f"📚 Adding {len(files_for_catalog)} files to catalog ({len(successful)} new, {len(skipped)} existing)...")
             # HASH-BASED: Pass full result objects to include hash info
             document_manager.add_files_to_catalog_with_metadata(files_for_catalog)
-            print(f"✅ Catalog updated")
+            debug_print(f"✅ Catalog updated")
 
-        print(f"✅ BACKGROUND PROCESSING COMPLETE for course {course_id}")
-        print(f"   Files uploaded successfully. Summaries are being generated progressively.")
+        debug_print(f"✅ BACKGROUND PROCESSING COMPLETE for course {course_id}")
+        debug_print(f"   Files uploaded successfully. Summaries are being generated progressively.")
 
     except Exception as e:
-        print(f"❌ Critical error in background upload processing: {e}")
+        debug_print(f"❌ Critical error in background upload processing: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1461,16 +1482,16 @@ async def upload_pdfs(
     Performance: <100ms response time (instant!)
     """
     try:
-        print(f"\n{'='*80}")
-        print(f"📤 UPLOAD REQUEST (INSTANT MODE):")
-        print(f"   Course ID: {course_id}")
-        print(f"   Canvas User ID: {x_canvas_user_id}")
-        print(f"   Number of files: {len(files)}")
-        print(f"   File names received:")
+        debug_print(f"\n{'='*80}")
+        debug_print(f"📤 UPLOAD REQUEST (INSTANT MODE):")
+        debug_print(f"   Course ID: {course_id}")
+        debug_print(f"   Canvas User ID: {x_canvas_user_id}")
+        debug_print(f"   Number of files: {len(files)}")
+        debug_print(f"   File names received:")
         for f in files[:10]:  # Show first 10
-            print(f"      - \"{f.filename}\"")
-        print(f"   Storage manager available: {storage_manager is not None}")
-        print(f"{'='*80}")
+            debug_print(f"      - \"{f.filename}\"")
+        debug_print(f"   Storage manager available: {storage_manager is not None}")
+        debug_print(f"{'='*80}")
 
         # Parse Canvas timestamps from file_metadata (for temporal disambiguation in smart file selection)
         canvas_timestamps_by_name = {}
@@ -1485,9 +1506,9 @@ async def upload_pdfs(
                             'canvas_updated_at': item.get('canvas_updated_at'),
                             'canvas_modified_at': item.get('canvas_modified_at')
                         }
-                print(f"   📅 Canvas timestamps received for {len(canvas_timestamps_by_name)} files")
+                debug_print(f"   📅 Canvas timestamps received for {len(canvas_timestamps_by_name)} files")
             except json.JSONDecodeError as e:
-                print(f"   ⚠️  Could not parse file_metadata JSON: {e}")
+                debug_print(f"   ⚠️  Could not parse file_metadata JSON: {e}")
 
         # Read all files into memory and compute hashes IMMEDIATELY
         # Hash computation is fast (~10ms per MB) and critical for file identification
@@ -1501,7 +1522,7 @@ async def upload_pdfs(
             file_size_mb = len(content) / (1024**2)
             MAX_FILE_SIZE_MB = 100
             if file_size_mb > MAX_FILE_SIZE_MB:
-                print(f"⚠️  Rejecting oversized file: {file.filename} ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB)")
+                debug_print(f"⚠️  Rejecting oversized file: {file.filename} ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB)")
                 files_metadata.append({
                     'filename': file.filename,
                     'status': 'rejected',
@@ -1536,9 +1557,9 @@ async def upload_pdfs(
                 'status': 'processing'
             })
 
-        print(f"✅ Files accepted and hashed ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
-        print(f"   Sample hashes: {[f['hash'][:16] + '...' for f in files_in_memory[:3]]}")
-        print(f"   Canvas User ID for tracking: {x_canvas_user_id if x_canvas_user_id else 'NULL/MISSING'}")
+        debug_print(f"✅ Files accepted and hashed ({len(files_in_memory)} files, {sum(len(f['content']) for f in files_in_memory) / 1024 / 1024:.1f} MB)")
+        debug_print(f"   Sample hashes: {[f['hash'][:16] + '...' for f in files_in_memory[:3]]}")
+        debug_print(f"   Canvas User ID for tracking: {x_canvas_user_id if x_canvas_user_id else 'NULL/MISSING'}")
 
         # Track files immediately in database for deletion safety
         for file_data in files_in_memory:
@@ -1578,8 +1599,8 @@ async def upload_pdfs(
         }
 
     except Exception as e:
-        print(f"❌ CRITICAL ERROR in upload_pdfs endpoint:")
-        print(f"   Error: {str(e)}")
+        debug_print(f"❌ CRITICAL ERROR in upload_pdfs endpoint:")
+        debug_print(f"   Error: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -1609,7 +1630,7 @@ async def check_files_exist(request: Dict):
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
 
-        print(f"📋 [HASH-BASED] Checking {len(files)} files for course {course_id}")
+        debug_print(f"📋 [HASH-BASED] Checking {len(files)} files for course {course_id}")
 
         if not storage_manager:
             # If no GCS, return all as missing
@@ -1628,7 +1649,7 @@ async def check_files_exist(request: Dict):
 
             if not file_hash:
                 # No hash provided - can't check, assume missing
-                print(f"   ⚠️  No hash for {file_name}, marking as missing")
+                debug_print(f"   ⚠️  No hash for {file_name}, marking as missing")
                 missing.append(file_info)
                 continue
 
@@ -1655,16 +1676,16 @@ async def check_files_exist(request: Dict):
                         "hash": file_hash,
                         "doc_id": doc_id
                     })
-                    print(f"   ✅ Found: {file_name} (hash: {file_hash[:16]}...)")
+                    debug_print(f"   ✅ Found: {file_name} (hash: {file_hash[:16]}...)")
                 else:
                     missing.append(file_info)
-                    print(f"   ❌ Missing: {file_name} (hash: {file_hash[:16]}...)")
+                    debug_print(f"   ❌ Missing: {file_name} (hash: {file_hash[:16]}...)")
             except Exception as e:
-                print(f"   ⚠️  Error checking {file_name}: {e}")
+                debug_print(f"   ⚠️  Error checking {file_name}: {e}")
                 # On error, assume missing to be safe
                 missing.append(file_info)
 
-        print(f"✅ [HASH-BASED] Check complete: {len(exists)} exist, {len(missing)} missing")
+        debug_print(f"✅ [HASH-BASED] Check complete: {len(exists)} exist, {len(missing)} missing")
 
         return {
             "exists": exists,
@@ -1672,8 +1693,8 @@ async def check_files_exist(request: Dict):
         }
 
     except Exception as e:
-        print(f"❌ ERROR in check_files_exist endpoint:")
-        print(f"   Error: {str(e)}")
+        debug_print(f"❌ ERROR in check_files_exist endpoint:")
+        debug_print(f"   Error: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -1715,8 +1736,8 @@ async def process_canvas_files(
         if not course_id or not files:
             raise HTTPException(status_code=400, detail="course_id and files required")
 
-        print(f"🌐 Process {len(files)} files for course {course_id} (skip_check: {skip_existence_check})")
-        print(f"   Canvas User ID: {x_canvas_user_id}")
+        debug_print(f"🌐 Process {len(files)} files for course {course_id} (skip_check: {skip_existence_check})")
+        debug_print(f"   Canvas User ID: {x_canvas_user_id}")
 
         # Check which files already exist in GCS (skip if frontend already checked)
         existing_files = set()
@@ -1737,7 +1758,7 @@ async def process_canvas_files(
             canvas_id = file_info.get("id")  # Canvas file ID for fallback matching
 
             if not file_name or not file_url:
-                print(f"⏭️  Skipping {file_name or 'unnamed'}: missing name or url (canvas_id: {canvas_id})")
+                debug_print(f"⏭️  Skipping {file_name or 'unnamed'}: missing name or url (canvas_id: {canvas_id})")
                 return {"status": "skipped", "reason": "missing name or url", "filename": file_name, "canvas_id": str(canvas_id) if canvas_id else None}
 
             if file_name in existing_files:
@@ -1765,12 +1786,12 @@ async def process_canvas_files(
                     )
 
                     if status != 200:
-                        print(f"❌ {file_name}: HTTP {status}")
+                        debug_print(f"❌ {file_name}: HTTP {status}")
                         failed += 1
                         return {"status": "failed", "error": f"HTTP {status}", "filename": file_name}
                 except Exception as e:
                     # DNS/connection failure after retries
-                    print(f"❌ {file_name}: {str(e)}")
+                    debug_print(f"❌ {file_name}: {str(e)}")
                     failed += 1
                     return {"status": "failed", "error": str(e), "filename": file_name}
 
@@ -1795,7 +1816,7 @@ async def process_canvas_files(
                     }
                     ext = mime_to_ext.get(content_type_header)
                     if ext:
-                        print(f"   Detected file type from Content-Type: {content_type_header} → .{ext}")
+                        debug_print(f"   Detected file type from Content-Type: {content_type_header} → .{ext}")
                         file_name = f"{file_name}.{ext}"
                         mime_type = content_type_header
 
@@ -1809,7 +1830,7 @@ async def process_canvas_files(
                 # HASH-BASED: Compute SHA-256 hash of ORIGINAL content (before conversion)
                 import hashlib
                 content_hash = hashlib.sha256(file_content).hexdigest()
-                print(f"🔑 Content hash: {content_hash[:16]}...")
+                debug_print(f"🔑 Content hash: {content_hash[:16]}...")
 
                 # Check if this file (by hash) already exists in GCS
                 # Try multiple extensions since we don't know what was uploaded
@@ -1827,7 +1848,7 @@ async def process_canvas_files(
                         break
 
                 if hash_blob_exists:
-                    print(f"⏭️  {file_name} already exists in GCS (hash: {content_hash[:16]}...)")
+                    debug_print(f"⏭️  {file_name} already exists in GCS (hash: {content_hash[:16]}...)")
                     doc_id = f"{course_id}_{content_hash}"
                     return {
                         "status": "skipped",
@@ -1867,7 +1888,7 @@ async def process_canvas_files(
                 file_size_mb = len(file_content) / (1024**2)
                 MAX_FILE_SIZE_MB = 100
                 if file_size_mb > MAX_FILE_SIZE_MB:
-                    print(f"⚠️  File too large for AI processing: {original_filename} ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB)")
+                    debug_print(f"⚠️  File too large for AI processing: {original_filename} ({file_size_mb:.1f} MB, max {MAX_FILE_SIZE_MB} MB)")
                     skipped += 1
                     return {
                         "status": "skipped",
@@ -1888,7 +1909,7 @@ async def process_canvas_files(
                         original_filename=original_filename  # Store original name in GCS metadata
                     )
                     processed += 1
-                    print(f"✅ {original_filename}")
+                    debug_print(f"✅ {original_filename}")
 
                     # Track file upload for deletion safety (same as upload_pdfs endpoint)
                     if x_canvas_user_id:
@@ -1922,7 +1943,7 @@ async def process_canvas_files(
                     return {"status": "failed", "error": "No storage manager", "filename": file_name}
 
             except Exception as e:
-                print(f"❌ Error processing {file_name}: {e}")
+                debug_print(f"❌ Error processing {file_name}: {e}")
                 failed += 1
                 return {"status": "failed", "error": str(e), "filename": file_name}
 
@@ -1947,11 +1968,11 @@ async def process_canvas_files(
                     error_msg = str(e)
                     if attempt < max_retries - 1:
                         wait = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                        print(f"   ⚠️  {filename}: DNS/connection error, retry {attempt+2}/{max_retries} in {wait}s...")
+                        debug_print(f"   ⚠️  {filename}: DNS/connection error, retry {attempt+2}/{max_retries} in {wait}s...")
                         await asyncio.sleep(wait)
                     else:
                         # Final attempt failed
-                        print(f"   ❌ {filename}: Failed after {max_retries} retries: {error_msg}")
+                        debug_print(f"   ❌ {filename}: Failed after {max_retries} retries: {error_msg}")
                         raise
             return None, None, None
 
@@ -1990,7 +2011,7 @@ async def process_canvas_files(
                     else:
                         skipped_files.append(result)
 
-        print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed, {skipped_no_url} missing URLs")
+        debug_print(f"✅ Complete: {processed} uploaded, {skipped} skipped, {failed} failed, {skipped_no_url} missing URLs")
 
         # IMPORTANT: Update catalog BEFORE triggering summary generation
         # This ensures summary generation sees the complete catalog with all new files
@@ -2011,17 +2032,17 @@ async def process_canvas_files(
 
         if unique_files and document_manager:
             try:
-                print(f"📚 Adding {len(unique_files)} unique files to catalog ({len(uploaded_files)} new, {len(skipped_files)} existing, {len(files_for_catalog) - len(unique_files)} duplicates filtered)...")
+                debug_print(f"📚 Adding {len(unique_files)} unique files to catalog ({len(uploaded_files)} new, {len(skipped_files)} existing, {len(files_for_catalog) - len(unique_files)} duplicates filtered)...")
                 document_manager.add_files_to_catalog_with_metadata(unique_files)
-                print(f"✅ Catalog updated - {len(unique_files)} files now in catalog")
+                debug_print(f"✅ Catalog updated - {len(unique_files)} files now in catalog")
             except Exception as e:
-                print(f"⚠️ Catalog update failed: {e}")
+                debug_print(f"⚠️ Catalog update failed: {e}")
 
         # DISABLED: Summary generation for smart file select (save API calls)
         # Generate summaries for uploaded files AFTER catalog is updated
         # This prevents race conditions where summary status shows incomplete counts
         # if file_summarizer and chat_storage and processed > 0:
-        #     print(f"📝 Triggering summary generation for {processed} uploaded files...")
+        #     debug_print(f"📝 Triggering summary generation for {processed} uploaded files...")
         #     # uploaded_files already has correct format with doc_id, hash, etc.
         #     task = asyncio.create_task(_generate_summaries_background(course_id, uploaded_files, x_canvas_user_id))
         #     if x_canvas_user_id:
@@ -2037,8 +2058,8 @@ async def process_canvas_files(
         }
 
     except Exception as e:
-        print(f"❌ ERROR in process_canvas_files endpoint:")
-        print(f"   Error: {str(e)}")
+        debug_print(f"❌ ERROR in process_canvas_files endpoint:")
+        debug_print(f"   Error: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -2085,9 +2106,9 @@ async def regenerate_missing_summaries(
         existing_summaries = chat_storage.get_all_summaries_for_course(course_id)
         existing_doc_ids = {s["doc_id"] for s in existing_summaries}
 
-        print(f"📊 Backfill check for course {course_id}:")
-        print(f"   Total files in catalog: {len(all_materials)}")
-        print(f"   Existing summaries: {len(existing_summaries)}")
+        debug_print(f"📊 Backfill check for course {course_id}:")
+        debug_print(f"   Total files in catalog: {len(all_materials)}")
+        debug_print(f"   Existing summaries: {len(existing_summaries)}")
 
         # Find missing summaries
         files_to_summarize = []
@@ -2118,7 +2139,7 @@ async def regenerate_missing_summaries(
             }
 
         # Generate summaries in background
-        print(f"📝 Backfilling {len(files_to_summarize)} missing summaries...")
+        debug_print(f"📝 Backfilling {len(files_to_summarize)} missing summaries...")
         task = asyncio.create_task(_generate_summaries_background(course_id, files_to_summarize, x_canvas_user_id))
         if x_canvas_user_id:
             register_user_task(x_canvas_user_id, task)
@@ -2133,8 +2154,8 @@ async def regenerate_missing_summaries(
         }
 
     except Exception as e:
-        print(f"❌ ERROR in regenerate_summaries endpoint:")
-        print(f"   Error: {str(e)}")
+        debug_print(f"❌ ERROR in regenerate_summaries endpoint:")
+        debug_print(f"   Error: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -2433,10 +2454,10 @@ Title:"""
                 from datetime import datetime
                 generated_title = f"Chat {datetime.now().strftime('%b %d')}"
 
-            print(f"✨ Generated title: {generated_title} ({len(generated_title)} chars)")
+            debug_print(f"✨ Generated title: {generated_title} ({len(generated_title)} chars)")
 
         except Exception as e:
-            print(f"⚠️ Title generation failed: {e}")
+            debug_print(f"⚠️ Title generation failed: {e}")
             # Fallback title
             from datetime import datetime
             generated_title = f"Chat {datetime.now().strftime('%b %d, %Y')}"
@@ -2453,7 +2474,7 @@ Title:"""
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error generating chat title: {e}")
+        debug_print(f"❌ Error generating chat title: {e}")
         return {
             "success": False,
             "error": str(e)
@@ -2494,7 +2515,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
     connection_id = f"{course_id}_{id(websocket)}"
     active_connections[connection_id] = websocket
 
-    print(f"🔌 WebSocket connected: {connection_id}")
+    debug_print(f"🔌 WebSocket connected: {connection_id}")
 
     # Store stop flag in connection dict so it can be accessed globally
     active_connections[connection_id] = {
@@ -2513,31 +2534,31 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                 if message_data.get("type") == "ping":
                     # Respond to ping with pong (keepalive heartbeat)
                     # This prevents Railway from timing out idle WebSocket connections (~55-60s)
-                    print(f"💓 Received ping from {connection_id}")
+                    debug_print(f"💓 Received ping from {connection_id}")
                     try:
                         await websocket.send_json({"type": "pong"})
-                        print(f"💓 Sent pong to {connection_id}")
+                        debug_print(f"💓 Sent pong to {connection_id}")
                     except Exception as e:
-                        print(f"⚠️ Failed to send pong to {connection_id} (connection closed): {e}")
+                        debug_print(f"⚠️ Failed to send pong to {connection_id} (connection closed): {e}")
                         break  # Exit message handler if connection is dead
                     continue  # Don't process ping as a regular message
                 elif message_data.get("type") == "stop":
                     import time
-                    print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
+                    debug_print(f"🛑 Stop signal received for {connection_id} at {time.time()}")
                     active_connections[connection_id]["stop_streaming"] = True
-                    print(f"🛑 Set stop_streaming flag to: {active_connections[connection_id]['stop_streaming']}")
+                    debug_print(f"🛑 Set stop_streaming flag to: {active_connections[connection_id]['stop_streaming']}")
                     try:
                         await websocket.send_json({
                             "type": "stopped",
                             "message": "Generation stopped by user"
                         })
                     except Exception as e:
-                        print(f"⚠️ Failed to send stop confirmation (connection closed): {e}")
+                        debug_print(f"⚠️ Failed to send stop confirmation (connection closed): {e}")
                 else:
                     # Queue the message for processing
                     active_connections[connection_id]["pending_message"] = message_data
         except Exception as e:
-            print(f"Message handler error: {e}")
+            debug_print(f"Message handler error: {e}")
 
     # Start the message handler task
     message_task = asyncio.create_task(handle_incoming_messages())
@@ -2553,7 +2574,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             # Reset stop flag for new queries
             active_connections[connection_id]["stop_streaming"] = False
             import time
-            print(f"🚀 Starting new query at {time.time()}")
+            debug_print(f"🚀 Starting new query at {time.time()}")
 
             user_message = message_data.get("message", "")
             conversation_history = message_data.get("history", [])
@@ -2565,18 +2586,18 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             user_api_key = message_data.get("api_key")  # User's Gemini API key
             use_smart_selection = message_data.get("use_smart_selection", False)  # Smart file selection toggle
 
-            print(f"\n{'='*80}")
-            print(f"📥 WebSocket received message:")
-            print(f"   User message: {user_message[:100]}...")
-            print(f"   History length: {len(conversation_history)}")
-            print(f"   Selected docs count: {len(selected_docs)}")
-            print(f"   Selected docs: {selected_docs[:3] if len(selected_docs) > 3 else selected_docs}...")
-            print(f"   Syllabus ID: {syllabus_id}")
-            print(f"   Session ID: {chat_session_id}")
-            print(f"   Web Search: {enable_web_search}")
-            print(f"   Smart Selection: {use_smart_selection}")
-            print(f"   User API Key: {'Provided' if user_api_key else 'Not provided (using default)'}")
-            print(f"{'='*80}")
+            debug_print(f"\n{'='*80}")
+            debug_print(f"📥 WebSocket received message:")
+            debug_print(f"   User message: {user_message[:100]}...")
+            debug_print(f"   History length: {len(conversation_history)}")
+            debug_print(f"   Selected docs count: {len(selected_docs)}")
+            debug_print(f"   Selected docs: {selected_docs[:3] if len(selected_docs) > 3 else selected_docs}...")
+            debug_print(f"   Syllabus ID: {syllabus_id}")
+            debug_print(f"   Session ID: {chat_session_id}")
+            debug_print(f"   Web Search: {enable_web_search}")
+            debug_print(f"   Smart Selection: {use_smart_selection}")
+            debug_print(f"   User API Key: {'Provided' if user_api_key else 'Not provided (using default)'}")
+            debug_print(f"{'='*80}")
 
             # Process with Root Agent and stream response
             chunk_count = 0
@@ -2600,7 +2621,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             ):
                 # Check if stop signal received (double check in case callback didn't trigger)
                 if should_stop():
-                    print(f"🛑 Stopping stream early at chunk {chunk_count}")
+                    debug_print(f"🛑 Stopping stream early at chunk {chunk_count}")
                     break
 
                 chunk_count += 1
@@ -2613,20 +2634,20 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                         "content": chunk
                     })
                 except Exception as send_error:
-                    print(f"⚠️ Failed to send chunk (connection closed): {send_error}")
+                    debug_print(f"⚠️ Failed to send chunk (connection closed): {send_error}")
                     break  # Stop streaming if connection is dead
 
             # Send completion signal (only if not stopped)
             if not active_connections.get(connection_id, {}).get("stop_streaming", False):
-                print(f"✅ Completed ({chunk_count} chunks)")
+                debug_print(f"✅ Completed ({chunk_count} chunks)")
                 try:
                     await websocket.send_json({
                         "type": "done"
                     })
                 except Exception as send_error:
-                    print(f"⚠️ Failed to send 'done' signal (connection closed): {send_error}")
+                    debug_print(f"⚠️ Failed to send 'done' signal (connection closed): {send_error}")
             else:
-                print(f"🛑 Stream stopped at {chunk_count} chunks (saved tokens!)")
+                debug_print(f"🛑 Stream stopped at {chunk_count} chunks (saved tokens!)")
 
             # Auto-save chat history if session_id provided
             if chat_session_id and user_message and assistant_response:
@@ -2644,14 +2665,14 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
                         messages=updated_history,
                         canvas_user_id=canvas_user_id
                     )
-                    print(f"💾 Chat session saved: {chat_session_id} (user: {canvas_user_id})")
+                    debug_print(f"💾 Chat session saved: {chat_session_id} (user: {canvas_user_id})")
                 except Exception as e:
-                    print(f"⚠️  Failed to save chat session: {e}")
+                    debug_print(f"⚠️  Failed to save chat session: {e}")
 
     except WebSocketDisconnect:
-        print(f"🔌 WebSocket disconnected: {connection_id}")
+        debug_print(f"🔌 WebSocket disconnected: {connection_id}")
     except Exception as e:
-        print(f"❌ WebSocket error: {e}")
+        debug_print(f"❌ WebSocket error: {e}")
         try:
             await websocket.send_json({
                 "type": "error",
@@ -2661,7 +2682,7 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
             pass  # Connection already closed
     finally:
         # Always cleanup resources
-        print(f"🧹 Cleaning up connection: {connection_id}")
+        debug_print(f"🧹 Cleaning up connection: {connection_id}")
 
         # Cancel message handler task
         try:
@@ -2670,19 +2691,19 @@ async def websocket_chat(websocket: WebSocket, course_id: str):
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"⚠️ Error cancelling message task: {e}")
+            debug_print(f"⚠️ Error cancelling message task: {e}")
 
         # Clear session cache
         try:
             root_agent.clear_session(connection_id)
         except Exception as e:
-            print(f"⚠️ Error clearing session: {e}")
+            debug_print(f"⚠️ Error clearing session: {e}")
 
         # Remove from active connections
         if connection_id in active_connections:
             del active_connections[connection_id]
 
-        print(f"✅ Cleanup complete for {connection_id}")
+        debug_print(f"✅ Cleanup complete for {connection_id}")
 
 
 @app.get("/collections/{course_id}/status")
@@ -2795,10 +2816,10 @@ async def refresh_collection_catalog(course_id: str):
         if not document_manager or not storage_manager:
             raise HTTPException(status_code=503, detail="Services not available")
 
-        print(f"\n{'='*80}")
-        print(f"🔄 REFRESH CATALOG REQUEST:")
-        print(f"   Course ID: {course_id}")
-        print(f"{'='*80}")
+        debug_print(f"\n{'='*80}")
+        debug_print(f"🔄 REFRESH CATALOG REQUEST:")
+        debug_print(f"   Course ID: {course_id}")
+        debug_print(f"{'='*80}")
 
         # Get current catalog count (before refresh)
         old_catalog = document_manager.get_material_catalog(course_id)
@@ -2807,22 +2828,22 @@ async def refresh_collection_catalog(course_id: str):
         # Clear the in-memory catalog for this course
         if course_id in document_manager.catalog:
             del document_manager.catalog[course_id]
-            print(f"🗑️  Cleared in-memory catalog (had {old_count} entries)")
+            debug_print(f"🗑️  Cleared in-memory catalog (had {old_count} entries)")
 
         # Rebuild catalog from GCS
         gcs_files = storage_manager.list_files(course_id=course_id)
-        print(f"📂 Found {len(gcs_files)} files in GCS")
+        debug_print(f"📂 Found {len(gcs_files)} files in GCS")
 
         if len(gcs_files) > 0:
             # Re-add files to catalog
             document_manager.add_materials_to_catalog(course_id, gcs_files)
-            print(f"✅ Rebuilt catalog from GCS")
+            debug_print(f"✅ Rebuilt catalog from GCS")
 
         # Get new catalog count
         new_catalog = document_manager.get_material_catalog(course_id)
         new_count = new_catalog.get("total_documents", 0)
 
-        print(f"✅ Catalog refreshed: {old_count} → {new_count} documents")
+        debug_print(f"✅ Catalog refreshed: {old_count} → {new_count} documents")
 
         return {
             "success": True,
@@ -2836,7 +2857,7 @@ async def refresh_collection_catalog(course_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error refreshing catalog: {e}")
+        debug_print(f"❌ Error refreshing catalog: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -3022,11 +3043,11 @@ async def get_course_summary_status(course_id: str):
         summaries_pending = max(0, total_files - summaries_ready)
         completion_percent = (summaries_ready / total_files * 100) if total_files > 0 else 0
 
-        print(f"📊 Summary status for {course_id}: {summaries_ready}/{total_files} ready ({completion_percent:.1f}%)")
+        debug_print(f"📊 Summary status for {course_id}: {summaries_ready}/{total_files} ready ({completion_percent:.1f}%)")
         if duplicates_found > 0:
-            print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {duplicates_found} duplicates, {total_files} unique")
+            debug_print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {duplicates_found} duplicates, {total_files} unique")
         else:
-            print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {total_files} unique")
+            debug_print(f"   📁 Catalog: {len(all_materials)} total, {len(deleted_doc_ids)} deleted, {total_files} unique")
 
         # Estimate time until all summaries are ready (3 seconds per summary average)
         # This accounts for: 3 concurrent + 3.0s delay = ~3s per file average
@@ -3100,7 +3121,7 @@ async def regenerate_failed_summaries(course_id: str):
         for item in failed_items:
             item["attempts"] = 0
 
-        print(f"🔄 Manual regeneration triggered for {len(failed_items)} failed summaries in course {course_id}")
+        debug_print(f"🔄 Manual regeneration triggered for {len(failed_items)} failed summaries in course {course_id}")
 
         # Trigger immediate retry in background
         asyncio.create_task(_retry_failed_summaries_once(course_id))
@@ -3126,7 +3147,7 @@ async def _retry_failed_summaries_once(course_id: str):
             return
 
         failed_items = failed_summary_queue[course_id]
-        print(f"   Retrying {len(failed_items)} summaries for course {course_id}")
+        debug_print(f"   Retrying {len(failed_items)} summaries for course {course_id}")
 
         from utils.file_upload_manager import FileUploadManager
         api_key = os.getenv("GOOGLE_API_KEY")
@@ -3146,19 +3167,19 @@ async def _retry_failed_summaries_once(course_id: str):
                 )
 
                 if result.get("status") in ["success", "cached"]:
-                    print(f"   ✅ Retry successful for {item['filename']}")
+                    debug_print(f"   ✅ Retry successful for {item['filename']}")
                     failed_items.remove(item)
                 elif result.get("status") == "removed":
                     # File was removed due to validation failure - don't retry
-                    print(f"   🗑️  Removed invalid file from queue: {item['filename']}")
+                    debug_print(f"   🗑️  Removed invalid file from queue: {item['filename']}")
                     failed_items.remove(item)
                 else:
-                    print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
+                    debug_print(f"   ⚠️  Retry failed for {item['filename']}: {result.get('error', 'Unknown')}")
                     item["last_error"] = result.get('error', 'Unknown')[:200]
                     item["attempts"] += 1
 
             except Exception as e:
-                print(f"   ❌ Retry exception for {item['filename']}: {e}")
+                debug_print(f"   ❌ Retry exception for {item['filename']}: {e}")
                 item["last_error"] = str(e)[:200]
                 item["attempts"] += 1
 
@@ -3167,7 +3188,7 @@ async def _retry_failed_summaries_once(course_id: str):
             del failed_summary_queue[course_id]
 
     except Exception as e:
-        print(f"❌ Error in manual retry: {e}")
+        debug_print(f"❌ Error in manual retry: {e}")
         import traceback
         traceback.print_exc()
 
@@ -3232,7 +3253,7 @@ async def soft_delete_material(course_id: str, file_id: str, permanent: bool = F
 
         if permanent:
             # Hard delete: Remove from GCS and database
-            print(f"🗑️  Permanently deleting file {file_id} from course {course_id}")
+            debug_print(f"🗑️  Permanently deleting file {file_id} from course {course_id}")
 
             # Get file info before deletion
             file_info = chat_storage.get_file_summary(file_id)
@@ -3246,9 +3267,9 @@ async def soft_delete_material(course_id: str, file_id: str, permanent: bool = F
                     metadata = file_info.get('metadata', {})
                     gcs_path = f"{course_id}/{file_info['filename']}"
                     storage_manager.delete_file(gcs_path)
-                    print(f"✅ Deleted from GCS: {gcs_path}")
+                    debug_print(f"✅ Deleted from GCS: {gcs_path}")
                 except Exception as gcs_error:
-                    print(f"⚠️  Failed to delete from GCS: {gcs_error}")
+                    debug_print(f"⚠️  Failed to delete from GCS: {gcs_error}")
 
             # Hard delete from database
             success = chat_storage.hard_delete_file(file_id)
@@ -3263,7 +3284,7 @@ async def soft_delete_material(course_id: str, file_id: str, permanent: bool = F
             }
         else:
             # Soft delete: Set deleted_at timestamp
-            print(f"🗑️  Soft deleting file {file_id} from course {course_id}")
+            debug_print(f"🗑️  Soft deleting file {file_id} from course {course_id}")
 
             # Get filename for tracking (optional)
             file_info = chat_storage.get_file_summary(file_id)
@@ -3284,7 +3305,7 @@ async def soft_delete_material(course_id: str, file_id: str, permanent: bool = F
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error deleting material: {e}")
+        debug_print(f"❌ Error deleting material: {e}")
         raise HTTPException(status_code=500, detail=f"Error deleting material: {str(e)}")
 
 
@@ -3313,7 +3334,7 @@ async def get_deleted_materials(course_id: str):
         }
 
     except Exception as e:
-        print(f"❌ Error fetching deleted materials: {e}")
+        debug_print(f"❌ Error fetching deleted materials: {e}")
         raise HTTPException(status_code=500, detail=f"Error fetching deleted materials: {str(e)}")
 
 
@@ -3333,7 +3354,7 @@ async def restore_material(course_id: str, file_id: str):
         if not chat_storage:
             raise HTTPException(status_code=500, detail="Chat storage not initialized")
 
-        print(f"♻️  Restoring file {file_id} for course {course_id}")
+        debug_print(f"♻️  Restoring file {file_id} for course {course_id}")
         success = chat_storage.restore_file(file_id)
 
         if not success:
@@ -3348,7 +3369,7 @@ async def restore_material(course_id: str, file_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error restoring material: {e}")
+        debug_print(f"❌ Error restoring material: {e}")
         raise HTTPException(status_code=500, detail=f"Error restoring material: {str(e)}")
 
 
@@ -3373,15 +3394,15 @@ async def delete_user_data(canvas_user_id: str):
         if not chat_storage:
             raise HTTPException(status_code=500, detail="Chat storage not initialized")
 
-        print(f"\n{'='*80}")
-        print(f"🗑️  DELETE USER DATA REQUEST")
-        print(f"   Canvas User ID: {canvas_user_id}")
-        print(f"{'='*80}")
+        debug_print(f"\n{'='*80}")
+        debug_print(f"🗑️  DELETE USER DATA REQUEST")
+        debug_print(f"   Canvas User ID: {canvas_user_id}")
+        debug_print(f"{'='*80}")
 
         # Step 1: Cancel any active background tasks for this user
         cancelled_count = await cancel_user_background_tasks(canvas_user_id)
         if cancelled_count > 0:
-            print(f"🚫 Cancelled {cancelled_count} active background tasks")
+            debug_print(f"🚫 Cancelled {cancelled_count} active background tasks")
 
         # Step 2: Get list of files to delete from GCS (from BOTH tables)
         file_paths_from_summaries = chat_storage.get_user_file_paths(canvas_user_id)
@@ -3389,12 +3410,12 @@ async def delete_user_data(canvas_user_id: str):
 
         # Combine and deduplicate
         all_file_paths = list(set(file_paths_from_summaries + file_paths_from_uploads))
-        print(f"📁 Found {len(all_file_paths)} files to delete from GCS")
-        print(f"   ({len(file_paths_from_summaries)} from summaries, {len(file_paths_from_uploads)} from uploads)")
+        debug_print(f"📁 Found {len(all_file_paths)} files to delete from GCS")
+        debug_print(f"   ({len(file_paths_from_summaries)} from summaries, {len(file_paths_from_uploads)} from uploads)")
 
         # Step 3: Get Gemini cache entries (for potential future cleanup)
         gemini_entries = chat_storage.get_user_gemini_cache_entries(canvas_user_id)
-        print(f"🔥 Found {len(gemini_entries)} Gemini cache entries")
+        debug_print(f"🔥 Found {len(gemini_entries)} Gemini cache entries")
 
         # Step 4: Delete from GCS
         gcs_deleted = 0
@@ -3409,21 +3430,21 @@ async def delete_user_data(canvas_user_id: str):
                         # File not found in GCS
                         gcs_errors.append({"path": file_path, "error": "File not found in GCS"})
                 except Exception as e:
-                    print(f"⚠️  Failed to delete GCS file {file_path}: {e}")
+                    debug_print(f"⚠️  Failed to delete GCS file {file_path}: {e}")
                     gcs_errors.append({"path": file_path, "error": str(e)})
 
-        print(f"✅ Deleted {gcs_deleted}/{len(all_file_paths)} files from GCS")
+        debug_print(f"✅ Deleted {gcs_deleted}/{len(all_file_paths)} files from GCS")
 
         # Step 5: Delete from database (chat sessions, messages, file summaries, gemini cache, file uploads)
         db_stats = chat_storage.delete_user_data(canvas_user_id)
         uploads_deleted = chat_storage.delete_user_uploads(canvas_user_id)
 
-        print(f"✅ Database cleanup complete:")
-        print(f"   - Chat sessions deleted: {db_stats['chat_sessions_deleted']}")
-        print(f"   - Chat messages deleted: {db_stats['chat_messages_deleted']}")
-        print(f"   - File summaries deleted: {db_stats['file_summaries_deleted']}")
-        print(f"   - Gemini cache entries deleted: {db_stats['gemini_cache_deleted']}")
-        print(f"   - File upload records deleted: {uploads_deleted}")
+        debug_print(f"✅ Database cleanup complete:")
+        debug_print(f"   - Chat sessions deleted: {db_stats['chat_sessions_deleted']}")
+        debug_print(f"   - Chat messages deleted: {db_stats['chat_messages_deleted']}")
+        debug_print(f"   - File summaries deleted: {db_stats['file_summaries_deleted']}")
+        debug_print(f"   - Gemini cache entries deleted: {db_stats['gemini_cache_deleted']}")
+        debug_print(f"   - File upload records deleted: {uploads_deleted}")
 
         # Step 6: Clear in-memory caches (selective removal of deleted files only)
         if document_manager:
@@ -3452,7 +3473,7 @@ async def delete_user_data(canvas_user_id: str):
                 if len(document_manager.catalog[course_id]) == 0:
                     del document_manager.catalog[course_id]
 
-            print(f"✅ Removed {files_removed} files from in-memory catalog")
+            debug_print(f"✅ Removed {files_removed} files from in-memory catalog")
 
         result = {
             "success": True,
@@ -3473,13 +3494,13 @@ async def delete_user_data(canvas_user_id: str):
         if gcs_errors:
             result["gcs_errors"] = gcs_errors
 
-        print(f"\n✅ USER DATA DELETION COMPLETE for {canvas_user_id}")
+        debug_print(f"\n✅ USER DATA DELETION COMPLETE for {canvas_user_id}")
         return result
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error deleting user data: {e}")
+        debug_print(f"❌ Error deleting user data: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error deleting user data: {str(e)}")
@@ -3512,7 +3533,7 @@ async def update_canvas_ids(course_id: str, updates: Dict):
         if not updates_list:
             raise HTTPException(status_code=400, detail="No updates provided")
 
-        print(f"🔄 Updating canvas_ids for {len(updates_list)} files in course {course_id}")
+        debug_print(f"🔄 Updating canvas_ids for {len(updates_list)} files in course {course_id}")
 
         updated_count = 0
         for update in updates_list:
@@ -3538,9 +3559,9 @@ async def update_canvas_ids(course_id: str, updates: Dict):
                     canvas_user_id=file_summary.get("canvas_user_id")  # Preserve existing user ID
                 )
                 updated_count += 1
-                print(f"   ✅ Updated {doc_id[:24]}... with canvas_id: {canvas_id}")
+                debug_print(f"   ✅ Updated {doc_id[:24]}... with canvas_id: {canvas_id}")
 
-        print(f"✅ Updated {updated_count} files with canvas_ids")
+        debug_print(f"✅ Updated {updated_count} files with canvas_ids")
 
         return {
             "success": True,
@@ -3550,7 +3571,7 @@ async def update_canvas_ids(course_id: str, updates: Dict):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error updating canvas_ids: {e}")
+        debug_print(f"❌ Error updating canvas_ids: {e}")
         raise HTTPException(status_code=500, detail=f"Error updating canvas_ids: {str(e)}")
 
 
@@ -3578,16 +3599,16 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
         if not storage_manager:
             raise HTTPException(status_code=503, detail="Storage service not available")
 
-        print(f"\n{'='*80}")
-        print(f"🧹 CLEANUP BAD FILENAMES & DUPLICATES REQUEST:")
-        print(f"   Course ID: {course_id}")
-        print(f"   Dry Run: {dry_run}")
-        print(f"   Remove Duplicates: {remove_duplicates}")
-        print(f"{'='*80}")
+        debug_print(f"\n{'='*80}")
+        debug_print(f"🧹 CLEANUP BAD FILENAMES & DUPLICATES REQUEST:")
+        debug_print(f"   Course ID: {course_id}")
+        debug_print(f"   Dry Run: {dry_run}")
+        debug_print(f"   Remove Duplicates: {remove_duplicates}")
+        debug_print(f"{'='*80}")
 
         # Get all files for the course
         all_files = storage_manager.list_files(course_id=course_id)
-        print(f"📂 Found {len(all_files)} total files in GCS")
+        debug_print(f"📂 Found {len(all_files)} total files in GCS")
 
         # Find files with "/" in the filename part (after course_id/)
         bad_files = []
@@ -3599,9 +3620,9 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
                 # Check if filename itself contains "/" (indicates bad filename)
                 if '/' in filename:
                     bad_files.append(blob_name)
-                    print(f"   ⚠️  Bad file found (contains '/'): {blob_name}")
+                    debug_print(f"   ⚠️  Bad file found (contains '/'): {blob_name}")
 
-        print(f"🔍 Found {len(bad_files)} files with problematic names")
+        debug_print(f"🔍 Found {len(bad_files)} files with problematic names")
 
         # Find duplicates (keep newest, delete older versions)
         duplicates_to_delete = []
@@ -3631,7 +3652,7 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
                                 'size': blob.size
                             })
                         except Exception as e:
-                            print(f"   ⚠️  Error getting metadata for {blob_name}: {e}")
+                            debug_print(f"   ⚠️  Error getting metadata for {blob_name}: {e}")
 
                     if len(file_metadata) > 1:
                         # Sort by updated time (newest first)
@@ -3641,14 +3662,14 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
                         newest = file_metadata[0]
                         for old_file in file_metadata[1:]:
                             duplicates_to_delete.append(old_file['blob_name'])
-                            print(f"   🔄 Duplicate found: {old_file['blob_name']}")
-                            print(f"      Keeping newer version from {newest['updated']}")
+                            debug_print(f"   🔄 Duplicate found: {old_file['blob_name']}")
+                            debug_print(f"      Keeping newer version from {newest['updated']}")
 
-            print(f"🔍 Found {len(duplicates_to_delete)} duplicate files to remove")
+            debug_print(f"🔍 Found {len(duplicates_to_delete)} duplicate files to remove")
 
         # Combine bad files and duplicates
         files_to_delete = list(set(bad_files + duplicates_to_delete))
-        print(f"🗑️  Total files to delete: {len(files_to_delete)}")
+        debug_print(f"🗑️  Total files to delete: {len(files_to_delete)}")
 
         if len(files_to_delete) == 0:
             return {
@@ -3662,13 +3683,13 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
             }
 
         if dry_run:
-            print(f"🔍 DRY RUN - No files will be deleted")
-            print(f"   Would delete {len(files_to_delete)} files:")
-            print(f"   - Bad filenames (with '/'): {len(bad_files)}")
-            print(f"   - Duplicates: {len(duplicates_to_delete)}")
+            debug_print(f"🔍 DRY RUN - No files will be deleted")
+            debug_print(f"   Would delete {len(files_to_delete)} files:")
+            debug_print(f"   - Bad filenames (with '/'): {len(bad_files)}")
+            debug_print(f"   - Duplicates: {len(duplicates_to_delete)}")
             for blob_name in files_to_delete:
                 reason = "bad filename" if blob_name in bad_files else "duplicate"
-                print(f"     - {blob_name} ({reason})")
+                debug_print(f"     - {blob_name} ({reason})")
             return {
                 "dry_run": True,
                 "bad_files_found": len(bad_files),
@@ -3689,13 +3710,13 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
                 success = storage_manager.delete_file(blob_name)
 
                 if success:
-                    print(f"   ✅ Deleted from GCS: {blob_name}")
+                    debug_print(f"   ✅ Deleted from GCS: {blob_name}")
 
                     # Delete from Gemini cache if exists
                     if chat_storage:
                         cache_deleted = chat_storage.delete_gemini_cache_entry(blob_name)
                         if cache_deleted:
-                            print(f"   ✅ Deleted from Gemini cache: {blob_name}")
+                            debug_print(f"   ✅ Deleted from Gemini cache: {blob_name}")
 
                     deleted_files.append(blob_name)
                 else:
@@ -3703,16 +3724,16 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
                         "file": blob_name,
                         "error": "File not found or delete failed"
                     })
-                    print(f"   ❌ Failed to delete: {blob_name}")
+                    debug_print(f"   ❌ Failed to delete: {blob_name}")
 
             except Exception as e:
                 errors.append({
                     "file": blob_name,
                     "error": str(e)
                 })
-                print(f"   ❌ Error deleting {blob_name}: {e}")
+                debug_print(f"   ❌ Error deleting {blob_name}: {e}")
 
-        print(f"✅ Cleanup complete: {len(deleted_files)} deleted, {len(errors)} errors")
+        debug_print(f"✅ Cleanup complete: {len(deleted_files)} deleted, {len(errors)} errors")
 
         return {
             "dry_run": False,
@@ -3727,7 +3748,7 @@ async def cleanup_bad_filenames(course_id: str, dry_run: bool = True, remove_dup
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error in cleanup: {e}")
+        debug_print(f"❌ Error in cleanup: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -3758,11 +3779,11 @@ async def cleanup_duplicate_summaries(course_id: str, dry_run: bool = True):
         if not chat_storage:
             raise HTTPException(status_code=503, detail="Chat storage not available")
 
-        print(f"\n{'='*80}")
-        print(f"🧹 CLEANUP DUPLICATE FILE SUMMARIES REQUEST:")
-        print(f"   Course ID: {course_id}")
-        print(f"   Dry Run: {dry_run}")
-        print(f"{'='*80}")
+        debug_print(f"\n{'='*80}")
+        debug_print(f"🧹 CLEANUP DUPLICATE FILE SUMMARIES REQUEST:")
+        debug_print(f"   Course ID: {course_id}")
+        debug_print(f"   Dry Run: {dry_run}")
+        debug_print(f"{'='*80}")
 
         result = chat_storage.cleanup_duplicate_file_summaries(course_id, dry_run=dry_run)
 
@@ -3776,7 +3797,7 @@ async def cleanup_duplicate_summaries(course_id: str, dry_run: bool = True):
         else:
             message = f"Successfully removed {deleted_count} duplicate entries from catalog."
 
-        print(f"✅ {message}")
+        debug_print(f"✅ {message}")
 
         return {
             "dry_run": dry_run,
@@ -3790,7 +3811,7 @@ async def cleanup_duplicate_summaries(course_id: str, dry_run: bool = True):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error in cleanup duplicate summaries: {e}")
+        debug_print(f"❌ Error in cleanup duplicate summaries: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -3821,10 +3842,10 @@ async def migrate_gcs_metadata(course_id: str):
         if not chat_storage:
             raise HTTPException(status_code=503, detail="Chat storage not available")
 
-        print(f"\n{'='*80}")
-        print(f"🔄 MIGRATE GCS METADATA REQUEST:")
-        print(f"   Course ID: {course_id}")
-        print(f"{'='*80}")
+        debug_print(f"\n{'='*80}")
+        debug_print(f"🔄 MIGRATE GCS METADATA REQUEST:")
+        debug_print(f"   Course ID: {course_id}")
+        debug_print(f"{'='*80}")
 
         updated = 0
         skipped = 0
@@ -3843,11 +3864,11 @@ async def migrate_gcs_metadata(course_id: str):
             """), {"course_id": course_id})
             file_uploads = [dict(row._mapping) for row in result]
 
-            print(f"   Found {len(file_uploads)} files in file_uploads table")
+            debug_print(f"   Found {len(file_uploads)} files in file_uploads table")
 
             # If file_uploads is empty, try file_summaries
             if len(file_uploads) == 0:
-                print(f"   Falling back to file_summaries table...")
+                debug_print(f"   Falling back to file_summaries table...")
                 result = conn.execute(text("""
                     SELECT doc_id, filename
                     FROM file_summaries
@@ -3855,7 +3876,7 @@ async def migrate_gcs_metadata(course_id: str):
                 """), {"course_id": course_id})
                 summaries = [dict(row._mapping) for row in result]
 
-                print(f"   Found {len(summaries)} files in file_summaries table")
+                debug_print(f"   Found {len(summaries)} files in file_summaries table")
 
                 # Convert to file_uploads format
                 # doc_id is {course_id}_{hash}, extract hash and build gcs_path
@@ -3877,7 +3898,7 @@ async def migrate_gcs_metadata(course_id: str):
                         'original_filename': filename
                     })
 
-                print(f"   Total files to migrate: {len(file_uploads)}")
+                debug_print(f"   Total files to migrate: {len(file_uploads)}")
 
         for upload in file_uploads:
             try:
@@ -3887,7 +3908,7 @@ async def migrate_gcs_metadata(course_id: str):
                 # Get the blob
                 blob = storage_manager.bucket.blob(gcs_path)
                 if not blob.exists():
-                    print(f"   ⚠️  Blob not found: {gcs_path}")
+                    debug_print(f"   ⚠️  Blob not found: {gcs_path}")
                     skipped += 1
                     continue
 
@@ -3896,22 +3917,22 @@ async def migrate_gcs_metadata(course_id: str):
                 existing_metadata = blob.metadata or {}
 
                 if existing_metadata.get('original_filename') == original_filename:
-                    print(f"   ✓ Already has metadata: {gcs_path}")
+                    debug_print(f"   ✓ Already has metadata: {gcs_path}")
                     skipped += 1
                     continue
 
                 # Update metadata
                 blob.metadata = {**existing_metadata, 'original_filename': original_filename}
                 blob.patch()
-                print(f"   ✅ Updated: {gcs_path} → {original_filename}")
+                debug_print(f"   ✅ Updated: {gcs_path} → {original_filename}")
                 updated += 1
 
             except Exception as e:
                 error_msg = f"Error updating {upload.get('gcs_path', 'unknown')}: {str(e)}"
-                print(f"   ❌ {error_msg}")
+                debug_print(f"   ❌ {error_msg}")
                 errors.append(error_msg)
 
-        print(f"\n📊 Migration complete: {updated} updated, {skipped} skipped, {len(errors)} errors")
+        debug_print(f"\n📊 Migration complete: {updated} updated, {skipped} skipped, {len(errors)} errors")
 
         return {
             "course_id": course_id,
@@ -3924,7 +3945,7 @@ async def migrate_gcs_metadata(course_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error in GCS metadata migration: {e}")
+        debug_print(f"❌ Error in GCS metadata migration: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
