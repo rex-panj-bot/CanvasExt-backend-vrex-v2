@@ -14,6 +14,10 @@ from fastapi.responses import JSONResponse, FileResponse
 import uvicorn
 import os
 import json
+import logging
+
+# Create logger
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from dotenv import load_dotenv
 import asyncio
