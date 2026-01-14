@@ -34,10 +34,10 @@ logging.getLogger('httpcore').setLevel(logging.ERROR)
 logging.getLogger('urllib3').setLevel(logging.ERROR)
 
 # Debug print function - only outputs in non-production mode
-def debug_debug_print(*args, **kwargs):
+def debug_print(*args, **kwargs):
     """Print only in development mode to avoid data leaks in production"""
     if not PRODUCTION_MODE:
-        debug_print(*args, **kwargs)
+        print(*args, **kwargs)
 
 from pathlib import Path
 from dotenv import load_dotenv

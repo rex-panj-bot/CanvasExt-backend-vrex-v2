@@ -16,10 +16,10 @@ from .file_validator import FileValidator
 # Production mode - suppress verbose logging
 PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
 
-def debug_debug_print(*args, **kwargs):
+def debug_print(*args, **kwargs):
     """Print only in development mode"""
     if not PRODUCTION_MODE:
-        debug_print(*args, **kwargs)
+        print(*args, **kwargs)
 
 
 class FileUploadManager:
