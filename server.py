@@ -17,7 +17,7 @@ import json
 import logging
 
 # Production mode - suppress verbose logging
-PRODUCTION_MODE = os.getenv('PRODUCTION', 'true').lower() == 'true'
+PRODUCTION_MODE = os.getenv('PRODUCTION', 'false').lower() == 'true'
 
 # Configure logging - only errors in production
 if PRODUCTION_MODE:
