@@ -1751,7 +1751,7 @@ async def process_canvas_files(
 
         # Helper function to process a single file (for parallel execution)
         async def process_single_file(file_info, session):
-            nonlocal processed, failed
+            nonlocal processed, failed, skipped
 
             file_name = file_info.get("name")
             file_url = file_info.get("url")
