@@ -3979,14 +3979,21 @@ async def serve_pdf(course_id: str, doc_id: str, page: Optional[int] = None):
         if storage_manager:
             try:
                 # HASH-BASED: doc_id should be the content hash
-                # GCS blob name format: {course_id}/{hash}.pdf
-                blob_name = f"{course_id}/{doc_id}.pdf"
+                # GCS blob name format: {course_id}/{hash}.{ext}
+                # Try multiple extensions since files can be .pdf, .key, .txt, etc.
+                possible_extensions = ['.pdf', '.key', '.txt', '']
+                blob_name = None
+                file_exists = False
 
-                # Check if file exists
-                file_exists = storage_manager.file_exists(blob_name)
+                for ext in possible_extensions:
+                    test_blob = f"{course_id}/{doc_id}{ext}"
+                    if storage_manager.file_exists(test_blob):
+                        blob_name = test_blob
+                        file_exists = True
+                        break
 
                 if not file_exists:
-                    logger.warning(f"File not found in GCS: {blob_name}")
+                    logger.warning(f"File not found in GCS: {course_id}/{doc_id} (tried extensions: {possible_extensions})")
                     raise HTTPException(status_code=404, detail=f"File not found: {doc_id}")
 
                 # Generate signed URL that's valid for 1 hour
