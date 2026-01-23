@@ -31,8 +31,8 @@ def convert_office_to_pdf(file_bytes: bytes, filename: str) -> Optional[bytes]:
     """
     ext = filename.split('.')[-1].lower() if '.' in filename else ''
 
-    # Supported formats for PDF conversion
-    supported = ['pptx', 'docx', 'xlsx', 'ppt', 'doc', 'xls', 'rtf', 'odt', 'ods', 'odp']
+    # Supported formats for PDF conversion (LibreOffice handles all of these)
+    supported = ['pptx', 'docx', 'xlsx', 'ppt', 'doc', 'xls', 'rtf', 'odt', 'ods', 'odp', 'key']
     if ext not in supported:
         logger.warning(f"File {filename} cannot be converted to PDF (unsupported format)")
         return None
@@ -297,9 +297,10 @@ def convert_to_text(file_bytes: bytes, filename: str) -> Optional[bytes]:
 def needs_conversion(filename: str) -> bool:
     """Check if file needs conversion before Gemini upload"""
     ext = filename.split('.')[-1].lower() if '.' in filename else ''
-    # Expanded to include OpenDocument and web formats
+    # Expanded to include OpenDocument, Apple iWork, and web formats
     return ext in [
         'pptx', 'docx', 'xlsx', 'ppt', 'doc', 'xls', 'rtf',  # MS Office
         'odt', 'ods', 'odp',  # OpenDocument
+        'key',  # Apple Keynote (converted to PDF via LibreOffice)
         'html', 'htm', 'xml', 'json'  # Web/data formats
     ]
