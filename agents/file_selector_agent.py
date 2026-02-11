@@ -38,6 +38,7 @@ class FileSelectorAgent:
     # Configuration
     MAX_CANDIDATES = 35  # Increased to allow for weighting to filter
     MAX_FILES_HARD_CAP = 18  # Maximum files to return
+    MAX_KEYWORD_ANCHORS = 5  # Max anchor docs when using keyword-only matching (no embeddings)
     RELATIVE_THRESHOLD_DELTA = 0.45  # Slightly tighter threshold for better precision
 
     # Embedding model for query embedding
@@ -482,24 +483,32 @@ Return ONLY valid JSON:
             # Sort by weighted score
             weighted_candidates.sort(key=lambda x: x.get('weighted_score', 0), reverse=True)
             
+            # Cap at MAX_KEYWORD_ANCHORS for keyword-only mode (no embeddings)
+            # This prevents slow responses when courses have many files
+            weighted_candidates = weighted_candidates[:self.MAX_KEYWORD_ANCHORS]
+            
             # Log top candidates
             for c in weighted_candidates[:3]:
                 debug_print(f"         {c.get('filename', 'Unknown')[:40]}... "
                            f"(keyword: {c.get('similarity_score', 0):.3f}, "
                            f"weighted: {c.get('weighted_score', 0):.3f})")
+            
+            debug_print(f"      ⚡ Keyword mode: capped at {len(weighted_candidates)} anchor docs")
 
             return weighted_candidates
 
         except Exception as e:
             logger.error(f"Error in context-aware retrieval: {e}")
-            # Ultimate fallback
+            # Ultimate fallback - keyword matching with anchor cap
             if fallback_summaries:
                 candidates = self._lightweight_keyword_matching(
                     fallback_summaries[:self.MAX_CANDIDATES], 
                     user_query, 
                     query_analysis
                 )
-                return self._apply_document_weighting(candidates, query_analysis)
+                weighted = self._apply_document_weighting(candidates, query_analysis)
+                weighted.sort(key=lambda x: x.get('weighted_score', 0), reverse=True)
+                return weighted[:self.MAX_KEYWORD_ANCHORS]  # Cap at anchor limit
             return []
     
     def _lightweight_keyword_matching(
