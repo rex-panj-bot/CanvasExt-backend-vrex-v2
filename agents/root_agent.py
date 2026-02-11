@@ -508,18 +508,23 @@ RULES:
 - Always include comma after document name
 - Always capitalize "Page" or "Pages"
 - Page numbers must be digits only
-- NO variations allowed (no "p.", "pg.", dashes instead of commas, etc.)
+- ONE citation per document (never combine multiple documents in one citation)
+- Use the EXACT filename from the available materials list above
+- For multiple pages from same doc: [Source: DocName, Pages 2-5] or [Source: DocName, Pages 2, 3, 5]
+- NO variations allowed (no "p.", "pg.", dashes instead of commas, semicolons, etc.)
 
 CORRECT examples:
 ✓ [Source: Lecture_3_Algorithms, Page 12]
 ✓ [Source: CS101_Syllabus, Page 3]
 ✓ [Source: Homework_2, Pages 5-7]
+✓ [Source: Team_Management_Principles, Pages 2, 3, 18-19]
 
 INCORRECT examples (DO NOT USE):
 ✗ [Source: Lecture_3_Algorithms Page 12] (missing comma)
 ✗ [Source: Lecture_3_Algorithms - Page 12] (dash instead of comma)
 ✗ [Source: Lecture_3_Algorithms, p. 12] (lowercase "p.")
 ✗ (Lecture_3_Algorithms, Page 12) (wrong brackets)
+✗ [Source: Doc1, Page 1; Doc2, Page 2] (multiple docs - use separate citations!)
 {"When using web search results, the sources will be automatically cited below your response." if enable_web_search else ""}
 
 LATEX FORMATTING - CRITICAL:
