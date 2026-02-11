@@ -72,6 +72,103 @@ class RootAgent:
             del self.session_uploads[session_id]
             debug_print(f"🗑️  Cleared session: {session_id}")
 
+    def _create_lightweight_file_info(self, materials: List[Dict]) -> List[Dict]:
+        """
+        Create lightweight file info from catalog materials for smart selection.
+        
+        When no summaries exist (summaries disabled to avoid rate limits),
+        this creates pseudo-summaries from catalog metadata that the file 
+        selector can use for keyword-based matching.
+        
+        Args:
+            materials: List of materials from document_manager catalog
+            
+        Returns:
+            List of dicts compatible with file selector (doc_id, filename, summary, topics)
+        """
+        lightweight_files = []
+        
+        for material in materials:
+            doc_id = material.get('id')
+            filename = material.get('name', material.get('filename', 'unknown'))
+            doc_type = material.get('type', 'document')
+            
+            # Extract meaningful info from filename for "summary"
+            # Remove extension and clean up
+            clean_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+            for sep in ['_', '-', '.']:
+                clean_name = clean_name.replace(sep, ' ')
+            
+            # Create a pseudo-summary from filename metadata
+            summary = f"Document: {clean_name}. Type: {doc_type}."
+            
+            # Extract topics from filename
+            topics = self._extract_topics_from_filename(filename)
+            
+            lightweight_files.append({
+                'doc_id': doc_id,
+                'filename': filename,
+                'name': filename,  # Display name
+                'summary': summary,
+                'topics': list(topics),
+                'metadata': {
+                    'doc_type': doc_type,
+                    'lightweight': True  # Flag to indicate this is metadata-only
+                }
+            })
+        
+        return lightweight_files
+    
+    def _extract_topics_from_filename(self, filename: str) -> set:
+        """
+        Extract potential topics from a filename.
+        
+        Args:
+            filename: The filename to parse
+            
+        Returns:
+            Set of extracted topic keywords
+        """
+        if not filename:
+            return set()
+        
+        # Remove extension
+        name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        # Normalize separators
+        for sep in ['_', '-', '.', '(', ')', '[', ']']:
+            name = name.replace(sep, ' ')
+        
+        words = name.lower().split()
+        extracted = set()
+        
+        # Add words that are long enough and not pure numbers
+        for word in words:
+            if len(word) > 2 and not word.isdigit():
+                extracted.add(word)
+        
+        # Document type keywords to search for
+        doc_patterns = {
+            'lecture': ['lecture', 'lec', 'class', 'lesson'],
+            'homework': ['homework', 'hw', 'assignment', 'pset', 'problem'],
+            'exam': ['exam', 'midterm', 'final', 'test', 'quiz'],
+            'notes': ['notes', 'note', 'summary'],
+            'slides': ['slides', 'ppt', 'presentation'],
+            'syllabus': ['syllabus', 'schedule', 'outline'],
+            'reading': ['reading', 'chapter', 'textbook'],
+            'lab': ['lab', 'laboratory', 'experiment'],
+            'review': ['review', 'study guide', 'study_guide'],
+        }
+        
+        name_lower = name.lower()
+        for doc_type, patterns in doc_patterns.items():
+            for pattern in patterns:
+                if pattern in name_lower:
+                    extracted.add(doc_type)
+                    break
+        
+        return extracted
+
     async def process_query_stream(
         self,
         course_id: str,
@@ -162,11 +259,14 @@ class RootAgent:
                 file_summaries = self.chat_storage.get_all_summaries_for_course(course_id)
                 debug_print(f"   📚 Found {len(file_summaries)} file summaries")
 
+                # If no summaries exist, create lightweight file info from catalog
+                # This enables keyword-based smart selection without expensive summaries
                 if not file_summaries:
-                    debug_print(f"   ⚠️  No summaries available, falling back to manual selection")
-                    yield "\nNo file summaries available. Using all materials.\n"
-                    materials_to_use = all_materials
-                else:
+                    debug_print(f"   ⚠️  No summaries available, creating lightweight metadata from catalog...")
+                    file_summaries = self._create_lightweight_file_info(all_materials)
+                    debug_print(f"   📝 Created {len(file_summaries)} lightweight file entries for smart selection")
+                
+                if file_summaries:
                     # ALWAYS fetch syllabus for ground truth (needed for both scenarios)
                     # Try to get stored syllabus_id from database first
                     if not syllabus_id and self.chat_storage:
@@ -278,6 +378,11 @@ class RootAgent:
                         for i, file in enumerate(selected_files[:5]):
                             display_name = all_file_names[i] if i < len(all_file_names) else file.get('filename')
                             debug_print(f"      📄 {display_name}")
+                else:
+                    # Fallback: no file info available at all (shouldn't happen with lightweight creation)
+                    debug_print(f"   ⚠️  No file info available, falling back to all materials")
+                    yield "\nUsing all materials.\n"
+                    materials_to_use = all_materials
 
             # Manual selection (original behavior)
             elif selected_docs:

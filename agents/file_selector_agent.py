@@ -31,6 +31,8 @@ class FileSelectorAgent:
     - Stage 1: Query Understanding (intent, topics, context)
     - Stage 2: Context-Aware Retrieval (vector search + document weighting)
     - Stage 3: Intelligent Selection (LLM reranking with rich context)
+    
+    V2.1 Update: Works without summaries/embeddings using lightweight filename-based matching
     """
 
     # Configuration
@@ -40,6 +42,41 @@ class FileSelectorAgent:
 
     # Embedding model for query embedding
     EMBEDDING_MODEL = "text-embedding-004"
+    
+    # Filename patterns for document type detection and topic extraction
+    FILENAME_PATTERNS = {
+        # Document types
+        "lecture": ["lecture", "lec", "class", "lesson", "week"],
+        "homework": ["homework", "hw", "assignment", "problem set", "pset", "ps"],
+        "exam": ["exam", "midterm", "final", "test", "quiz"],
+        "study_guide": ["study guide", "review", "study sheet", "cheat sheet"],
+        "notes": ["notes", "note", "summary"],
+        "slides": ["slides", "slide", "powerpoint", "ppt", "presentation"],
+        "reading": ["reading", "chapter", "textbook", "article", "paper"],
+        "syllabus": ["syllabus", "syllabi", "course outline", "schedule"],
+        "solution": ["solution", "answer", "key", "solutions"],
+        "lab": ["lab", "laboratory", "experiment"],
+        "project": ["project", "proj"],
+    }
+    
+    # Common academic topic keywords to extract from filenames
+    TOPIC_KEYWORDS = [
+        # Sciences
+        "biology", "chemistry", "physics", "calculus", "statistics", "algebra",
+        "genetics", "cell", "dna", "protein", "evolution", "ecology",
+        "organic", "inorganic", "thermodynamics", "mechanics", "waves",
+        # Math
+        "derivative", "integral", "matrix", "vector", "probability", "regression",
+        "function", "equation", "theorem", "proof", "limit",
+        # CS
+        "algorithm", "data structure", "programming", "database", "network",
+        "machine learning", "ai", "neural", "recursion", "sorting",
+        # Humanities
+        "history", "philosophy", "psychology", "sociology", "economics",
+        "literature", "writing", "essay", "analysis", "theory",
+        # Business
+        "finance", "accounting", "marketing", "management", "strategy",
+    ]
     
     # Document type weights for different intents
     DOC_TYPE_WEIGHTS = {
@@ -379,6 +416,7 @@ Return ONLY valid JSON:
         Stage 2: Context-Aware Retrieval
         
         Performs vector search and applies document type weighting based on query intent.
+        Falls back to lightweight keyword-based matching when no embeddings exist.
         
         Args:
             user_query: User's question
@@ -390,55 +428,248 @@ Return ONLY valid JSON:
             List of candidate file dicts with similarity_score and weighted_score
         """
         try:
-            # Check if vector search is available
-            if not self.chat_storage or not self.file_summarizer or not course_id:
-                debug_print(f"      Vector search unavailable, using fallback with weighting")
-                candidates = fallback_summaries[:self.MAX_CANDIDATES]
-                return self._apply_document_weighting(candidates, query_analysis)
-
-            # Generate query embedding
-            # Enhance query with extracted topics for better matching
-            topics = query_analysis.get('topics', [])
-            enhanced_query = user_query
-            if topics:
-                enhanced_query = f"{user_query}\n\nKey topics: {', '.join(topics)}"
+            # First, try vector search if available
+            vector_candidates = None
             
-            query_embedding = await self.file_summarizer.generate_query_embedding(enhanced_query)
+            if self.chat_storage and self.file_summarizer and course_id:
+                # Generate query embedding
+                topics = query_analysis.get('topics', [])
+                enhanced_query = user_query
+                if topics:
+                    enhanced_query = f"{user_query}\n\nKey topics: {', '.join(topics)}"
+                
+                query_embedding = await self.file_summarizer.generate_query_embedding(enhanced_query)
 
-            if not query_embedding:
-                debug_print(f"      Failed to generate query embedding, using fallback")
-                return self._apply_document_weighting(fallback_summaries[:self.MAX_CANDIDATES], query_analysis)
-
-            # Perform vector search
-            candidates = self.chat_storage.search_similar_summaries(
-                course_id=course_id,
-                query_embedding=query_embedding,
-                limit=self.MAX_CANDIDATES
-            )
-
+                if query_embedding:
+                    # Perform vector search
+                    vector_candidates = self.chat_storage.search_similar_summaries(
+                        course_id=course_id,
+                        query_embedding=query_embedding,
+                        limit=self.MAX_CANDIDATES
+                    )
+                    
+                    if vector_candidates:
+                        debug_print(f"      Vector search found {len(vector_candidates)} candidates")
+            
+            # If vector search succeeded, use those results
+            if vector_candidates:
+                weighted_candidates = self._apply_document_weighting(vector_candidates, query_analysis)
+                weighted_candidates.sort(key=lambda x: x.get('weighted_score', 0), reverse=True)
+                
+                for c in weighted_candidates[:3]:
+                    debug_print(f"         {c.get('filename', 'Unknown')[:40]}... "
+                               f"(sim: {c.get('similarity_score', 0):.3f}, "
+                               f"weighted: {c.get('weighted_score', 0):.3f})")
+                return weighted_candidates
+            
+            # FALLBACK: Use lightweight keyword-based matching
+            # This handles the case when summaries/embeddings don't exist
+            debug_print(f"      Vector search unavailable or returned no results")
+            debug_print(f"      Using lightweight keyword-based matching...")
+            
+            candidates = fallback_summaries[:self.MAX_CANDIDATES] if fallback_summaries else []
+            
             if not candidates:
-                debug_print(f"      Vector search returned no results, using fallback")
-                return self._apply_document_weighting(fallback_summaries[:self.MAX_CANDIDATES], query_analysis)
-
-            debug_print(f"      Vector search found {len(candidates)} candidates")
-
-            # Apply document type weighting
+                debug_print(f"      No fallback summaries available")
+                return []
+            
+            # Apply lightweight keyword matching to compute similarity scores
+            candidates = self._lightweight_keyword_matching(candidates, user_query, query_analysis)
+            
+            # Apply document type weighting on top of keyword scores
             weighted_candidates = self._apply_document_weighting(candidates, query_analysis)
             
             # Sort by weighted score
             weighted_candidates.sort(key=lambda x: x.get('weighted_score', 0), reverse=True)
-
+            
             # Log top candidates
             for c in weighted_candidates[:3]:
                 debug_print(f"         {c.get('filename', 'Unknown')[:40]}... "
-                           f"(sim: {c.get('similarity_score', 0):.3f}, "
+                           f"(keyword: {c.get('similarity_score', 0):.3f}, "
                            f"weighted: {c.get('weighted_score', 0):.3f})")
 
             return weighted_candidates
 
         except Exception as e:
             logger.error(f"Error in context-aware retrieval: {e}")
-            return self._apply_document_weighting(fallback_summaries[:self.MAX_CANDIDATES], query_analysis)
+            # Ultimate fallback
+            if fallback_summaries:
+                candidates = self._lightweight_keyword_matching(
+                    fallback_summaries[:self.MAX_CANDIDATES], 
+                    user_query, 
+                    query_analysis
+                )
+                return self._apply_document_weighting(candidates, query_analysis)
+            return []
+    
+    def _lightweight_keyword_matching(
+        self,
+        candidates: List[Dict],
+        user_query: str,
+        query_analysis: Dict
+    ) -> List[Dict]:
+        """
+        Lightweight keyword-based matching when embeddings are unavailable.
+        
+        Uses:
+        - Query topics from Stage 1
+        - Filename parsing for document type and topics
+        - Simple keyword overlap scoring
+        
+        Args:
+            candidates: List of file candidates (from summaries or catalog)
+            user_query: User's question
+            query_analysis: Results from Stage 1
+            
+        Returns:
+            Candidates with similarity_score added based on keyword matching
+        """
+        query_lower = user_query.lower()
+        query_words = set(query_lower.split())
+        query_topics = set(t.lower() for t in query_analysis.get('topics', []))
+        
+        # Combine query words and extracted topics
+        all_query_terms = query_words | query_topics
+        
+        # Remove common stop words
+        stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+                      'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                      'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+                      'can', 'need', 'dare', 'ought', 'used', 'to', 'of', 'in',
+                      'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into',
+                      'through', 'during', 'before', 'after', 'above', 'below',
+                      'between', 'under', 'again', 'further', 'then', 'once',
+                      'here', 'there', 'when', 'where', 'why', 'how', 'all',
+                      'each', 'few', 'more', 'most', 'other', 'some', 'such',
+                      'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than',
+                      'too', 'very', 'just', 'and', 'but', 'if', 'or', 'because',
+                      'as', 'until', 'while', 'about', 'against', 'what', 'which',
+                      'who', 'whom', 'this', 'that', 'these', 'those', 'am', 'i',
+                      'me', 'my', 'myself', 'we', 'our', 'ours', 'you', 'your',
+                      'he', 'him', 'his', 'she', 'her', 'it', 'its', 'they', 'them'}
+        
+        all_query_terms = all_query_terms - stop_words
+        
+        for candidate in candidates:
+            # Get all text to search in
+            filename = candidate.get('filename', '').lower()
+            # Also check 'name' field (display name from catalog)
+            display_name = candidate.get('name', '').lower()
+            summary = candidate.get('summary', '').lower()
+            topics = candidate.get('topics', [])
+            if isinstance(topics, str):
+                try:
+                    topics = json.loads(topics)
+                except:
+                    topics = []
+            topics_str = ' '.join(t.lower() for t in topics) if topics else ''
+            
+            # Combine all searchable text
+            search_text = f"{filename} {display_name} {summary} {topics_str}"
+            search_words = set(search_text.split())
+            
+            # Extract topics from filename
+            filename_topics = self._extract_topics_from_filename(filename or display_name)
+            search_words.update(filename_topics)
+            
+            # Calculate keyword overlap score
+            overlap = all_query_terms & search_words
+            
+            # Base score from keyword overlap
+            if all_query_terms:
+                base_overlap_score = len(overlap) / len(all_query_terms)
+            else:
+                base_overlap_score = 0.0
+            
+            # Boost for exact phrase matches
+            phrase_boost = 0.0
+            for topic in query_topics:
+                if len(topic) > 3 and topic in search_text:
+                    phrase_boost += 0.15  # Bonus for exact topic match
+            
+            # Boost for filename containing query terms
+            filename_boost = 0.0
+            combined_filename = f"{filename} {display_name}"
+            for term in all_query_terms:
+                if len(term) > 3 and term in combined_filename:
+                    filename_boost += 0.1  # Bonus for query term in filename
+            
+            # Calculate final similarity score
+            similarity_score = min(1.0, base_overlap_score + phrase_boost + filename_boost)
+            
+            # Ensure minimum score if any match exists
+            if overlap and similarity_score < 0.1:
+                similarity_score = 0.1
+            
+            # If no keyword matches but file exists, give small base score
+            # (will be weighted by document type later)
+            if similarity_score == 0:
+                similarity_score = 0.05  # Small base score
+            
+            candidate['similarity_score'] = similarity_score
+            candidate['keyword_matches'] = list(overlap)[:10]  # Store matches for debugging
+        
+        return candidates
+    
+    def _extract_topics_from_filename(self, filename: str) -> set:
+        """
+        Extract potential topics from a filename.
+        
+        Parses patterns like:
+        - "Lecture 5 - Cell Division.pdf" → {"cell", "division", "lecture"}
+        - "HW3_Genetics_Problems.pdf" → {"genetics", "problems", "homework"}
+        - "Midterm_Review_Guide.pdf" → {"midterm", "review", "guide", "exam"}
+        
+        Args:
+            filename: The filename to parse
+            
+        Returns:
+            Set of extracted topic keywords
+        """
+        if not filename:
+            return set()
+        
+        # Remove extension
+        name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        # Normalize: replace common separators with spaces
+        for sep in ['_', '-', '.', '(', ')', '[', ']', '{', '}']:
+            name = name.replace(sep, ' ')
+        
+        # Split into words and lowercase
+        words = name.lower().split()
+        
+        extracted = set()
+        
+        # Add all words that are long enough
+        for word in words:
+            # Skip pure numbers and very short words
+            if len(word) > 2 and not word.isdigit():
+                extracted.add(word)
+        
+        # Check for known topic keywords
+        name_lower = name.lower()
+        for keyword in self.TOPIC_KEYWORDS:
+            if keyword in name_lower:
+                extracted.add(keyword)
+        
+        # Check for document type patterns and add related terms
+        for doc_type, patterns in self.FILENAME_PATTERNS.items():
+            for pattern in patterns:
+                if pattern in name_lower:
+                    extracted.add(doc_type)
+                    # Add related search terms
+                    if doc_type == "homework":
+                        extracted.update(["assignment", "problem"])
+                    elif doc_type == "exam":
+                        extracted.update(["test", "midterm", "final", "quiz"])
+                    elif doc_type == "lecture":
+                        extracted.update(["class", "notes", "slides"])
+                    elif doc_type == "study_guide":
+                        extracted.update(["review", "summary"])
+                    break
+        
+        return extracted
 
     def _apply_document_weighting(
         self,
